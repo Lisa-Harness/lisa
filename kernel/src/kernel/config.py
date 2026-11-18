@@ -423,22 +423,17 @@ class Settings(BaseSettings):
     # conservatively low: an early epoch costs one rewrite; a late one
     # risks the truncation spiral it exists to prevent.
     intra_turn_soft_trigger_share: float = Field(default=0.5, gt=0, lt=1)
-    # Hard ceiling: at/above this share, new large tool dispatches are
-    # refused (model-visible message) and the loop is pointed at a clean
-    # finish at the next dispatch boundary instead of relying on
-    # mid-dispatch loop breaks.
-    intra_turn_hard_ceiling_share: float = Field(default=0.65, gt=0, le=1)
+    # Hard ceiling: at/above this share, non-read tool dispatches whose
+    # fitted proposed request still crosses the threshold are refused
+    # (model-visible message) and the loop is pointed at a clean finish.
+    intra_turn_hard_ceiling_share: float = Field(default=0.85, gt=0, le=1)
     # Affordable window: when the turn has a processed-token envelope
     # (``TurnBudget.max_total_tokens``), the soft/hard shares apply to
     # ``min(model window, envelope * share)`` instead of the raw window.
     # Every cache-cold request (resume, model switch, epoch rewrite)
     # re-processes the whole prompt against that envelope, so a large
     # window must not license residency the turn cannot afford to resend.
-    intra_turn_envelope_window_share: float = Field(default=0.4, gt=0, le=1)
-    # Minimum serialized tool-call arguments (characters) the hard
-    # ceiling treats as a "large" dispatch. Read-only tools are never
-    # gated, so the model can still inspect results it already holds.
-    intra_turn_large_dispatch_min_chars: int = Field(default=2000)
+    intra_turn_envelope_window_share: float = Field(default=0.8, gt=0, le=1)
     # Spill-on-arrival (pressure path): once the live-array estimate is
     # at/above the soft trigger, large fresh (non-ref, non-preview) tool
     # results are replaced by a preview + ref at delivery. Pending dedupes
@@ -580,7 +575,6 @@ class Settings(BaseSettings):
         "intra_turn_soft_trigger_share",
         "intra_turn_hard_ceiling_share",
         "intra_turn_envelope_window_share",
-        "intra_turn_large_dispatch_min_chars",
         "intra_turn_spill_preview_repeat_limit",
         "intra_turn_cache_read_share",
         "intra_turn_cache_write_share",

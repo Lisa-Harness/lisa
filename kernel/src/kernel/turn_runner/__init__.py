@@ -174,7 +174,7 @@ from kernel.turn_phases._compaction import (
     log_compaction_diagnostics,
     maybe_run_soft_epoch,
     should_spill_on_arrival,
-    tool_size_refusal,
+    tool_dispatch_refusal,
 )
 from kernel.turn_phases._completion_contract import (
     AcceptTurn,
@@ -10277,6 +10277,7 @@ async def _prepare_tool_call_dispatch(
     mode_id: str,
     query: str,
     state: _TurnState,
+    effective_model_def: Any,
     ledger: CallLedger,
     messages: list[dict[str, Any]],
     operation_catalog: Any,
@@ -10290,30 +10291,6 @@ async def _prepare_tool_call_dispatch(
 ) -> _PreparedToolCall:
     tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
     tool_call_id = str(tool_call.get("id") or "")
-    # ── Hard-ceiling / circuit-breaker large-dispatch gate ─────────
-    # Under the hard ceiling (or after the breaker tripped), large
-    # dispatches are denied with a model-visible refusal. Read-only
-    # tools are never gated: the model may still need to inspect what
-    # it already holds. The refusal keeps the loop alive so the model
-    # can observe the cap and finalize instead of being mistaken for a
-    # natural empty completion.
-    _ceiling_refusal = tool_size_refusal(state=state, tool_arguments=tool_arguments)
-    if _ceiling_refusal:
-        log.warning(
-            "refusing large dispatch of %s (mode=%s, breaker=%s)",
-            tool_name,
-            mode_id,
-            state.truncation_tripped,
-        )
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "name": tool_name,
-                "content": _ceiling_refusal,
-            }
-        )
-        return _PreparedToolCall(_ContinueIteration(), True)
     if _handle_truncated_tool_arguments(
         state=state,
         mode_id=mode_id,
@@ -10357,7 +10334,53 @@ async def _prepare_tool_call_dispatch(
     )
     max_calls = int(getattr(target_def, "max_calls_per_turn", 0) or 0) if target_def else 0
     max_calls = resolve_capability_invocation_limit(execution_policy, tool_name, max_calls)
-    refusal_text = _deref_budget_refusal(
+    refusal_text = ""
+    dispatch_effect = str(getattr(target_def, "effect", "") or "")
+    if not dispatch_effect:
+        spec_fn = getattr(pool, "tool_spec", None) if pool is not None else None
+        spec = spec_fn(tool_name) if spec_fn is not None else None
+        dispatch_effect = (
+            "read" if spec is not None and bool(getattr(spec, "read_only_hint", False)) else "write"
+        )
+    if dispatch_effect != "read":
+        project_messages = hooks.context.project_messages
+        projector = (
+            (
+                lambda source, *, budget_bytes: project_messages(
+                    source, hooks.identity.task_id, budget_bytes=budget_bytes
+                )
+            )
+            if project_messages is not None
+            else None
+        )
+        completion_max_tokens = (
+            state.request_context_budget.completion_tokens
+            if state.request_context_budget is not None
+            else _effective_completion_max_tokens(
+                effective_model_def,
+                mode_budget_tokens=int(
+                    getattr(state.mode_config, "completion_budget_tokens", 0) or 0
+                ),
+            )
+        )
+        refusal_text = tool_dispatch_refusal(
+            state=state,
+            messages=messages,
+            model_def=effective_model_def,
+            tools=state.tool_schemas or None,
+            max_tokens=completion_max_tokens,
+            projector=projector,
+            counter=partial(_count_resident_request, state=state, hooks=hooks),
+        )
+        if refusal_text:
+            log.warning(
+                "refusing proposed %s dispatch at fitted context ceiling "
+                "(mode=%s, breaker=%s)",
+                tool_name,
+                mode_id,
+                state.truncation_tripped,
+            )
+    refusal_text = refusal_text or _deref_budget_refusal(
         state=state,
         tool_name=tool_name,
         tool_arguments=tool_arguments,
@@ -10728,6 +10751,7 @@ async def _dispatch_turn_tool_calls(
     tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
     state: _TurnState,
+    effective_model_def: Any,
     hooks: TurnHooks,
     pool: MCPToolPool,
     ledger: CallLedger,
@@ -10794,6 +10818,7 @@ async def _dispatch_turn_tool_calls(
                 mode_id=state.active_mode_id,
                 query=query,
                 state=state,
+                effective_model_def=effective_model_def,
                 ledger=ledger,
                 messages=messages,
                 operation_catalog=operation_catalog,
@@ -11856,6 +11881,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         tool_calls=continuation.pending_calls if continuation else [],
         synthesized_forced=False,
         state=_state,
+        effective_model_def=effective_model_def,
         hooks=hooks,
         pool=pool,
         ledger=ledger,
@@ -12250,6 +12276,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             tool_calls=tool_calls,
             synthesized_forced=_synthesized_forced,
             state=_state,
+            effective_model_def=effective_model_def,
             hooks=hooks,
             pool=pool,
             ledger=ledger,

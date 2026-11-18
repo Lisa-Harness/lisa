@@ -41,16 +41,18 @@ from __future__ import annotations
 
 import copy
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
 from kernel.config import settings as _kernel_settings
 from kernel.context.request_budget import (
+    RequiredContextBudgetError,
     ResultProjector,
     estimate_request_tokens,
     fit_request_context,
 )
-from kernel.provider_contracts import CompletionRequest
+from kernel.provider_contracts import CompletionRequest, RequestTokenCount
 from kernel.turn_phases import _token_accounting
 
 
@@ -67,10 +69,9 @@ class IntraTurnCompactionState:
 
     enabled: bool = True
     soft_trigger_share: float = 0.5
-    hard_ceiling_share: float = 0.65
-    envelope_window_share: float = 0.4
+    hard_ceiling_share: float = 0.85
+    envelope_window_share: float = 0.8
     turn_token_envelope: int = 0
-    large_dispatch_min_chars: int = 2000
     preview_repeat_limit: int = 3
     history_epoch_min_tokens: int = 12_000
     cache_read_share: float = 0.1
@@ -87,7 +88,6 @@ class IntraTurnCompactionState:
             soft_trigger_share=float(_kernel_settings.intra_turn_soft_trigger_share),
             hard_ceiling_share=float(_kernel_settings.intra_turn_hard_ceiling_share),
             envelope_window_share=float(_kernel_settings.intra_turn_envelope_window_share),
-            large_dispatch_min_chars=int(_kernel_settings.intra_turn_large_dispatch_min_chars),
             preview_repeat_limit=int(_kernel_settings.intra_turn_spill_preview_repeat_limit),
             history_epoch_min_tokens=int(_kernel_settings.history_epoch_min_tokens),
             cache_read_share=float(_kernel_settings.intra_turn_cache_read_share),
@@ -515,31 +515,57 @@ def hard_ceiling_stop_reason(*, state: Any) -> str:
     return ""
 
 
-def tool_size_refusal(
+def tool_dispatch_refusal(
     *,
     state: Any,
-    tool_arguments: Any,
+    messages: list[dict[str, Any]],
+    model_def: Any,
+    tools: list[dict[str, Any]] | None,
+    max_tokens: int,
+    projector: ResultProjector | None = None,
+    counter: Callable[[CompletionRequest], RequestTokenCount] = estimate_request_tokens,
 ) -> str:
-    """Return a refusal message for a large dispatch under the hard ceiling.
+    """Return a refusal when the fitted proposed request crosses the ceiling.
 
-    Read-only tools are never gated (the model may still need to inspect
-    its own results); large-argument dispatches are denied with a
-    model-visible message directing a clean finish at the next boundary.
+    The current assistant message already contains the proposed tool-call
+    arguments, so fitting ``messages`` accounts for the exact dispatch payload
+    plus retained context using the same allocator as the next provider call.
+    Read-only tools bypass this helper at the caller.
     """
     cfg = state.intra_turn_compaction
     if not cfg.enabled:
         return ""
+    window = effective_window_tokens(state=state, model_def=model_def)
+    if window <= 0:
+        return ""
+    request = CompletionRequest(
+        messages=messages,
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=0.4,
+        tools=tools,
+    )
     try:
-        serialized = len(str(tool_arguments).encode("utf-8"))
-    except Exception:  # pylint: disable=broad-except
-        return ""
-    if serialized < cfg.large_dispatch_min_chars:
-        return ""
-    stop = hard_ceiling_stop_reason(state=state)
-    if not stop:
+        fitted = fit_request_context(request, projector, counter)
+    except RequiredContextBudgetError as exc:
+        return (
+            "Dispatch refused: the proposed request cannot fit with its "
+            f"required completion reserve ({exc}) under the hard-ceiling "
+            "policy. Finish the turn now with the results already in hand; "
+            "do not retry this dispatch."
+        )
+    budget = fitted.context_budget
+    if budget is None:
+        return (
+            "Dispatch refused: the proposed request has no fitted context "
+            "budget. Finish the turn now with the results already in hand."
+        )
+    hard_ceiling = int(window * cfg.hard_ceiling_share)
+    if budget.input_tokens < hard_ceiling:
         return ""
     return (
-        "Dispatch refused: the live context is at the hard ceiling "
-        f"({stop}). Finish the turn now with the results already in hand; "
-        "do not retry this or other large calls this turn."
+        "Dispatch refused: the fitted proposed request uses "
+        f"{budget.input_tokens} input tokens against a {hard_ceiling}-token "
+        "hard ceiling (context_hard_ceiling). Finish the turn now with the "
+        "results already in hand; do not retry this dispatch."
     )

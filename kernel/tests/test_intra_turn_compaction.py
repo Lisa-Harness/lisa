@@ -21,7 +21,7 @@ from kernel.turn_phases._compaction import (
     maybe_run_soft_epoch,
     should_spill_on_arrival,
     soft_trigger_tokens,
-    tool_size_refusal,
+    tool_dispatch_refusal,
 )
 from kernel.turn_phases._spill import maybe_spill_tool_result
 
@@ -242,7 +242,7 @@ def test_soft_epoch_rearms_after_falling_below_trigger() -> None:
 def test_hard_ceiling_reads_window_from_request_budget() -> None:
     state = _state()
     state.request_context_budget = _budget(1000)
-    state.intra_turn_compaction_estimator.observe_request_tokens(700)
+    state.intra_turn_compaction_estimator.observe_request_tokens(900)
     assert hard_ceiling_stop_reason(state=state) == "context_hard_ceiling"
     low = _state()
     low.request_context_budget = _budget(1000)
@@ -259,19 +259,65 @@ def test_hard_ceiling_inert_without_budget_or_flag() -> None:
     assert hard_ceiling_stop_reason(state=state) == ""
 
 
-def test_tool_size_refusal_gates_only_large_dispatches_under_ceiling() -> None:
+def test_tool_dispatch_refusal_uses_fitted_request_not_stale_estimate() -> None:
     state = _state()
     state.request_context_budget = _budget(1000)
-    state.intra_turn_compaction_estimator.observe_request_tokens(700)
-    small = "x" * 100
-    assert tool_size_refusal(state=state, tool_arguments={"path": small}) == ""
-    big = "x" * 3000
-    refusal = tool_size_refusal(state=state, tool_arguments={"content": big})
-    assert "hard ceiling" in refusal
-    below = _state()
-    below.request_context_budget = _budget(1000)
-    below.intra_turn_compaction_estimator.observe_request_tokens(100)
-    assert tool_size_refusal(state=below, tool_arguments={"content": big}) == ""
+    state.intra_turn_compaction_estimator.observe_request_tokens(900)
+    messages = [
+        {"role": "system", "content": "system"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "write",
+                        "arguments": json.dumps({"content": "x" * 2100}),
+                    },
+                }
+            ],
+        },
+    ]
+    assert (
+        tool_dispatch_refusal(
+            state=state,
+            messages=messages,
+            model_def=SimpleNamespace(context_window=1000),
+            tools=None,
+            max_tokens=100,
+        )
+        == ""
+    )
+
+
+def test_tool_dispatch_refusal_rejects_exact_request_over_ceiling() -> None:
+    state = _state()
+    state.request_context_budget = _budget(1000)
+    messages = [
+        {"role": "system", "content": "system"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "write",
+                        "arguments": json.dumps({"content": "x" * 3000}),
+                    },
+                }
+            ],
+        },
+    ]
+    refusal = tool_dispatch_refusal(
+        state=state,
+        messages=messages,
+        model_def=SimpleNamespace(context_window=1000),
+        tools=None,
+        max_tokens=100,
+    )
+    assert "Dispatch refused" in refusal
 
 
 # ── Spill-on-arrival ──────────────────────────────────────────────────
@@ -422,12 +468,13 @@ def test_turn_token_envelope_caps_large_model_window() -> None:
     # Turn 1359 shape: 1M window, 1M processed-token envelope, ~330K
     # resident prompt. The raw window put the soft trigger at 524K, so
     # the prompt never compacted while cache-cold resends drained the
-    # envelope. The envelope bounds the effective window to 400K.
+    # envelope. The envelope bounds the effective window to 800K.
     state = _state(IntraTurnCompactionState(turn_token_envelope=1_000_000))
     state.request_context_budget = _budget(1_048_576)
-    assert soft_trigger_tokens(state=state) == 200_000
-    state.intra_turn_compaction_estimator.observe_request_tokens(313_978)
+    assert soft_trigger_tokens(state=state) == 400_000
+    state.intra_turn_compaction_estimator.observe_request_tokens(500_000)
     assert should_spill_on_arrival(state=state) is True
+    state.intra_turn_compaction_estimator.observe_request_tokens(700_000)
     assert hard_ceiling_stop_reason(state=state) == "context_hard_ceiling"
 
 
@@ -587,7 +634,7 @@ def test_working_set_limits_results_without_shrinking_the_model_window() -> None
 def test_envelope_epoch_evicts_without_a_mode_working_set() -> None:
     # No working set + a 1M window used to pass no residency budget, so the
     # projector kept every byte. The envelope-derived trigger now sizes it.
-    state, hooks, messages = _epoch_fixture(window=1_000_000, estimate=300_000)
+    state, hooks, messages = _epoch_fixture(window=1_000_000, estimate=500_000)
     state.intra_turn_compaction.turn_token_envelope = 1_000_000
     messages[2]["content"] = "y" * 900_000
     assert (
@@ -604,7 +651,7 @@ def test_envelope_epoch_evicts_without_a_mode_working_set() -> None:
         )
         is True
     )
-    assert len(str(messages[2]["content"])) <= 100_000 * 3
+    assert len(str(messages[2]["content"])) <= 200_000 * 3
 
 
 def test_compaction_state_snapshots_history_epoch_setting() -> None:
@@ -637,18 +684,18 @@ def _envelope_state(
 
 
 def test_effective_window_at_turn_start_matches_static_cap() -> None:
-    # E=1M, W=1,048,576, P=0: effective 400K, soft 200K, hard 260K.
+    # E=1M, W=1,048,576, P=0: effective 800K, soft 400K, hard 680K.
     state = _envelope_state(envelope=1_000_000, window=1_048_576)
-    assert effective_window_tokens(state=state) == 400_000
-    assert soft_trigger_tokens(state=state) == 200_000
+    assert effective_window_tokens(state=state) == 800_000
+    assert soft_trigger_tokens(state=state) == 400_000
     assert hard_ceiling_stop_reason(state=state) == ""
 
 
 def test_effective_window_decays_with_processed_tokens() -> None:
-    # E=1M, P=800K: R=200K, effective 80K, soft 40K, hard 52K.
+    # E=1M, P=800K: R=200K, effective 160K, soft 80K, hard 136K.
     state = _envelope_state(envelope=1_000_000, window=1_048_576, total_tokens=800_000)
-    assert effective_window_tokens(state=state) == 80_000
-    assert soft_trigger_tokens(state=state) == 40_000
+    assert effective_window_tokens(state=state) == 160_000
+    assert soft_trigger_tokens(state=state) == 80_000
 
 
 def test_effective_window_high_cache_leaves_more_remaining() -> None:
@@ -660,7 +707,7 @@ def test_effective_window_high_cache_leaves_more_remaining() -> None:
         total_tokens=900_000,
         total_cached_tokens=800_000,
     )
-    assert effective_window_tokens(state=state) == 360_000
+    assert effective_window_tokens(state=state) == 720_000
     cold = _envelope_state(envelope=1_000_000, window=1_048_576, total_tokens=900_000)
     assert effective_window_tokens(state=cold) < effective_window_tokens(state=state)
 
@@ -718,14 +765,14 @@ def test_compaction_diagnostics_snapshot_is_numeric_only() -> None:
     d = compaction_diagnostics(state=state, mode_id="coding_execute")
     assert d.mode_id == "coding_execute"
     assert d.raw_window == 1_048_576
-    assert d.effective_window == 360_000
+    assert d.effective_window == 720_000
     assert d.envelope == 1_000_000
     assert d.processed == 100_000
     assert d.remaining == 900_000
     assert d.cached == 800_000
     assert d.prompt == 900_000
     assert d.cache_hit_rate == pytest.approx(0.8889, abs=1e-3)
-    assert d.share == 0.4
+    assert d.share == 0.8
 
 
 def test_compaction_diagnostics_log_is_numeric_only(caplog: pytest.LogCaptureFixture) -> None:

@@ -123,7 +123,7 @@ provider message array inside one turn — the dimension the request-fit
 allocator only sees at call time. An incremental estimator is evaluated
 before every model request, including the first request of a resumed turn.
 Thresholds apply to the effective window: the model window, capped at
-`intra_turn_envelope_window_share` (default `0.4`) of the turn's
+`intra_turn_envelope_window_share` (default `0.8`) of the turn's
 processed-token envelope (`max_total_tokens`, host default 1M) when one is
 set. The cap is **dynamic**: it uses the *unspent* portion of the envelope,
 with the same processed-token accounting as the turn budget rail
@@ -137,9 +137,10 @@ applied, and the cap never rises above the model window or the static share.
 Every cache-cold request — a resume, a mid-turn model switch, or an epoch
 rewrite — re-processes the whole prompt against that envelope, so a
 1M-token window must not license residency the turn cannot afford to
-resend. With the defaults at turn start, the soft trigger is 200K tokens
-and the hard ceiling 260K, leaving room for at least four cold resends
-per turn; as the turn spends its envelope both thresholds tighten.
+resend. With the defaults at turn start, the effective residency window is 800K,
+the soft trigger is 400K tokens, and the hard ceiling is 680K. As the
+turn spends its envelope both thresholds tighten, while cached prefixes
+continue to reduce processed-token spend.
 The trigger is the smaller of `intra_turn_soft_trigger_share` of the
 effective window and the mode's optional `working_set_tokens`. An epoch
 projects tool results newest-first to a residency budget (the working set,
@@ -154,9 +155,12 @@ large tool results spill to the thread store at delivery (preview +
 `r<sha256>` ref); below that threshold they stay inline and are compacted
 reactively only when request fitting requires it. Eviction is one-way and
 recovery is a dereference. At `intra_turn_hard_ceiling_share` the governor
-refuses new large dispatches and forces a clean finish at the next
-dispatch boundary; the first output truncation trips a one-way
-circuit-breaker for the rest of the turn. Independently, repeated
+fits the exact proposed provider request, including the current tool-call
+arguments and completion reserve, before allowing a non-read dispatch. A
+request at the ceiling is refused with a clean-finish instruction;
+read-only dispatches remain available so the model can inspect results it
+already holds. The first output truncation trips a one-way circuit-breaker
+for the rest of the turn. Independently, repeated
 dereference churn is bounded by `max_dereference_calls_per_turn` plus
 `max_dereference_repeats_per_turn`: after the cap is exceeded with
 repeated ref expansions, further dereference calls are refused and the
