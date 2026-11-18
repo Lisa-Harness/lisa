@@ -28,7 +28,7 @@ All notable changes to the Lisa Harness will be documented in this file.
   in ``docs/PACK_AUTHORING_GUIDE.md`` (the runner contract), the sandbox trust
   workbook, and ``docs/CODING_WORKFLOW.md``.
 
-- Safe-handoff validation follow-up (post-``9d76130``): the W3 design
+- Safe-handoff validation follow-up (post-``b7cdfce``): the W3 design
   document now carries its implementation status and honest evidence
   boundaries — the pre-implementation problem statement and sketch are
   marked historical, cache-effect language is scoped to oracle-declared

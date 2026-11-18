@@ -460,7 +460,8 @@ class Settings(BaseSettings):
     # the floor the cache-cost model decides; the floor only skips
     # rewrites too small to matter. Sized from the 2026-11 coding turns,
     # where stale reads/verify reports reached ~30K tokens and the
-    # 2K-floor interim shipped in dac9812a fired the epoch eight times in
+    # 2K-floor interim shipped with the first history-semantics commit
+    # fired the epoch eight times in
     # one turn, each rewrite re-purchasing the cached prefix at full input
     # price for a net loss. 0 disables the in-turn epoch; the turn-start
     # rehydrate still folds stale and turn-scoped results.
