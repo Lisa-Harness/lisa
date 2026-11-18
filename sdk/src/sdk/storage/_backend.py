@@ -25,6 +25,7 @@ import tempfile
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
+from typing import Any
 
 from sdk.content import is_safe_relative_path
 from sdk.layout import CONFIG_DIR, DATA_DIR, STATE_DIR
@@ -34,6 +35,8 @@ __all__ = ["PathRejected", "StorageBackend"]
 
 _FILES_SUBDIR = "files"
 _SHA256_HEX_LENGTH = 64
+_TRASH_SUBDIR = ".trash"
+_TRASH_DENY_GLOB = ".trash/**"
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +299,7 @@ class StorageBackend:
             match denies read/write/list/stat/delete/make_dir on that path.
             Empty by default (no denial). Glob syntax is portable
             (``*.db``, ``threads/**``, ``repl_history.txt``).
+            ``.trash/**`` is always appended — trash is policy-hidden.
     """
 
     def __init__(
@@ -307,7 +311,12 @@ class StorageBackend:
     ) -> None:
         self._data_dir: Path = data_dir
         self._readonly: bool = readonly
-        self._deny_globs: tuple[str, ...] = tuple(deny_globs)
+        # `.trash/**` is always appended: the trash subtree stays hidden
+        # from every routine operation (list/read/write/stat/edit/delete)
+        # and cannot be un-hidden by caller configuration. The sanctioned
+        # exceptions — purge, restore moves out of trash, and deletes on a
+        # trash subtree — bypass the glob in their own seams.
+        self._deny_globs: tuple[str, ...] = (*deny_globs, _TRASH_DENY_GLOB)
         if not readonly:
             (data_dir / DATA_DIR / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)
         # One-time migration: the legacy ``checkpoints/`` directory was
@@ -670,23 +679,64 @@ class StorageBackend:
     def delete_file(self, path: str) -> str:
         """Delete a file from the files sandbox.
 
-        Fails on directories. Respects ``readonly``.
+        Fails on directories. Does not follow symlinks: a leaf symlink
+        is unlinked itself, never its target (POSIX ``rm`` semantics).
+        Respects ``readonly``.
         """
         if self._readonly:
             return json.dumps({"error": "server is read-only"})
-        resolved, err = self.resolve_or_error(path)
-        if err is not None:
-            return err
-        assert resolved is not None
-        if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path}"})
-        if resolved.is_dir():
-            return json.dumps({"error": "delete_file targets a directory; use a file path"})
+        return json.dumps(self._delete_file_entry(path))
+
+    def _resolve_nofollow(self, path: str) -> tuple[Path, tuple[str, ...]] | dict[str, Any]:
+        """Resolve a path's parent while keeping the leaf name unresolved.
+
+        Validation mirrors :meth:`resolve_file_path` — traversal,
+        deny-glob, and sandbox containment — but only the parent is
+        resolved. The leaf comes back as a plain name inside that parent
+        so callers can ``lstat`` and unlink the entry itself: a leaf
+        symlink is deleted, never its target.
+        """
+        raw = path.strip()
+        if not raw or Path(raw).is_absolute():
+            return {"error": "path rejected: unsafe or escapes sandbox"}
+        normalized = raw.strip("/\\")
+        if "\0" in normalized or not is_safe_relative_path(normalized):
+            return {"error": "path rejected: unsafe or escapes sandbox"}
+        if self.denied_by_policy(normalized):
+            return {"error": "path denied by policy"}
+        parts = tuple(normalized.split("/"))
+        root = self.files_root()
+        parent = root.joinpath(*parts[:-1]).resolve()
         try:
-            resolved.unlink()
+            parent.relative_to(root.resolve())
+        except ValueError:
+            return {"error": "path rejected: unsafe or escapes sandbox"}
+        return parent / parts[-1], parts
+
+    def _delete_file_entry(self, path: str) -> dict[str, Any]:
+        """Delete one file without following a leaf symlink.
+
+        Returns the receipt dict — ``{"ok": True, "path": ...}`` or
+        ``{"error": ...}`` — so ``delete_file`` wraps it unchanged and
+        the batch delete can reuse it per item.
+        """
+        resolved = self._resolve_nofollow(path)
+        if not isinstance(resolved, tuple):
+            return resolved
+        target, _ = resolved
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            return {"error": f"file not found: {path}"}
         except OSError as exc:
-            return json.dumps({"error": f"delete failed: {exc}"})
-        return json.dumps({"ok": True, "path": path})
+            return {"error": f"delete failed: {exc}"}
+        if stat.S_ISDIR(info.st_mode):
+            return {"error": "delete_file targets a directory; use a file path"}
+        try:
+            target.unlink()
+        except OSError as exc:
+            return {"error": f"delete failed: {exc}"}
+        return {"ok": True, "path": path}
 
     def move_file(
         self,

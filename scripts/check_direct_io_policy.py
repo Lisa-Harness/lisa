@@ -235,14 +235,11 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "path.parent.mkdir(parents=True, exist_ok=True)",
     ),
     "sdk/src/sdk/storage/_backend.py": (
-        "(data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
-        "(data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "(data_dir / DATA_DIR / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "shutil.rmtree(legacy_checkpoints)",
         "resolved.parent.mkdir(parents=True, exist_ok=True)",
-        "resolved.unlink()",
+        "target.unlink()",
         "resolved.mkdir(parents=True, exist_ok=True)",
-        "checkpoints_root.mkdir(parents=True, exist_ok=True)",
         "path.parent.mkdir(parents=True, exist_ok=True)",
         # ``edit_file`` stages the new bytes beside the target, then swaps
         # them in atomically, so a failed edit never truncates the original.

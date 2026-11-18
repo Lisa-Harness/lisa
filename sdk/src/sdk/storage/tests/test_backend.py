@@ -142,6 +142,49 @@ def test_delete_file_missing(tmp_path: Path) -> None:
     assert "error" in data
 
 
+def test_delete_file_unlinks_symlink_not_target(tmp_path: Path) -> None:
+    """R7: delete_file never follows a leaf symlink.
+
+    The pre-normalization behavior resolved the link and deleted its
+    target; the nofollow normalization unlinks the link itself, so the
+    target survives (POSIX ``rm`` semantics).
+    """
+    b = _backend(tmp_path)
+    b.write_file("target.txt", "precious")
+    (b.files_root() / "link.txt").symlink_to(b.files_root() / "target.txt")
+
+    data = json.loads(b.delete_file("link.txt"))
+
+    assert data["ok"] is True
+    assert not (b.files_root() / "link.txt").is_symlink()
+    assert b.read_file("target.txt") == "precious\n"
+
+
+def test_delete_file_unlinks_symlink_to_directory(tmp_path: Path) -> None:
+    """A link to a directory is still a leaf entry: the link goes, not the dir."""
+    b = _backend(tmp_path)
+    (b.files_root() / "real").mkdir()
+    (b.files_root() / "real" / "keep.txt").write_text("x", encoding="utf-8")
+    (b.files_root() / "dirlink").symlink_to(b.files_root() / "real", target_is_directory=True)
+
+    data = json.loads(b.delete_file("dirlink"))
+
+    assert data["ok"] is True
+    assert not (b.files_root() / "dirlink").is_symlink()
+    assert (b.files_root() / "real" / "keep.txt").is_file()
+
+
+def test_delete_file_broken_symlink_is_removed(tmp_path: Path) -> None:
+    """A broken link is an entry too: it is unlinked, not reported missing."""
+    b = _backend(tmp_path)
+    (b.files_root() / "dangling.txt").symlink_to(b.files_root() / "never-existed.txt")
+
+    data = json.loads(b.delete_file("dangling.txt"))
+
+    assert data["ok"] is True
+    assert not (b.files_root() / "dangling.txt").is_symlink()
+
+
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
 def test_move_file_renames_and_creates_parents(tmp_path: Path) -> None:
     b = _backend(tmp_path)
@@ -869,6 +912,28 @@ def test_denied_by_policy_case_insensitive(tmp_path: Path) -> None:
     b = StorageBackend(tmp_path, deny_globs=("*.DB",))
     assert b.denied_by_policy("evil.db") is True
     assert b.denied_by_policy("evil.DB") is True
+
+
+def test_trash_hidden_from_list_files(tmp_path: Path) -> None:
+    """The default deny-glob hides the trash subtree from routine listing."""
+    b = _backend(tmp_path)
+    b.write_file("keep.txt", "ok")
+    trash_entry = b.files_root() / ".trash" / "2026-11-18T00-00-00.000000"
+    trash_entry.mkdir(parents=True)
+    (trash_entry / "buried.txt").write_text("x", encoding="utf-8")
+
+    files = json.loads(b.list_files(""))
+
+    assert files == ["keep.txt"]
+
+
+def test_trash_denied_for_routine_ops(tmp_path: Path) -> None:
+    """Read/stat/write/delete refuse trash paths even with no caller deny-globs."""
+    b = _backend(tmp_path)
+    assert json.loads(b.read_file(".trash/buried.txt"))["error"] == "path denied by policy"
+    assert json.loads(b.stat_file(".trash/buried.txt"))["error"] == "path denied by policy"
+    assert json.loads(b.write_file(".trash/new.txt", "x"))["error"] == "path denied by policy"
+    assert json.loads(b.delete_file(".trash/buried.txt"))["error"] == "path denied by policy"
 
 
 # ── Model manifests ──────────────────────────────────────────────────────────

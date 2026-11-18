@@ -5,6 +5,7 @@ mode_kind: chat
 routable: true
 priority: 10
 description: "General conversational mode."
+allowed_tool_ids: [move_file]
 ---
 # Default Chat
 

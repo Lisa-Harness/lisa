@@ -21,7 +21,9 @@ Tools (12 total):
 
 ``--readonly`` disables writes, deletes, moves, and manifest writes.
 ``--deny-glob`` (repeatable) + ``LISA_STORAGE_DENY_GLOBS`` env add
-glob patterns to the file-sandbox denylist.
+glob patterns to the file-sandbox denylist. ``.trash/**`` is always
+denied: the trash subtree is hidden from every routine operation
+(restore moves and purges are the sanctioned exceptions).
 
 Error contract: the SDK backend returns ``json.dumps({"error": ...})``
 strings on failure (its contract is locked by ``sdk/storage/tests``). This
@@ -330,8 +332,10 @@ async def delete_file(
 ) -> str:
     """Delete a file from the files sandbox.
 
-    Fails on directories (delete is files-only). Respects ``--readonly``.
-    Raises :class:`ToolError` on readonly, not-found, or delete failure.
+    Fails on directories (delete is files-only). Does not follow
+    symlinks: a leaf symlink is deleted itself, never its target.
+    Respects ``--readonly``. Raises :class:`ToolError` on readonly,
+    not-found, or delete failure.
     """
     return _raise_on_error(_resolve_deps(ctx).backend.delete_file(path))
 
@@ -380,7 +384,7 @@ async def stat_file(
     return _raise_on_error(_resolve_deps(ctx).backend.stat_file(path))
 
 
-@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=False))
 async def make_dir(
     path: str,
     ctx: Context[StorageDeps, Any] | None = None,

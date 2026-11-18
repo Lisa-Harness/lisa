@@ -332,6 +332,23 @@ async def test_delete_directory_fails(storage_setup: None) -> None:
         await mcp.call_tool("delete_file", {"path": "mydir"})
 
 
+@pytest.mark.asyncio
+async def test_delete_file_removes_symlink_not_target(tmp_path: Path, storage_setup: None) -> None:
+    """End-to-end R7: the link is deleted; the file it pointed to survives."""
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "target.txt", "content": "precious"})
+    files_root = tmp_path / "data" / "files"
+    (files_root / "link.txt").symlink_to(files_root / "target.txt")
+
+    result = await mcp.call_tool("delete_file", {"path": "link.txt"})
+    data = json.loads(_tool_text(result))
+    assert data["ok"] is True
+
+    read_result = await mcp.call_tool("read_file", {"path": "target.txt"})
+    assert _tool_text(read_result) == "precious\n"
+
+
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
 @pytest.mark.asyncio
 async def test_move_file_roundtrip(storage_setup: None) -> None:
@@ -384,6 +401,16 @@ async def test_make_dir(storage_setup: None) -> None:
     result = await mcp.call_tool("make_dir", {"path": "newdir/nested"})
     data = json.loads(_tool_text(result))
     assert data["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_make_dir_is_not_marked_destructive(storage_setup: None) -> None:
+    """mkdir creates; it never destroys — the annotation must say so."""
+    from mcp_server.storage.server import mcp
+
+    tools = {t.name: t for t in await mcp.list_tools()}
+    assert tools["write_file"].annotations.destructive_hint is True
+    assert not tools["make_dir"].annotations.destructive_hint
 
 
 # ── Readonly mode ───────────────────────────────────────────────────────────
