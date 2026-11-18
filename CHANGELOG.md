@@ -4,6 +4,515 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Provider-neutral sandbox **runner** (kernel/runtime): the sandbox capability
+  can now execute, not just declare a floor. ``SandboxImplementation`` gains an
+  optional ``runner`` (``kernel.sandbox_floor.SandboxRunner``) that a composing
+  pack dispatches through: ``build_request`` translates a neutral
+  ``SandboxRunRequest`` (argv, cwd, timeout, posture axes - structured, never a
+  shell string) into the implementation's own tool parameters, and
+  ``interpret_result`` must raise ``SandboxRunnerContractError`` unless the
+  result proves the requested containment. The runtime resolves the runner from
+  the selected owner in ``_merged_sandbox_floor`` (rejecting a declared runner
+  whose tool is absent from the live catalog), publishes it on
+  ``ctx.sandbox_runner`` for tools and ``OperationExecutionContext``, and
+  forwards it through child dispatches; ``HostServiceHandles.sandbox_runner``
+  carries it from host to context. Discovery now treats an entry point
+  returning ``None`` as a documented host-scoped opt-out (a Windows sandbox pack
+  on Linux) rather than a broken declaration, and validates any declared runner
+  against the protocol at load. ``packstest.ToolContextFactory`` gains the
+  matching ``sandbox_runner`` field. The coding pack's configured checks were
+  the motivating consumer: they hardcoded ``bwrap_run`` and could not run on
+  Windows, and now use whatever implementation the session selects. Documented
+  in ``docs/PACK_AUTHORING_GUIDE.md`` (the runner contract), the sandbox trust
+  workbook, and ``docs/CODING_WORKFLOW.md``.
+
+- Safe-handoff validation follow-up (post-``9d76130``): the W3 design
+  document now carries its implementation status and honest evidence
+  boundaries — the pre-implementation problem statement and sketch are
+  marked historical, cache-effect language is scoped to oracle-declared
+  request shape plus provider hypothesis, and a measurement protocol
+  section records the SPEC-mandated 14-day matched comparison steps
+  (none run yet). New tests pin the factored-base wire shape on the
+  Anthropic gateway (one explicit breakpoint on the last stable block
+  across an S1 swap, unchanged tools payload, blank-tail fallback to
+  the S0 anchor) and prove through the real ``run_turn`` handoff path
+  that the post-handoff tool surface equals the target mode's Phase-1
+  ``build_tool_surface`` output exactly — same schemas, same order, no
+  entry-mode union. No production behavior changes.
+
+- Factored stable-base prompt assembly (cache-efficiency Workstream 3
+  implementation): an optional ``ContextHooks.assemble_system_prompt_parts``
+  hook returns ``(invariant, mode)`` parts; the kernel seeds an S0/S1
+  factored stable base and a mid-turn handoff swaps only the mode tail,
+  so the invariant head keeps its bytes and its provider cache across
+  mode switches. The runtime composes harness + session + copilot
+  customizations as the invariant part and mode + stage as the mode
+  part; flattening stays byte-identical, and hosts that do not wire the
+  hook keep merged-base behavior. The e2e prefix trace now drives the
+  real handoff path through ``run_turn``: ``prefix_changed`` with first
+  divergence at the mode segment and the carried digest equal to the
+  invariant-head shape digest.
+
+- Safe-handoff prompt-layout design (cache-efficiency Workstream 3,
+  SPEC §6): ``docs/design-safe-handoff-prompt-layout.md`` inventories
+  every prompt component as invariant, mode-variable, ephemeral, or
+  provider-specific, states each gateway's cacheable prefix and
+  invalidation rules, and declares the expected cache effect of every
+  handoff type in ``CacheOracle`` break-reason vocabulary — including
+  the honest structural miss that a tool-authorization change at a
+  handoff invalidates the provider prefix ahead of the system region on
+  current providers, so factoring the stable base pays only on
+  same-authorization handoffs and same-mode turn boundaries. The
+  equivalence argument (byte-identical flattening for segment-blind
+  gateways, additive Anthropic block metadata, no tool union, preserved
+  priority/approval semantics) and the follow-up implementation sketch
+  are in the document. ``kernel/tests/test_handoff_prefix_trace.py``
+  adds the required pre-implementation e2e prefix trace: today's merged
+  base shows ``prefix_changed`` at entry 0 on handoff, while the
+  factored S0/S1 target keeps the invariant head digest intact. No
+  production behavior changes.
+
+- Cache-prefix oracle (cache-efficiency Workstream 4, SPEC §7 criterion
+  2): ``kernel/cache_oracle.py`` digests the canonical provider request
+  shape — typed system segments, transcript entries, ordered tool
+  schemas — on every model iteration and explains each transition with
+  an explicit break reason (no prior request, identical, tail append
+  only, prefix changed at the first divergent entry, cache expired,
+  provider/model changed, tool schemas changed) plus the longest
+  still-valid carried digest and per-observation TTL state. Fold and
+  compaction evidence comes from the real ``fold_history``/
+  ``render_stub`` machinery, and reports carry digests and boundary
+  positions, never prompt text. Tests assert every §7 oracle property:
+  appended tool results leave the previously cached digest intact,
+  folds move the digest only at the rewritten boundary, a fold and a
+  compaction at the same boundary cause no duplicate rewrite, mode
+  handoff preserves tool availability and schema order, and a
+  known-expired cache is distinguished from a changed prefix.
+
+- Baseline replay (cache-efficiency Workstream 4, SPEC §7 criterion 1):
+  ``runtime/cache_replay.py`` replays a whole ledger — or any window —
+  through the same capture, line-classification, and partition-fold
+  readers that back the live cache section, reproducing per-partition
+  aggregates with coverage, exclusion, and diagnostic counts beside
+  them. Read-only and checkpoint-free; a CLI entry
+  (``cache-replay <ledger> [--as-of ISO] [--window-days N] [--json]``)
+  reproduces the local 2026-11-12 baseline offline. Tests cover legacy
+  and fabricated-zero exclusion, malformed/invalid-UTF-8 rows counted
+  as incomplete, full-scan versus rolling-window behavior, and the
+  aggregate-only output contract.
+
+- Cache-efficiency Workstream 1 — honest cache measurement. ``/tokens``
+  now appends a focused cache section computed at report time only
+  (``runtime/cache_report.py``): per-partition cache request-hit proxy
+  and cached-token share over a rolling 14-day window, with denominators,
+  exclusion counts, and diagnostics shown beside every figure. The
+  ledger reader is incremental (``state/cache-measurement/`` checkpoint
+  with byte offset, size/inode, and a SHA-256 of the consumed prefix),
+  detects truncation/rotation/same-size rewrites, counts malformed
+  lines and bad timestamps as incomplete-window diagnostics, and
+  degrades to an explicit ``unavailable`` status line on lock, I/O, or
+  source-instability failure — never to a fabricated figure, and never
+  on the model-call hot path. The pure metric layer
+  (``kernel/cache_metrics.py``) trusts a zero cache counter only from
+  the nullable-counter era and only off the fabricated-zero
+  ``call_site=operation`` producer chain; legacy and fabricated zeros
+  are excluded as coverage, never averaged into the rate. Measured-layer
+  snapshots stay unwritten while route/prefix identity is unknown —
+  expected for the whole current ledger. Producers now stamp the v3
+  ``effective_model_data_source`` / ``effective_model_data_version``
+  fields (turn loop, forced-final, and off-turn; forwarded from the
+  model definition when present), and the off-turn producer no longer
+  coerces unsurfaced counters into zeros. The ``/tokens`` lifetime
+  cache-read share now divides cached reads by the normalized prompt
+  (which already includes them) instead of double-counting them into
+  the denominator. Tests: ``kernel/tests/test_cache_metrics.py``,
+  ``kernel/tests/test_cache_provenance.py``,
+  ``runtime/tests/test_cache_report.py``.
+- Durable routing telemetry: two new ``decisions.jsonl`` topics make the
+  hint/enforcer lifecycle queryable. ``routing.decision`` is published at
+  every hint computation (turn start and post-handoff recompute; a
+  withheld computation records ``hint_suppressed`` so "no hint needed"
+  is distinguishable from "hint withheld"): ``hint_kind``
+  (``planner_escalation`` / ``fork`` / ``handoff`` / ``none`` / ``other``),
+  ``hint_targets``, ``hint_injected``, the armed ``forced_kind`` /
+  ``forced_targets``, and the model trust fields that decide enforcer
+  jurisdiction. ``routing.forced`` is published per forced-action
+  synthesis (dispatch override and empty-completion): kind, targets,
+  ``non_compliant_dispatches``, ``trigger``, and the model trust
+  fields. Both ride the shared ``DecisionTelemetryHandler`` (topics
+  ``ROUTING_DECISION_TOPIC`` / ``ROUTING_FORCED_TOPIC``; the runtime
+  subscribes both) and were added after the 2026-11-13 turn 1258
+  postmortem — "how often is the hint shown vs followed vs overridden
+  vs enforced" is now a one-line query over ``decisions.jsonl``
+  instead of transcript archaeology. Tests:
+  ``kernel/tests/test_turn_decision.py``, ``kernel/tests/test_turn_runner_transitions.py``,
+  ``kernel/tests/test_decision_telemetry.py``, and
+  ``runtime/tests/test_routing_telemetry_wiring.py``.
+- Pack-declared history semantics. A tool's ``.tool.yml`` ``history:`` block,
+  or its module's ``history_keys(params, result)`` hook, claims supersession
+  ``key``s, ``invalidates`` prefixes, and a ``task``/``turn`` ``scope`` for
+  each successful result. The kernel (``kernel.history``) records these
+  claims per call and stays the only thing that rewrites model history.
+  - **Folding:** a stale result, or a turn-scoped one once its turn ends,
+    folds to a one-line stub that always carries the result's ``r<sha256>``
+    ref, so no evidence is lost.
+  - **When it folds:** mid-turn, a supersession epoch folds only when the
+    cache rewrite pays for itself: the model's manifest ``cache_read_price``
+    and ``cache_write_price`` (falling back to ``intra_turn_cache_read_share``
+    and ``intra_turn_cache_write_share``) price the rewrite against the stale
+    bytes the requests still ahead of the amortization window stop
+    re-sending. The window is half the requests made so far (the observed
+    gap between consecutive folds), capped by the iteration limit, because a
+    fold that is followed by another epoch never collects the read savings
+    the whole-remaining-turn figure promised. The epoch folds from
+    the boundary with the largest saving, so older stale results behind a
+    large live span wait. ``history_epoch_min_tokens`` (default 12000) is a
+    floor below which no fold is considered. Separately, the mode's new
+    ``working_set_tokens`` frontmatter caps the compaction epoch's trigger.
+    At turn start, replay folds the lossless thread through the same ledger.
+  - **Pack hooks:** ``history_snapshot(ctx, keys)`` keeps a pack's live state
+    visible after its records fold. Replay places the snapshots in a
+    ``## Pack State`` section of the new user message, never on an earlier
+    message, so a changed snapshot cannot break the cached prefix. An ``anchor`` routes a stub's
+    dereference to the tool's ``resolve_history_anchor`` and falls back to
+    the stored ref. Only anchors the kernel issued, in a ledger record or in
+    a stub in the live messages, are served this way.
+  - **Approvals:** a host-approved tool call persists its history claims on
+    its thread entry, so an operator-approved edit still stales the reads
+    it changed.
+  - **Templates:** history templates see the call's ``Parameters`` defaults.
+    One ``[]`` anywhere in a field path fans the template out
+    (``{result.sync.upstream_paths[]}``).
+  - **Errors:** an error result claims no keys, but its ``invalidates``
+    templates that read only ``{result.*}`` still resolve against its
+    ``output_json``. A side effect that landed before the failure, such as
+    an auto-rebase before a rejected edit, still stales what it changed.
+    Hooks and parameter templates never fire for errors.
+  - **e2e:** the new ``history_folded`` oracle asserts that records are refd
+    and that snapshots are present.
+  - **Tests:** ``kernel/tests/test_history.py``,
+    ``kernel/tests/test_history_turn.py``,
+    ``kernel/tests/test_intra_turn_compaction.py``,
+    ``runtime/tests/test_approval_commands.py``,
+    ``sdk/tests/test_tool_history.py``,
+    ``runtime/tests/test_thread_replay.py``, and
+    ``e2etest/tests/test_harness.py``.
+
+- **The Evidence Envelope** (kernel/runtime/sdk,
+  `docs/SPEC/EVIDENCE-ENVELOPE.md`): a versioned, typed format shared by
+  every decision-ledger row, joined at call level, and stamped with what
+  produced it. ``kernel.evidence`` becomes the single owner of every
+  topic's declared payload with write-time allowlists, so a publisher bug
+  cannot put prompt, response, or tool-argument content on disk; the
+  generated JSON Schemas are committed under ``docs/SPEC/schemas/`` with
+  a write-contract warning. ``kernel.call_identity`` mints
+  ``call_id``/``dispatch_id`` join keys (identity is
+  ``(turn_id, iteration, attempt)``), so a failed dispatch, an approval,
+  an off-turn model request, and a token-usage row can each name the
+  exact call they belong to; extra calls (stream fallback, truncation
+  rescues) are recorded instead of leaving their spend invisible. Every
+  execution gets a ``turn_id`` with ``parent_turn_id``/``parent_dispatch_id``
+  lineage reaching all publishers and the durable approval ledger — one
+  id per execution across pause/resume — and ``build_turn_hooks`` takes
+  a required typed ``TurnContextIdentity`` so an unpopulated identity is
+  a type error instead of a blank on disk. Host-wide **run manifests**
+  record pack versions, content hashes, resolved policy/routing, and the
+  model manifest hash (deterministic, no paths or credentials; refreshed
+  on reload), and each thread entry stamps its ``run_ref`` and
+  ``mode_digest``. The **forensic reader** joins on the envelope keys:
+  per-call cost grouping, a delegation tree, and run-manifest change
+  surfaces, with legacy rows joined best-effort and newer rows counted
+  and excluded, never silently dropped.
+  Tests: ``kernel/tests/test_evidence_envelope.py``,
+  ``kernel/tests/test_call_identity.py``,
+  ``kernel/tests/test_turn_continuation.py``,
+  ``runtime/tests/test_run_manifest.py``,
+  ``sdk/tests/test_forensics_reader_joins.py``.
+- **Model-call response archive** (kernel,
+  `docs/SPEC/MODEL-CALL-ARCHIVE.md`): the response for every model call
+  is now recorded beside the archived request — in-turn and off-turn,
+  including streaming fallbacks, truncation continuations, and expiry or
+  error outcomes — through a ``response_recorder`` seam wired by the
+  host. ``turn_input.calls[]`` carries ``response_ref`` beside the
+  request ref, and a missing response ref reads as an explicit archive
+  gap, never a fabricated payload. Streaming facts ride the snapshot;
+  THREAD_STORE.md documents the full entry shape.
+  Tests: ``kernel/tests/test_model_call_archive.py``.
+- **Exact-mode turn replay** (runtime/e2etest/kernel,
+  `docs/SPEC/TURN-REPLAY.md`): a recorded turn can be re-executed
+  through production code with the model answered from the archive. The
+  scripted gateway core moves from ``e2etest`` into
+  ``runtime.testing.scripted`` (one implementation, hard cutover), the
+  new archive-backed gateway answers each call from the recorded
+  request/response snapshots in recorded order, and
+  ``runtime.replay`` provides the ``answer_tool_call`` execution
+  override seam, the recording loader, and the ``replay_turn`` engine —
+  which replays into a scratch data root, never executes tools, and
+  produces a structured ``ReplayReport`` (divergences, tool-result
+  gaps, response mismatch, effect-receipt mismatch, gateway script
+  errors). An e2e **determinism gate** records a real scenario through
+  the e2e CLI and replays it, pinning a faithful replay,
+  source-data-root isolation, and three negative controls; auxiliary
+  (off-turn) calls route on the new explicit ``call_kind`` metadata
+  through a second archive queue loaded from the decisions ledger in
+  numeric segment order.
+  Tests: ``runtime/tests/test_archive_gateway.py``,
+  ``runtime/tests/test_replay_engine.py``,
+  ``e2etest/tests/test_replay_gate.py``.
+- **Validation-recovery hook** (kernel): a tool's ``.tool.yml`` can
+  declare ``validation_recovery.content_path`` — an authored Markdown
+  resource whose keyed sections render actionable recovery text when
+  pre-execution parameter validation rejects a call, appended to the
+  bounded pydantic summary through the implementation module's pure
+  ``validation_recovery_key(exc)`` classifier. A rendering failure logs
+  and keeps the original message — the hook never masks a rejection.
+  e2e gains ``ledger_contains``/``ledger_error`` oracles so rejection
+  evidence is assertable. Tests:
+  ``kernel/tests/test_validation_recovery.py``,
+  ``sdk/tests/test_tool_validation_recovery.py``.
+- **Provider-candidate catalog with settings composition** (runtime,
+  `docs/SPEC/implemented/MODEL-DATA-LAYERS.md`): the hand-maintained
+  ``known_models.yaml`` registry is deleted outright (hard cutover).
+  ``/models discover`` writes a versioned candidate catalog wrapping
+  every provider-published value as ``{source, observed_at, value}``
+  (atomic write; a failed probe run never replaces the last good
+  catalog); ``compose.py`` composes the operator manifest with the
+  catalog — operator > measured > provider > host default — with
+  tighten-only IO ceilings, explicit unknowns (never a fabricated
+  default), and a migration report that names every unestablished,
+  catalog-only, measured-not-pinned, or pinned-not-measured field.
+  ``/models apply`` renders the report after promotion; ``/models
+  reload`` composes a cold manifest in memory, leaving the operator file
+  byte-stable.
+
+### Changed
+
+- **Test-selection escalation narrowed to what a test run can observe**
+  (`scripts/check_tests.py`). The commit gate's selector used to run the full
+  suite for `typings/` and `.github/` changes; neither can reach pytest
+  collection (stubs feed the types check, CI/agent config is owned by the docs
+  gate and its own contract tests), so both now skip like documentation paths
+  instead of widening every stub or workflow edit to a ~100-second run. The
+  base-ref ladder for the committed delta gained `origin/dev`/`dev` ahead of
+  `main`: owned coding worktrees branch from `dev`, so without it the delta
+  silently included everything dev had advanced past main and escalated on
+  paths the branch never touched. A `--max-tier package` cap gives mid-task
+  feedback runs their owning package's testpaths without the kernel-consumer
+  closure (the uncapped default remains the commit gate's scope). Reason
+  strings unify on one "inert change" wording for any skipped-path-only
+  change. Documented in `docs/TESTING.md`; asserted by
+  `packstest/tests/test_check_tests.py`.
+- **Typed turn identity**, so a seam that forgets to populate it fails loudly
+  instead of recording a blank (Evidence Envelope §4B). ``build_turn_hooks``
+  now takes a required ``runtime.turn_context_identity.TurnContextIdentity`` —
+  a frozen, slotted dataclass whose six identity fields are mandatory — and
+  reads every identity value off it. The free-form ``context`` dict survives
+  only as the mutable out-parameter (``memory_ids``, ``completion``) and is
+  never a source of identity; ``.get(...) or ""`` coercion is gone from all 27
+  call sites. A caller with genuinely no turn context says so explicitly by
+  passing ``NO_TURN_IDENTITY`` rather than omitting an argument. Child lineage
+  is built in one place, ``kernel.turn_lineage.child_identity``, shared by both
+  spawn sites (``turn_phases/_fork.py``, ``turn_runner/_defaults.py``), so a
+  child cannot be constructed with one parent key and not the other. Two
+  contract tests assert on rows as *persisted* rather than as modelled, since
+  the write allowlist's job is to drop unknown keys and therefore hides both a
+  declared-but-unpopulated field and a populated-but-dropped one: the decisions
+  ledger sweeps every topic in ``kernel.evidence.TOPIC_SPECS`` through the real
+  handler for every publisher of each topic, requiring a non-empty ``turn_id``
+  and explicit lineage; the thread store asserts a top-level entry carries its
+  ``turn_id`` and no parent keys, and a child entry carries both. Tests:
+  ``kernel/tests/test_evidence_envelope.py``,
+  ``kernel/tests/test_call_identity.py``,
+  ``runtime/tests/test_thread_entry_lineage.py``.
+
+- **One ``turn_id`` per execution** (Evidence Envelope §4 identity
+  correctness). A turn that pauses for approval, and the resumed turn the
+  host runs from it, keep the id the execution started with instead of
+  minting a second one; ``TurnContinuation.turn_id`` now defaults to
+  ``mint_turn_id()``, retiring the bare ``uuid4().hex`` dialect so a turn id
+  reads as ``turn-``-prefixed like ``call_id`` and ``dispatch_id``. That id
+  and its ``parent_turn_id`` / ``parent_dispatch_id`` lineage now reach all
+  four telemetry publishers (tool, operation, routing and iteration
+  decisions) and the durable approval ledger: the write-time allowlist
+  carries the two lineage keys and every topic's ``schema_version`` moved to
+  2, so each persisted row states absent lineage as an explicit null. The
+  competing ``provenance.kernel_turn_id`` key is gone — the execution id is a
+  top-level thread-entry field, and the approval-resume path reads it from
+  the paused entry. Fork and delegate children each mint their own id and
+  record both parent keys. Tests: ``kernel/tests/test_turn_continuation.py``,
+  ``kernel/tests/test_call_identity.py``,
+  ``kernel/tests/test_evidence_envelope.py``,
+  ``runtime/tests/test_approval_ledger.py``,
+  ``runtime/tests/test_thread_rehydrate.py``.
+
+- Reserve **replay** for re-executing recorded work. Rebuilding model history
+  is now **rehydration**: the runtime module is `runtime.thread._rehydrate`,
+  history folds use `fold_history` / `HistoryFolds`, and context controls use
+  `RehydrateControls`. Rename `context.history.replay_max_bytes` to
+  `context.history.rehydrate_max_bytes`, `HostConfig.context_budget_replay_max_bytes`
+  to `HostConfig.context_budget_rehydrate_max_bytes`, and
+  `LISA_CONTEXT_BUDGET_REPLAY_MAX_BYTES` to
+  `LISA_CONTEXT_BUDGET_REHYDRATE_MAX_BYTES`. This is a hard cutover with no
+  aliases; update session front matter and environment configuration.
+  Diagnostic history fields now use the `rehydrate_*` prefix. History
+  assembly, folding, redaction, and budgets otherwise behave identically.
+  `/last` remains a reprint, not a replay. Stored thread and ledger formats
+  are unchanged.
+- Mid-turn handoffs from terminal chain steps are allowed again: the
+  terminal-step directive no longer fires when ``remaining_steps`` is
+  empty after a handoff, so a mode blocked for budget/state reasons can
+  hand off for a fresh budget instead of narrating the handoff in prose
+  (the 2026-11-12 turn-1247 unexecuted promise). The prohibition still
+  applies when the work is actually done.
+
+### Fixed
+
+- Compaction spill-on-arrival no longer abbreviates every large tool result
+  unconditionally. The turn runner now gates delivery-time spill by the same
+  soft-trigger pressure threshold used for intra-turn compaction, so large
+  reads stay inline while pressure is low and only spill once the live-array
+  estimate crosses the trigger.
+- Intra-turn compaction thresholds now apply to an effective window capped
+  at `intra_turn_envelope_window_share` (default `0.4`) of the turn's
+  processed-token envelope, so 1M-token models compact at 200K instead of
+  524K. The soft epoch now runs before each request (covering resumed
+  turns) and always projects to a residency budget; without a mode working
+  set it previously kept every byte. A resumed paused turn carrying ~410K
+  tokens of prior thread reads had exhausted the 1M envelope in three
+  cache-cold calls.
+- Compaction epochs are sized against the real model window: the soft
+  epoch used the mode's working-set figure as a synthetic context window,
+  so epochs were rejected once required input passed the fake ceiling
+  (13 logged failures) and every successful epoch evicted 0 bytes (19
+  logged no-ops). The working set becomes a trigger plus a tool-result
+  byte cap; the allocator keeps checking the real model window and
+  completion reserve; ref-backed inventory projections are accepted by
+  content change instead of message count; provider messages and the
+  raw array can no longer disagree after an epoch; and a failed epoch
+  retries on 10% growth instead of latching for the rest of the turn.
+- The turn loop now enforces a per-turn dereference guard for read-tool
+  `ref` expansions. Once dereference calls exceed
+  `max_dereference_calls_per_turn` and repeats exceed
+  `max_dereference_repeats_per_turn`, the kernel refuses further dereference
+  calls and forces a clean synthesis pass instead of burning iterations in
+  ref-expansion loops.
+- Nested delegates share the parent turn's wall-clock anchor, so a
+  nested delegate receives the remaining parent wall budget instead of
+  re-arming the full operation timeout — the delegate chain can no
+  longer multiply its wall-time allowance with depth.
+- Budget scopes refresh after a mid-turn handoff: a new
+  ``ExecutionHooks.resolve_capability_limit_for_mode`` seam resolves the
+  target mode's scoped capability ceiling, so the active mode's scoped
+  ``max_capability_calls`` changes with the handoff instead of
+  constraining downstream modes with the entry mode's cap (a ``thinker``
+  cap no longer consumes the ``coding_design`` cap after a successful
+  handoff). Session-level limits remain the outer whole-turn envelope.
+- A productive action mode with a verified write receipt is exempt from
+  the same-stage no-transition cap and remains bounded by the
+  whole-turn call/token/wall budgets; read-only and pre-write loops
+  remain subject to the cap.
+- The sandbox runner reaches tools dispatched by the model: the
+  ``_to_tool_context`` copy dropped ``sandbox_runner``, so a contained
+  tool failed closed with "no sandbox implementation is active" only
+  when the model itself dispatched it (the 2026-11-15 turn-1313
+  incident). Tests:
+  ``kernel/tests/test_turn_runner_tool_dispatch.py``.
+- ``lisa-e2e`` resolves the packs venv interpreter per-platform
+  (``bin/python`` when present, else ``Scripts\python.exe``), so Windows
+  e2e runs no longer fail at venv setup, and the powershell pack is
+  registered in ``e2etest/packs.yml`` for its Windows sandbox scenario.
+
+- A parent turn whose fork fan-out returned mixed results surfaces a
+  per-child outcome digest instead of the canned "Fork child turns failed
+  … Their results are unverified." line. The loop still breaks on a
+  non-ok child (terminal dispatch failure), but the digest renders every
+  child's status, its verified write receipts as a "verify and continue"
+  resume hint, the cause, and its partial output — so a partially
+  successful fan-out (the 2026-11-13 turn 1258 incident: 3/5 children
+  succeeded, one of them with write receipts in an owned worktree) can
+  be resumed instead of being mislabeled as total failure. Tests:
+  ``kernel/tests/test_turn_runner.py``.
+- ``classify_child_turn`` no longer accepts a reasoning-only completion
+  as a completed sub-turn. A child that consumed its completion budget
+  on reasoning (``content_source="reasoning_tail"``, the labeled
+  thinking-tail quote) is ``interrupted`` with a re-dispatch hint; its
+  tail quote still rides ``output_text`` for the parent's digest. A
+  verified write receipt beats the gate — a child that landed its write
+  but never surfaced an answer is still ``complete``. Previously the
+  >150-char caveat counted toward dense-content acceptance and two
+  thinking-overflow fork children reported ``ok`` (turn 1258). Tests:
+  ``kernel/tests/test_child_turn_approval.py``,
+  ``kernel/tests/test_turn_runner.py``.
+- Fork child budgets can no longer be starved below one honest attempt's
+  envelope by a large fan-out. ``_fork_child_budget`` raises a divided
+  share that falls below the new ``fork_child_min_tool_calls`` (75) /
+  ``fork_child_min_total_tokens`` (300K) kernel floors; unlimited (0)
+  parent fields stay unlimited. The 150/5 = 30-call share of a 5-way
+  fan-out terminated a test-slice worker with "turn budget exhausted"
+  after 31 read calls (turn 1258). Tests:
+  ``kernel/tests/test_turn_runner_transitions.py``.
+
+- Structured-output operations recover truncated model payloads before
+  validation: ``parse_structured_payload`` runs one normalization pass —
+  ``salvage_truncated_envelope`` (rebuild a closed JSON envelope from a
+  token-truncated one, element-wise over a masked copy that keeps every
+  complete object) then ``unwrap_nested_envelope`` — so the distiller's
+  ``{"facts": [...]}`` shape survives a mid-array token cutoff instead of
+  crash-looping ``synthesize_and_store_learning`` (34 failures Nov 8-11).
+  Recovered payloads still have to satisfy the operation's schema, and
+  string-only or never-opened payloads pass through unchanged. Tests:
+
+  ``kernel/tests/test_operations_structured_output.py``.
+
+- History anchors are served only when the kernel issued them: the
+  live-message half of the issuance check now parses the candidate as a
+  whole-message stub (via ``kernel.history.stub_anchor``) instead of
+  substring-matching the stub prose, so a stub quoted inside another
+  tool's output no longer authorizes running the owning pack's
+  ``resolve_history_anchor`` with anchor-derived parameters. The fold
+  paths release folded bytes through the new
+  ``LiveArrayEstimator.release`` instead of writing the estimator's
+  private fields. Tests: ``kernel/tests/test_history_anchor_issuance.py``.
+
+- packstest no longer evicts unrelated ``lisa_packs`` modules when it makes
+  a pack checkout importable. It now drops only the ``lisa_packs.<slug>``
+  modules the checkout itself provides that resolved elsewhere, and it puts
+  the checkout's namespace portion first. Previously, loading a second
+  checkout evicted the whole namespace, so later tests patched fresh module
+  objects while calling the old functions, which failed depending on test
+  order. Tests: ``packstest/tests/test_self.py``.
+- MCP server ERROR+ evidence no longer forks a per-server ledger:
+  ``configure_logging``'s default composed ``errors.jsonl`` as a sibling
+  of every rotating log, so servers logging under the canonical
+  ``<data_dir>/logs/mcp/`` subtree each wrote an orphan ledger the
+  forensics reader never reads (2026-11-11 split-brain diagnosis — an
+  active ``logs/errors.jsonl`` beside empty ``logs/mcp/errors.jsonl``).
+  Canonical-layout logs now route to the host ledger
+  ``<data_dir>/logs/errors.jsonl``; explicit ``errors_path`` callers and
+  non-canonical layouts keep their existing destinations. Tests:
+  ``sdk/tests/test_errors_ledger.py``.
+- Model discovery now uses the limits and capabilities providers publish:
+  - **Output ceilings:** Anthropic ``max_tokens``, Google
+    ``outputTokenLimit`` and OpenRouter
+    ``top_provider.max_completion_tokens`` become the manifest's
+    ``max_completion_tokens``. Values the loader would reject (below 1024
+    or above ``context_window``) are omitted.
+  - **Anthropic:** ``max_input_tokens`` sets ``context_window``;
+    ``capabilities`` sets vision, structured output and reasoning;
+    ``line`` sets the tier; ``lifecycle: retired`` models are dropped.
+    ``thinking_model`` follows ``capabilities.thinking.types.enabled``,
+    because the gateway sends manual thinking.
+  - **Google:** the ``thinking`` flag sets ``thinking_model``.
+  - **Precedence:** ``known_models.yaml`` no longer overrides a field the
+    provider published for that model; it only fills gaps.
+- The Anthropic gateway sent ``budget_tokens == max_tokens``, which the
+  Messages API rejects. It now reserves a quarter of ``max_tokens`` for the
+  reply, and omits ``thinking`` when the budget would fall below 1024.
+  Tests: ``runtime/src/runtime/model_discovery/tests/test_discovery_metadata.py``,
+  ``sdk/tests/test_anthropic_gateway.py``.
+
 ## [0.5.4] - 2026-11-11
 
 ### Added
