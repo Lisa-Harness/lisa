@@ -519,6 +519,19 @@ def test_delete_directory_recursive_hard_delete(tmp_path: Path) -> None:
     assert not (b.files_root() / "tree").exists()
 
 
+def test_delete_directory_hard_delete_requires_dirfd_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: False)
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True, trash=False))
+
+    assert "requires dir_fd support" in receipt["error"]
+    assert b.read_file("tree/a.txt") == "a\n"
+
+
 def test_delete_directory_recursive_does_not_follow_symlinks(tmp_path: Path) -> None:
     """R7: a symlink inside the tree is removed itself, not its target."""
     b = _backend(tmp_path)
@@ -782,6 +795,20 @@ def test_purge_trash_limit_must_be_positive(tmp_path: Path):
     b = _backend(tmp_path)
     receipt = json.loads(b.purge_trash(limit=0))
     assert "positive" in receipt["error"]
+
+
+def test_purge_trash_requires_dirfd_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: False)
+
+    receipt = json.loads(b.purge_trash())
+
+    assert receipt["purged"] == 0
+    assert receipt["has_more"] is True
+    assert "requires dir_fd support" in receipt["error"]
 
 
 # ── Batch operations ─────────────────────────────────────────────────────────

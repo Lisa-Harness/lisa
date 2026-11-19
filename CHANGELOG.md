@@ -14,9 +14,10 @@ All notable changes to the Lisa Harness will be documented in this file.
   as removed files (matching hard-delete semantics), purge `has_more` is
   computed after attempted deletions, missing intermediate delete-directory
   components now report `directory not found` (instead of an unsafe-path
-  classification), and `move_directory` was removed from ambient `storage`
-  default tools (it remains available via `storage.*` but is no longer
-  auto-allowed in every mode). Regression tests were added in
+  classification), recursive hard-delete now fails closed on runtimes without
+  `dir_fd` unlink/rmdir support, and `move_directory` was removed from ambient
+  `storage` default tools (it remains available via `storage.*` but is no
+  longer auto-allowed in every mode). Regression tests were added in
   `sdk/src/sdk/storage/tests/test_backend.py` and
   `mcp_server/tests/test_storage_server.py`.
 
