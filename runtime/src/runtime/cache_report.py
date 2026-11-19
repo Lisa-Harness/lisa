@@ -206,9 +206,7 @@ def _key_label(key: PartitionKey) -> str:
     return f"{provider}/{model}/policy={policy}"
 
 
-def _row_contribution(
-    record: dict[str, Any], row: Any, event_time: datetime
-) -> dict[str, Any] | None:
+def _row_contribution(record: dict[str, Any], row: Any, event_time: datetime) -> dict[str, Any]:
     """Reduce an eligible row to its minimal window contribution."""
     key = partition_key_of(record)
     return {
@@ -334,11 +332,11 @@ def _ingest_lines(
     latest: datetime | None = None
     cursor, complete_end = _resume_offset(data, start_offset, diagnostics)
     offset = cursor
-    seen_keys = {
-        item.get("k")
-        for item in state.contributions
-        if isinstance(item.get("k"), str) and item.get("k")
-    }
+    seen_keys: set[str] = set()
+    for item in state.contributions:
+        key = item.get("k")
+        if isinstance(key, str) and key:
+            seen_keys.add(key)
     while cursor < complete_end:
         end = data.find(b"\n", cursor)
         if end == -1:  # pragma: no cover - complete_end bounds this loop

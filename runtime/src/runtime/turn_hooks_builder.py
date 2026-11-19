@@ -502,8 +502,12 @@ def _discover_pack_slice_providers(
             if _resolve_factory_arity(entry.factory, default_params=2) == 0:
                 # Factory-factory: call with 0 args to get the real
                 # ``(turn_hooks, session_plan) -> provider | None`` factory.
-                factory = entry.factory()  # type: ignore[call-arg]
-                provider = factory(view, session_plan)  # type: ignore[misc]
+                factory_factory = cast(Callable[[], Any], entry.factory)
+                factory_candidate = factory_factory()
+                if not callable(factory_candidate):
+                    raise TypeError("Slice provider entry point must return a callable factory")
+                factory_callable = cast(Callable[..., Any], factory_candidate)
+                provider = factory_callable(view, session_plan)
             else:
                 # Direct factory: call with 2 args. The provider reads
                 # last_context_snapshot off the view and invokes
