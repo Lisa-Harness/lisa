@@ -32,6 +32,29 @@ def test_setup_framework_releases_lease_when_build_fails(
     close_shared_sessions()
 
 
+def test_setup_framework_preserves_build_error_when_lease_release_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runtime import mcp_pool
+
+    class FakeLease:
+        def release(self) -> None:
+            raise RuntimeError("lease close failed")
+
+    def _boom(runtime: object, *, discovery: object = None) -> None:
+        runtime.resources.shared_session_lease = FakeLease()  # type: ignore[attr-defined]
+        raise RuntimeError("build failed")
+
+    monkeypatch.setattr(mcp_pool, "_setup_framework_impl", _boom)
+    runtime = build_test_runtime(tmp_path)
+
+    with pytest.raises(RuntimeError, match="build failed"):
+        mcp_pool.setup_framework(runtime)
+
+    assert runtime.resources.shared_session_lease is None
+
+
 def test_setup_framework_releases_a_partly_acquired_lease_on_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

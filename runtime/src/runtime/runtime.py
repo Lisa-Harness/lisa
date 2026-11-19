@@ -717,6 +717,9 @@ class RuntimeResources:
         """Preserve a completed deferred start task's startup exception."""
         if self._mcp_start_task is None:
             return
+        if self._mcp_start_task.cancelled():
+            self._mcp_start_exc = asyncio.CancelledError("deferred MCP startup cancelled")
+            return
         try:
             start_error = self._mcp_start_task.exception()
         except BaseException:

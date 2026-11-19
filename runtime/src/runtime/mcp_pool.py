@@ -553,7 +553,13 @@ def setup_framework(
         except BaseException:
             lease = runtime.resources.shared_session_lease
             if lease is not None:
-                lease.release()
+                try:
+                    lease.release()
+                except BaseException:
+                    logging.getLogger(__name__).debug(
+                        "setup_framework: shared-session lease release failed",
+                        exc_info=True,
+                    )
                 runtime.resources.shared_session_lease = None
             raise
         logger.info(
@@ -604,8 +610,15 @@ def _release_previous_build(
                 exc_info=True,
             )
     reset_workflow_catalog()
-    previous_lease.release()
-    runtime.resources.shared_session_lease = None
+    try:
+        previous_lease.release()
+    except BaseException:
+        logging.getLogger(__name__).debug(
+            "release_previous_build: shared-session lease release failed",
+            exc_info=True,
+        )
+    finally:
+        runtime.resources.shared_session_lease = None
 
 
 def _resolve_kernel_transports(

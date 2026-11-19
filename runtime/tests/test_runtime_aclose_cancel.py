@@ -204,3 +204,17 @@ def test_aclose_suppresses_shared_session_lease_release_error(tmp_path: Path) ->
         assert runtime.resources._shared_session_lease is None
 
     asyncio.run(_scenario())
+
+
+def test_aclose_caches_cancelled_deferred_start(tmp_path: Path) -> None:
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        start_task = asyncio.create_task(asyncio.sleep(10))
+        start_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await start_task
+        runtime.resources._mcp_start_task = start_task
+        await runtime.aclose()
+        assert isinstance(runtime.resources._mcp_start_exc, asyncio.CancelledError)
+
+    asyncio.run(_scenario())
