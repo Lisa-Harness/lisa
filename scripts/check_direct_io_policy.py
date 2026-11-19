@@ -250,7 +250,9 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         # deletes never follow symlinks (R7), and the trash substrate is
         # rename-first into a timestamped session (spec §5).
         "os.rmdir(target)",
+        "os.rmdir(name, dir_fd=parent_fd)",
         "os.unlink(entry.path)",
+        "os.unlink(entry.name, dir_fd=directory_fd)",
         "os.rename(target, destination)",
         "shutil.rmtree(session_dir)",
         "trash_root.mkdir(parents=True, exist_ok=True)",

@@ -42,6 +42,12 @@ _TRASH_TIMESTAMP_FORMAT = "%Y-%m-%dT%H-%M-%S.%f"
 #: Batches are queues of independent atomic ops, capped at 100 items
 #: per call (R9 — the provisional 64 was raised).
 _BATCH_CAP = 100
+_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
 
 logger = logging.getLogger(__name__)
 
@@ -918,9 +924,7 @@ class StorageBackend:
         try:
             return target.lstat(), None
         except FileNotFoundError:
-            if is_leaf:
-                return None, json.dumps({"error": f"directory not found: {original_path}"})
-            return None, json.dumps({"error": "path rejected: unsafe or escapes sandbox"})
+            return None, json.dumps({"error": f"directory not found: {original_path}"})
         except OSError as exc:
             return None, json.dumps({"error": _os_error_text("delete", exc)})
 
@@ -1008,67 +1012,114 @@ class StorageBackend:
         """
         removed_files = 0
         removed_dirs = 0
-        root_error = self._validate_delete_root(target)
-        if root_error is not None:
-            return removed_files, removed_dirs, root_error
+        parts, error = self._relative_parts_for_delete(target)
+        if error is not None:
+            return removed_files, removed_dirs, error
+        assert parts is not None
 
-        entries, scan_error = self._scandir_entries(target)
-        if scan_error is not None:
-            return removed_files, removed_dirs, scan_error
-        assert entries is not None
-
-        for entry in entries:
-            entry_files, entry_dirs, entry_error = self._hard_delete_entry(entry)
-            removed_files += entry_files
-            removed_dirs += entry_dirs
-            if entry_error is not None:
-                return removed_files, removed_dirs, entry_error
-
-        remove_error = self._rmdir_error(target)
-        if remove_error is not None:
-            return removed_files, removed_dirs, remove_error
-        return removed_files, removed_dirs + 1, None
-
-    def _validate_delete_root(self, target: Path) -> str | None:
-        """Validate that the recursive-delete root is a real directory."""
+        root_fd = self._open_root_directory_fd()
+        if isinstance(root_fd, str):
+            return removed_files, removed_dirs, root_fd
+        parent_fd = -1
         try:
-            target_info = target.lstat()
-        except FileNotFoundError:
-            return "delete failed: No such file or directory"
+            parent_fd = self._open_parent_directory_fd(root_fd, parts[:-1])
+            if isinstance(parent_fd, str):
+                return removed_files, removed_dirs, parent_fd
+            removed_files, removed_dirs, error = self._hard_delete_directory_entry(
+                parent_fd,
+                parts[-1],
+            )
+            return removed_files, removed_dirs, error
+        finally:
+            if isinstance(parent_fd, int) and parent_fd >= 0:
+                os.close(parent_fd)
+            os.close(root_fd)
+
+    def _relative_parts_for_delete(self, target: Path) -> tuple[tuple[str, ...] | None, str | None]:
+        """Return target parts relative to files root for descriptor-relative delete."""
+        try:
+            relative = target.relative_to(self.files_root())
+        except ValueError:
+            return None, "delete failed: path is outside the files sandbox"
+        parts = relative.parts
+        if not parts:
+            return None, "delete failed: cannot remove the files sandbox root"
+        return parts, None
+
+    def _open_root_directory_fd(self) -> int | str:
+        """Open the files sandbox root for descriptor-relative deletion."""
+        try:
+            return os.open(self.files_root(), _DIRECTORY_OPEN_FLAGS)
         except OSError as exc:
             return _os_error_text("delete", exc)
-        if stat.S_ISLNK(target_info.st_mode):
-            return "delete failed: path is symlink"
-        if not stat.S_ISDIR(target_info.st_mode):
-            return "delete failed: path is not a directory"
-        return None
 
-    def _scandir_entries(self, target: Path) -> tuple[list[os.DirEntry[str]] | None, str | None]:
-        """Return ``(entries, error)`` for scandir on ``target``."""
+    def _open_parent_directory_fd(self, root_fd: int, parts: tuple[str, ...]) -> int | str:
+        """Open parent directories without following symlinks."""
+        current_fd = os.dup(root_fd)
         try:
-            return list(os.scandir(target)), None
+            for component in parts:
+                try:
+                    next_fd = os.open(component, _DIRECTORY_OPEN_FLAGS, dir_fd=current_fd)
+                except FileNotFoundError:
+                    return "delete failed: No such file or directory"
+                except OSError as exc:
+                    return _os_error_text("delete", exc)
+                os.close(current_fd)
+                current_fd = next_fd
+            return current_fd
+        except BaseException:
+            os.close(current_fd)
+            raise
+
+    def _hard_delete_directory_entry(
+        self, parent_fd: int, name: str
+    ) -> tuple[int, int, str | None]:
+        """Delete one directory entry under ``parent_fd`` recursively."""
+        try:
+            directory_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return 0, 0, "delete failed: No such file or directory"
         except OSError as exc:
-            return None, _os_error_text("delete", exc)
-
-    def _hard_delete_entry(self, entry: os.DirEntry[str]) -> tuple[int, int, str | None]:
-        """Delete one recursive-entry and return ``(files, dirs, error)``."""
+            return 0, 0, _os_error_text("delete", exc)
         try:
-            if entry.is_symlink() or entry.is_file(follow_symlinks=False):
-                os.unlink(entry.path)
-                return 1, 0, None
+            entries = list(os.scandir(directory_fd))
+        except OSError as exc:
+            os.close(directory_fd)
+            return 0, 0, _os_error_text("delete", exc)
+
+        removed_files = 0
+        removed_dirs = 0
+        try:
+            for entry in entries:
+                entry_files, entry_dirs, entry_error = self._hard_delete_child_entry(
+                    directory_fd, entry
+                )
+                removed_files += entry_files
+                removed_dirs += entry_dirs
+                if entry_error is not None:
+                    return removed_files, removed_dirs, entry_error
+        finally:
+            os.close(directory_fd)
+
+        try:
+            os.rmdir(name, dir_fd=parent_fd)
+        except OSError as exc:
+            return removed_files, removed_dirs, _os_error_text("delete", exc)
+        return removed_files, removed_dirs + 1, None
+
+    def _hard_delete_child_entry(
+        self, directory_fd: int, entry: os.DirEntry[str]
+    ) -> tuple[int, int, str | None]:
+        """Delete one child entry from an open directory fd."""
+        try:
             if entry.is_dir(follow_symlinks=False):
-                return self._hard_delete_tree(Path(entry.path))
+                return self._hard_delete_directory_entry(directory_fd, entry.name)
+            os.unlink(entry.name, dir_fd=directory_fd)
+            return 1, 0, None
+        except FileNotFoundError:
             return 0, 0, None
         except OSError as exc:
             return 0, 0, _os_error_text("delete", exc)
-
-    def _rmdir_error(self, target: Path) -> str | None:
-        """Return the rmdir error for ``target`` or ``None`` on success."""
-        try:
-            os.rmdir(target)
-        except OSError as exc:
-            return _os_error_text("delete", exc)
-        return None
 
     def move_file(
         self,

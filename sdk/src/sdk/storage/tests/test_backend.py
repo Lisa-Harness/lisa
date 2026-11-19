@@ -9,6 +9,7 @@ without spawning the MCP server.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import stat
@@ -629,6 +630,22 @@ def test_delete_directory_refuses_file_target(tmp_path: Path) -> None:
 def test_delete_directory_readonly_fails_closed(tmp_path: Path) -> None:
     readonly = _readonly_backend(tmp_path)
     assert json.loads(readonly.delete_directory("a"))["error"] == "server is read-only"
+
+
+def test_delete_directory_os_errors_are_path_sanitized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("empty")
+
+    def _raise_permission_error(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted", "/tmp/secret/path")
+
+    monkeypatch.setattr("sdk.storage._backend.os.rmdir", _raise_permission_error)
+    receipt = json.loads(b.delete_directory("empty"))
+
+    assert receipt["error"] == "delete failed: Operation not permitted"
+    assert "/tmp/secret/path" not in receipt["error"]
 
 
 # ── purge_trash ─────────────────────────────────────────────────────────────
