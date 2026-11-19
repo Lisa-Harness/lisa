@@ -102,11 +102,20 @@ def test_missing_content_fails_sdk_load(tmp_path: Path) -> None:
         _tool_catalog(tmp_path)
 
 
-def test_absolute_content_path_fails_sdk_load(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "content_path",
+    [
+        "/etc/passwd",
+        "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "\\\\server\\share\\recovery.md",
+        "\\rooted\\recovery.md",
+    ],
+)
+def test_absolute_content_path_fails_sdk_load(tmp_path: Path, content_path: str) -> None:
     _write_tool(
         tmp_path,
         "escape",
-        "validation_recovery:\n  content_path: /etc/passwd",
+        f"validation_recovery:\n  content_path: {content_path}",
     )
     with pytest.raises(ValueError, match="pack-relative"):
         _tool_catalog(tmp_path)

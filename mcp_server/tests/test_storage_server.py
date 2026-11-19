@@ -7,6 +7,7 @@ and model manifest read/write — using MCPServer's in-process ``call_tool`` API
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,11 @@ def _tool_text(result: Any) -> str:
         if blocks:
             return str(blocks[0])
     return str(result)
+
+
+def _dirfd_recursive_delete_supported() -> bool:
+    required = (os.open, os.unlink, os.rmdir)
+    return all(function in getattr(os, "supports_dir_fd", ()) for function in required)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -483,6 +489,10 @@ async def test_delete_directory_trash_end_to_end(storage_setup: None) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
 async def test_delete_directory_hard_delete_end_to_end(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
@@ -558,6 +568,7 @@ async def test_purge_trash_is_marked_destructive_and_non_idempotent(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
 async def test_purge_trash_end_to_end(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
@@ -638,6 +649,7 @@ async def test_make_dirs_end_to_end(storage_setup: None) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
 async def test_move_files_end_to_end(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 

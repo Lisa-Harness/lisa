@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -3321,6 +3320,10 @@ async def test_fork_spent_parent_wall_returns_honest_timeouts() -> None:
     try:
         hooks = _build_minimal_hooks(complete)
         hooks.models.resolve_model = resolve_model
+        monkeypatch.setattr(
+            "kernel.turn_runner._defaults.remaining_wall_ms",
+            lambda **_kwargs: 0,
+        )
         # Parent wall budget spent: 600s budget, 600s elapsed, 30s grace.
         budget = TurnBudget(
             max_tool_calls=0,
@@ -3339,7 +3342,7 @@ async def test_fork_spent_parent_wall_returns_honest_timeouts() -> None:
             exec_op=_stub_execute_operation,
             turn_budget=budget,
             execution_policy=None,
-            turn_start_mono=time.monotonic() - 600.0,
+            turn_start_mono=1000.0,
         )
     finally:
         monkeypatch.undo()
@@ -3402,6 +3405,10 @@ async def test_fork_child_wall_tightened_by_parent_remaining() -> None:
         monkeypatch.setattr(_engine_pkg, "run_turn", _capture_run_turn)
         hooks = _build_minimal_hooks(complete)
         hooks.models.resolve_model = resolve_model
+        monkeypatch.setattr(
+            "kernel.turn_runner._defaults.remaining_wall_ms",
+            lambda **_kwargs: 90_000,
+        )
         # Parent: 600s budget, 510s elapsed → 90s remaining; 300s spec
         # timeout with 30s grace → armed deadline 270s. The parent's
         # remaining (90s − 30s grace = 60s) must win.
@@ -3423,7 +3430,7 @@ async def test_fork_child_wall_tightened_by_parent_remaining() -> None:
             exec_op=_stub_execute_operation,
             turn_budget=budget,
             execution_policy=None,
-            turn_start_mono=time.monotonic() - 510.0,
+            turn_start_mono=1090.0,
         )
     finally:
         monkeypatch.undo()

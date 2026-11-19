@@ -12,6 +12,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -33,6 +34,11 @@ def _readonly_backend(tmp_path: Path) -> StorageBackend:
     # Pre-create the files dir so reads don't error on a missing root.
     (tmp_path / "data" / "files").mkdir(parents=True, exist_ok=True)
     return StorageBackend(tmp_path, readonly=True)
+
+
+def _dirfd_recursive_delete_supported() -> bool:
+    required = (os.open, os.unlink, os.rmdir)
+    return all(function in getattr(os, "supports_dir_fd", ()) for function in required)
 
 
 # ── Construction ──────────────────────────────────────────────────────────────
@@ -507,6 +513,10 @@ def test_delete_directory_expected_empty_allows_empty(tmp_path: Path) -> None:
     assert not (b.files_root() / "empty").exists()
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
 def test_delete_directory_recursive_hard_delete(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("tree/a.txt", "a")
@@ -533,6 +543,10 @@ def test_delete_directory_hard_delete_requires_dirfd_support(
     assert b.read_file("tree/a.txt") == "a\n"
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
 def test_delete_directory_recursive_does_not_follow_symlinks(tmp_path: Path) -> None:
     """R7: a symlink inside the tree is removed itself, not its target."""
     b = _backend(tmp_path)
@@ -610,6 +624,10 @@ def test_delete_directory_trash_restore_roundtrip(tmp_path: Path) -> None:
     assert b.read_file("tree/a.txt") == "a\n"
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
 def test_delete_directory_trash_purge_is_hard_delete(tmp_path: Path) -> None:
     """Deleting a ``.trash/...`` subtree is the sanctioned purge: hard delete."""
     b = _backend(tmp_path)
@@ -673,6 +691,10 @@ def _make_trash_session(b: StorageBackend, stamp: str, content: str = "x") -> No
     (session / "tree" / "a.txt").write_text(content, encoding="utf-8")
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
 def test_purge_trash_removes_oldest_sessions_in_bounded_slices(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     _make_trash_session(b, "2026-01-01T00-00-00.000001")
@@ -696,6 +718,10 @@ def test_purge_trash_removes_oldest_sessions_in_bounded_slices(tmp_path: Path) -
     assert not (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
 def test_purge_trash_older_than_honors_cutoff(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     _make_trash_session(b, "2026-01-01T00-00-00.000001")
@@ -710,6 +736,10 @@ def test_purge_trash_older_than_honors_cutoff(tmp_path: Path) -> None:
     assert (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
 def test_purge_trash_older_than_naive_treated_as_utc(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     _make_trash_session(b, "2026-01-01T00-00-00.000001")
@@ -737,6 +767,10 @@ def test_purge_trash_empty_trash_is_ok(tmp_path: Path) -> None:
     assert receipt["has_more"] is False
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
 def test_purge_trash_leaves_foreign_entries_alone(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     _make_trash_session(b, "2026-01-01T00-00-00.000001")
@@ -1079,6 +1113,7 @@ def test_move_files_malformed_pair_is_per_pair_error(tmp_path: Path) -> None:
     assert "requires non-empty source" in receipt["results"][1]["error"]
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
 def test_move_files_non_dict_pair_is_per_pair_error(tmp_path: Path) -> None:
     """A non-dict element must not kill the batch with an AttributeError."""
     b = _backend(tmp_path)
@@ -1731,6 +1766,10 @@ def test_delete_directory_refuses_bare_trash_root(tmp_path: Path) -> None:
     assert (b.files_root() / ".trash" / "2026-01-02T00-00-00.000001").exists()
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
 def test_delete_directory_still_allows_trash_session_subtrees(tmp_path: Path) -> None:
     """The root refusal must not block the sanctioned session purge path."""
     b = _backend(tmp_path)

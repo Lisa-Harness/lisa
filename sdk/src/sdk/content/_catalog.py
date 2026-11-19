@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import yaml
@@ -1605,7 +1605,16 @@ def _validation_recovery_block(content_root: Path, raw: Any) -> dict[str, Any] |
     content_path = raw["content_path"]
     if not content_path:
         raise ValueError("validation_recovery.content_path must not be empty")
-    if Path(content_path).is_absolute() or ".." in Path(content_path).parts:
+    posix_path = PurePosixPath(content_path)
+    windows_path = PureWindowsPath(content_path)
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or windows_path.root
+        or ".." in posix_path.parts
+        or ".." in windows_path.parts
+    ):
         raise ValueError(f"validation_recovery.content_path must be pack-relative: {content_path}")
     if not (content_root / content_path).is_file():
         raise ValueError(f"validation_recovery content not found in pack: {content_path}")
