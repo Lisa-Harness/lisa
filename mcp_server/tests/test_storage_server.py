@@ -372,7 +372,7 @@ async def test_delete_file_removes_symlink_not_target(tmp_path: Path, storage_se
     assert _tool_text(read_result) == "precious\n"
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.skipif(not _secure_move_supported(), reason="secure move capability unavailable")
 @pytest.mark.asyncio
 async def test_move_file_roundtrip(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
@@ -397,7 +397,7 @@ async def test_move_file_roundtrip(storage_setup: None) -> None:
     assert _tool_text(read_result) == "draft\n"
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.skipif(not _secure_move_supported(), reason="secure move capability unavailable")
 @pytest.mark.asyncio
 async def test_move_file_refuses_overwrite_as_tool_error(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
@@ -417,7 +417,7 @@ async def test_move_file_refuses_overwrite_as_tool_error(storage_setup: None) ->
     assert _tool_text(destination) == "old\n"
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.skipif(not _secure_move_supported(), reason="secure move capability unavailable")
 @pytest.mark.asyncio
 async def test_move_directory_roundtrip(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
@@ -438,7 +438,7 @@ async def test_move_directory_roundtrip(storage_setup: None) -> None:
     assert _tool_text(read_result) == "a\n"
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.skipif(not _secure_move_supported(), reason="secure move capability unavailable")
 @pytest.mark.asyncio
 async def test_move_directory_refuses_overwrite_as_tool_error(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
