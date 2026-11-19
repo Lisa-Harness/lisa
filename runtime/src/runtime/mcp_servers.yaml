@@ -127,9 +127,11 @@ servers:
     # Ambient MCP-native tools: published as ``storage.read_file`` etc.
     # and merged into every mode's allowed_tool_ids by the SDK catalog
     # loader (same ambient contract as ``recall_memory`` /
-    # ``fetch_page``), so modes can read persisted artifacts without
-    # re-listing the tool. List bare published names here only; modes opt
-    # out via ``excluded_tool_ids`` or ``accept_default_capabilities: false``.
+    # ``fetch_page``), so modes can use the standard storage tools without
+    # re-listing them. Destructive directory/delete/trash/batch operations
+    # remain capability-only until a mode opts into their ``storage.*`` ids.
+    # List bare published names here only; modes opt out via
+    # ``excluded_tool_ids`` or ``accept_default_capabilities: false``.
     default_available_tools:
       - read_file
       - read_file_range

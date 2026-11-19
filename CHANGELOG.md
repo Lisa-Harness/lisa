@@ -6,20 +6,23 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
-- Storage safety hardening for new directory/trash APIs (SDK + MCP + runtime):
-  `delete_directory` now rejects symlinked path components (nofollow traversal),
-  `purge_trash` ignores timestamp-named symlink entries, and error receipts from
-  delete/trash/purge paths now return path-sanitized OS error text instead of
-  embedding absolute host paths. Trash receipts now count symlinked directories
-  as removed files (matching hard-delete semantics), purge `has_more` is
-  computed after attempted deletions, missing intermediate delete-directory
-  components now report `directory not found` (instead of an unsafe-path
-  classification), recursive hard-delete now fails closed on runtimes without
-  `dir_fd` unlink/rmdir support, and `move_directory` was removed from ambient
-  `storage` default tools (it remains available via `storage.*` but is no
-  longer auto-allowed in every mode). Regression tests were added in
-  `sdk/src/sdk/storage/tests/test_backend.py` and
-  `mcp_server/tests/test_storage_server.py`.
+- **Storage directory operations, reversible trash, and bounded batches**
+  (SDK + MCP + runtime). `lisa-storage` now exposes atomic, no-overwrite
+  `storage.move_directory`; `storage.delete_directory` removes empty
+  directories by default and supports explicit recursive trash-first deletion
+  (or `trash=false` hard deletion); and `storage.purge_trash` drains
+  timestamped `.trash/<utc-timestamp>/...` sessions in bounded slices with
+  optional RFC 3339 `older_than` filtering. Trash is policy-hidden from
+  routine operations and restored by moving the exact `trashed_to` receipt path
+  back to its original destination. The same release adds non-transactional,
+  explicit-list `delete_files`, `make_dirs`, and `move_files` batches with a
+  100-item cap, ordered execution, and per-item receipts. Directory moves and
+  recursive hard deletes fail closed when their required platform primitives
+  are unavailable; there is no copy fallback or automatic trash purge. The
+  canonical contract is in `docs/STORAGE.md`, with the shipped design digest in
+  `docs/SPEC/STORAGE-DIRECTORY-OPS.md`. Tests cover move, trash,
+  restore, purge, symlink, failure, and batch behavior in the SDK and MCP
+  server suites.
 
 - **Dynamic turn-token-envelope compaction cap** (kernel): the intra-turn
   compaction governor's effective window now tightens as the turn spends
@@ -322,6 +325,15 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Changed
 
+- **`storage.move_file` is the single model-facing file-move tool.** The
+  duplicate core-pack `move_file` wrapper and its default-mode allowlist entry
+  are removed. Lisa Storage owns the schema and execution directly, matching
+  the other file-storage operations; `runtime/mcp_servers.yaml` publishes the
+  operation ambiently as `storage.move_file`. Modes that explicitly allowed
+  the old bare `move_file` id must replace it with `storage.move_file`.
+- `delete_file` now uses nofollow semantics: a leaf symlink is unlinked
+  itself and its target survives. Directory path components are also refused
+  by delete and move operations rather than resolved through symlinks.
 - **Test-selection escalation narrowed to what a test run can observe**
   (`scripts/check_tests.py`). The commit gate's selector used to run the full
   suite for `typings/` and `.github/` changes; neither can reach pytest
@@ -402,6 +414,15 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- Storage directory/trash hardening now rejects symlinked path components
+  during directory delete, ignores timestamp-shaped symlink sessions during
+  purge, sanitizes delete/trash/purge OS error text so absolute host paths
+  do not leak, counts symlinked directories as removed files, and reports
+  whether purgeable sessions remain after attempted deletions. Missing
+  intermediate directory components report `directory not found`; recursive
+  hard delete fails closed without `dir_fd` unlink/rmdir support. Directory
+  and purge operations were kept off the ambient storage tool list and
+  remain available only through explicit `storage.*` opt-in.
 - Fork fan-outs now honor the parent turn's remaining wall budget, closing
   the delegate/fork parity gap from the 2026-11-18 review: the fork path
   previously armed only the operation timeout, so fork children could

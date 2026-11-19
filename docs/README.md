@@ -16,8 +16,10 @@ The [project README](../README.md) explains the project and its current status.
   and exact-action decisions.
 - [Troubleshooting](TROUBLESHOOTING.md): setup failures, catalog collisions,
   blocked work, approvals, and useful diagnostics.
-- [Storage and data handling](STORAGE.md): persistence, backups, privacy,
-  and the direct-I/O policy.
+- [Storage and data handling](STORAGE.md): persistence, sandbox operations,
+  reversible directory trash, backups, privacy, and the direct-I/O policy.
+- [Storage directory operations](SPEC/STORAGE-DIRECTORY-OPS.md):
+  the implemented directory, trash, purge, and batch contract.
 - [Logging](LOGGING.md): observability configuration and contributor standards.
 - [Turn forensics](FORENSICS.md): how to read the evidence for a past turn —
   the four sources, the `turn_index` join, the three failure shapes, and what
