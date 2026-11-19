@@ -38,6 +38,7 @@ _FILES_SUBDIR = "files"
 _SHA256_HEX_LENGTH = 64
 _TRASH_SUBDIR = ".trash"
 _TRASH_DENY_GLOB = ".trash/**"
+_TRASH_ROOT_DENY_GLOB = ".trash"
 _TRASH_TIMESTAMP_FORMAT = "%Y-%m-%dT%H-%M-%S.%f"
 #: Batches are queues of independent atomic ops, capped at 100 items
 #: per call (R9 — the provisional 64 was raised).
@@ -315,7 +316,8 @@ class StorageBackend:
             match denies read/write/list/stat/delete/make_dir on that path.
             Empty by default (no denial). Glob syntax is portable
             (``*.db``, ``threads/**``, ``repl_history.txt``).
-            ``.trash/**`` is always appended — trash is policy-hidden.
+            ``.trash/**`` and the bare ``.trash`` root are always
+            appended — trash is policy-hidden.
     """
 
     def __init__(
@@ -327,12 +329,17 @@ class StorageBackend:
     ) -> None:
         self._data_dir: Path = data_dir
         self._readonly: bool = readonly
-        # `.trash/**` is always appended: the trash subtree stays hidden
-        # from every routine operation (list/read/write/stat/edit/delete)
-        # and cannot be un-hidden by caller configuration. The sanctioned
-        # exceptions — purge, restore moves out of trash, and deletes on a
-        # trash subtree — bypass the glob in their own seams.
-        self._deny_globs: tuple[str, ...] = (*deny_globs, _TRASH_DENY_GLOB)
+        # `.trash/**` and the bare `.trash` root are always appended: the
+        # trash subtree stays hidden from every routine operation
+        # (list/read/write/stat/edit/delete) and cannot be un-hidden by
+        # caller configuration. The sanctioned exceptions — purge, restore
+        # moves out of trash, and deletes on a trash session subtree —
+        # bypass the glob in their own seams.
+        self._deny_globs: tuple[str, ...] = (
+            *deny_globs,
+            _TRASH_DENY_GLOB,
+            _TRASH_ROOT_DENY_GLOB,
+        )
         if not readonly:
             (data_dir / DATA_DIR / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)
         # One-time migration: the legacy ``checkpoints/`` directory was
@@ -828,7 +835,9 @@ class StorageBackend:
 
         Deleting a ``.trash/...`` subtree is the sanctioned purge path
         and is never denied — but it is always a hard delete: trashing
-        trash would nest forever.
+        trash would nest forever. The bare ``.trash`` root itself is
+        refused: one unbounded call must not drain every session at
+        once — ``purge_trash`` is the bounded drain.
         """
         if self._readonly:
             return json.dumps({"error": "server is read-only"})
@@ -836,6 +845,16 @@ class StorageBackend:
         if isinstance(prepared, str):
             return prepared
         target, parts = prepared
+
+        if parts == (_TRASH_SUBDIR,):
+            return json.dumps(
+                {
+                    "error": (
+                        "refusing to delete the entire .trash root in one call; "
+                        "purge_trash drains it in bounded slices"
+                    )
+                }
+            )
 
         if self._is_trash_path("/".join(parts)):
             trash = False
@@ -901,7 +920,6 @@ class StorageBackend:
             info, error = self._lstat_directory_component(
                 target,
                 original_path=original_path,
-                is_leaf=index == len(parts) - 1,
             )
             if error is not None:
                 return error
@@ -918,7 +936,7 @@ class StorageBackend:
         return current, parts
 
     def _lstat_directory_component(
-        self, target: Path, *, original_path: str, is_leaf: bool
+        self, target: Path, *, original_path: str
     ) -> tuple[os.stat_result | None, str | None]:
         """Return ``(lstat, error_json)`` for a directory-delete component."""
         try:
@@ -1029,9 +1047,10 @@ class StorageBackend:
             return removed_files, removed_dirs, root_fd
         parent_fd = -1
         try:
-            parent_fd = self._open_parent_directory_fd(root_fd, parts[:-1])
-            if isinstance(parent_fd, str):
-                return removed_files, removed_dirs, parent_fd
+            opened_parent = self._open_parent_directory_fd(root_fd, parts[:-1])
+            if isinstance(opened_parent, str):
+                return removed_files, removed_dirs, opened_parent
+            parent_fd = opened_parent
             removed_files, removed_dirs, error = self._hard_delete_directory_entry(
                 parent_fd,
                 parts[-1],

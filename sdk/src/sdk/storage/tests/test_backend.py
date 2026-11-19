@@ -1586,6 +1586,45 @@ def test_trash_denied_for_routine_ops(tmp_path: Path) -> None:
     assert json.loads(b.delete_file(".trash/buried.txt"))["error"] == "path denied by policy"
 
 
+def test_trash_root_hidden_from_list_files(tmp_path: Path) -> None:
+    """The deny-glob covers the bare ``.trash`` root, not only its contents."""
+    b = _backend(tmp_path)
+    session = b.files_root() / ".trash" / "2026-11-18T00-00-00.000000"
+    session.mkdir(parents=True)
+    (session / "buried.txt").write_text("x", encoding="utf-8")
+
+    assert json.loads(b.list_files(".trash"))["error"] == "prefix denied by policy"
+    assert b.denied_by_policy(".trash") is True
+
+
+def test_delete_directory_refuses_bare_trash_root(tmp_path: Path) -> None:
+    """One unbounded call must not drain the whole trash root.
+
+    ``purge_trash`` (bounded slices, oldest-first) is the sanctioned
+    drain; deleting ``.trash/<ts>/...`` session subtrees stays allowed.
+    """
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-02T00-00-00.000001")
+
+    receipt = json.loads(b.delete_directory(".trash", recursive=True))
+
+    assert "refusing to delete the entire .trash root" in receipt["error"]
+    assert (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+    assert (b.files_root() / ".trash" / "2026-01-02T00-00-00.000001").exists()
+
+
+def test_delete_directory_still_allows_trash_session_subtrees(tmp_path: Path) -> None:
+    """The root refusal must not block the sanctioned session purge path."""
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+
+    receipt = json.loads(b.delete_directory(".trash/2026-01-01T00-00-00.000001", recursive=True))
+
+    assert receipt["ok"] is True
+    assert not (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+
+
 # ── Model manifests ──────────────────────────────────────────────────────────
 
 
