@@ -137,3 +137,35 @@ def test_mcp_pool_aclose_suppresses_child_stack_base_exception_group() -> None:
         assert pool._child_stacks == {}
 
     asyncio.run(_scenario())
+
+
+def test_cancelled_aclose_keeps_deferred_state_until_task_finishes(tmp_path: Path) -> None:
+    class BlockingPool:
+        def __init__(self) -> None:
+            self.closing = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def aclose(self) -> None:
+            self.closing.set()
+            await self.release.wait()
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.start_pool_deferred()
+        await runtime.ensure_pool_ready()
+        pool = BlockingPool()
+        runtime.resources._mcp_tool_pool = cast(Any, pool)
+
+        aclose_task = asyncio.create_task(runtime.aclose())
+        await pool.closing.wait()
+        aclose_task.cancel()
+        await aclose_task
+
+        assert runtime.resources._mcp_start_task is not None
+        assert not runtime.resources._mcp_start_task.done()
+
+        pool.release.set()
+        await runtime.aclose()
+        assert runtime.resources._mcp_tool_pool is None
+
+    asyncio.run(_scenario())

@@ -207,6 +207,8 @@ async def _drive(runtime: Any, scenario: Scenario, outcome: DriverOutcome) -> No
             outcome.aborted = outcome.aborted or "runtime.aclose() timed out"
         except (asyncio.CancelledError, BaseExceptionGroup):
             outcome.aborted = outcome.aborted or "runtime.aclose() interrupted"
+        except Exception as exc:
+            outcome.aborted = outcome.aborted or f"runtime.aclose() failed: {exc}"
 
 
 def run_conversation(scenario: Scenario, paths: RunPaths, packs_venv: Path) -> DriverOutcome:

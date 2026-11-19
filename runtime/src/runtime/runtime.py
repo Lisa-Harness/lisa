@@ -713,6 +713,24 @@ class RuntimeResources:
             len(self._mcp_warm_configs),
         )
 
+    def _capture_mcp_start_error(self) -> None:
+        """Preserve a completed deferred start task's startup exception."""
+        if self._mcp_start_task is None:
+            return
+        try:
+            start_error = self._mcp_start_task.exception()
+        except BaseException:
+            return
+        if start_error is not None:
+            self._mcp_start_exc = start_error
+
+    def _reset_deferred_close_state(self) -> None:
+        """Clear close ownership after the deferred start task finishes."""
+        self._mcp_start_task = None
+        self._mcp_started_event = None
+        self._mcp_close_signal = None
+        self._release_shared_session_lease()
+
     async def aclose(self) -> None:
         """Close the MCP tool pool in the same event loop that started it.
 
@@ -762,6 +780,11 @@ class RuntimeResources:
                     "deferred start task teardown; suppressing (start task "
                     "finishes teardown best-effort)"
                 )
+                if self._mcp_start_task.done():
+                    self._capture_mcp_start_error()
+                    self._reset_deferred_close_state()
+                    logger.debug("RuntimeResources: MCP pool closed (deferred)")
+                return
             except BaseException:
                 # The task may raise the cached build-phase exception or a
                 # teardown error; we're tearing down either way.
@@ -769,11 +792,13 @@ class RuntimeResources:
                     "RuntimeResources: deferred start task ended during aclose",
                     exc_info=True,
                 )
-            self._mcp_start_task = None
+                self._capture_mcp_start_error()
+                self._reset_deferred_close_state()
+                logger.debug("RuntimeResources: MCP pool closed (deferred)")
+                return
+            self._capture_mcp_start_error()
+            self._reset_deferred_close_state()
             self._mcp_start_exc = None
-            self._mcp_started_event = None
-            self._mcp_close_signal = None
-            self._release_shared_session_lease()
             logger.debug("RuntimeResources: MCP pool closed (deferred)")
             return
         # Sync-start path (start() was called directly, or the deferred
