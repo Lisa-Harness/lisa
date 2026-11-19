@@ -15,6 +15,7 @@ import json
 import stat
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sdk.storage import PathRejected, StorageBackend
@@ -905,6 +906,42 @@ def test_make_dirs_batch_level_refusals(tmp_path: Path) -> None:
     assert "cap" in json.loads(b.make_dirs([f"d{i}" for i in range(101)]))["error"]
 
 
+def test_make_dirs_non_str_item_is_per_item_error(tmp_path: Path) -> None:
+    """A malformed element must not abort the batch (never a mid-batch abort)."""
+    b = _backend(tmp_path)
+    paths: list[Any] = [f"d{i}" for i in range(100)]
+    paths[50] = 12345
+
+    receipt = json.loads(b.make_dirs(paths))
+
+    assert receipt["ok"] is False
+    assert receipt["count"] == 100
+    assert receipt["succeeded"] == 99
+    assert receipt["failed"] == 1
+    assert receipt["results"][50]["ok"] is False
+    assert "malformed path" in receipt["results"][50]["error"]
+    # Items after the malformed one still executed.
+    assert (b.files_root() / "d99").is_dir()
+
+
+def test_delete_files_non_str_item_is_per_item_error(tmp_path: Path) -> None:
+    """A non-str path is a per-item error, not a batch-killing exception."""
+    b = _backend(tmp_path)
+    b.write_file("keep.txt", "x")
+    b.write_file("gone.txt", "x")
+    paths: list[Any] = ["gone.txt", None]
+
+    receipt = json.loads(b.delete_files(paths))
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 1
+    assert receipt["failed"] == 1
+    assert receipt["results"][1]["ok"] is False
+    assert "malformed path" in receipt["results"][1]["error"]
+    assert (b.files_root() / "gone.txt").exists() is False
+    assert (b.files_root() / "keep.txt").exists() is True
+
+
 def test_make_dirs_readonly_fails_closed(tmp_path: Path) -> None:
     readonly = _readonly_backend(tmp_path)
     assert json.loads(readonly.make_dirs(["a"]))["error"] == "server is read-only"
@@ -992,6 +1029,38 @@ def test_move_files_malformed_pair_is_per_pair_error(tmp_path: Path) -> None:
     assert receipt["succeeded"] == 1
     assert receipt["failed"] == 1
     assert "requires non-empty source" in receipt["results"][1]["error"]
+
+
+def test_move_files_non_dict_pair_is_per_pair_error(tmp_path: Path) -> None:
+    """A non-dict element must not kill the batch with an AttributeError."""
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    pairs: list[Any] = [{"source": "a.txt", "destination": "a2.txt"}, "not-a-dict"]
+
+    receipt = json.loads(b.move_files(pairs))
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 1
+    assert receipt["failed"] == 1
+    assert receipt["results"][1]["ok"] is False
+    assert "malformed pair" in receipt["results"][1]["error"]
+    assert (b.files_root() / "a2.txt").exists()
+
+
+def test_move_files_non_str_source_is_per_pair_error(tmp_path: Path) -> None:
+    """A non-str source is a per-pair error, not a batch-killing exception."""
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    pairs: list[Any] = [{"source": 42, "destination": "a2.txt"}]
+
+    receipt = json.loads(b.move_files(pairs))
+
+    assert receipt["ok"] is False
+    assert receipt["failed"] == 1
+    assert receipt["results"][0]["ok"] is False
+    assert "requires non-empty string source and destination" in receipt["results"][0]["error"]
+    # The source was untouched.
+    assert (b.files_root() / "a.txt").exists()
 
 
 def test_move_files_batch_level_refusals(tmp_path: Path) -> None:

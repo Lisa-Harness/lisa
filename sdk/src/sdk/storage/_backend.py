@@ -23,6 +23,7 @@ import os
 import shutil
 import stat
 import tempfile
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
@@ -777,7 +778,7 @@ class StorageBackend:
         refused = self._batch_refusal(paths)
         if refused is not None:
             return refused
-        results = [self._batch_item(path, self._delete_file_entry(path)) for path in paths]
+        results = [self._guarded_path_item(path, self._delete_file_entry) for path in paths]
         return json.dumps(self._batch_summary(results))
 
     def _batch_refusal(self, items: list[Any], *, label: str = "paths") -> str | None:
@@ -798,6 +799,60 @@ class StorageBackend:
         if "ok" in receipt:
             return {"path": path, "ok": True}
         return {"path": path, "ok": False, "error": receipt["error"]}
+
+    def _guarded_path_item(
+        self,
+        item: Any,
+        entry: Callable[[str], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Run one path-batch entry call, converting any failure to data.
+
+        The batch contract (never a mid-batch abort) must hold even on
+        malformed input: a non-str path records its own per-item error,
+        and an unexpected exception from the entry call is converted to
+        a receipt instead of escaping the loop. The guard stays tight
+        to the item call — batch-level refusals (readonly, empty,
+        over-cap) still fire before the first item.
+        """
+        if not isinstance(item, str):
+            return {
+                "path": item,
+                "ok": False,
+                "error": "malformed path: expected a non-empty string",
+            }
+        try:
+            return self._batch_item(item, entry(item))
+        except Exception as exc:  # pylint: disable=broad-except
+            return {"path": item, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _guarded_pair_item(
+        self,
+        item: Any,
+        entry: Callable[..., dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Run one pair-batch entry call, converting any failure to data.
+
+        Same isolation contract as :meth:`_guarded_path_item` for the
+        move-pair shape: a non-dict pair or an unexpected exception
+        becomes per-pair data, never a batch abort.
+        """
+        if not isinstance(item, dict):
+            return {
+                "source": "",
+                "destination": "",
+                "ok": False,
+                "error": "malformed pair: expected an object with source and destination",
+            }
+        try:
+            return entry(item, **kwargs)
+        except Exception as exc:  # pylint: disable=broad-except
+            return {
+                "source": item.get("source", ""),
+                "destination": item.get("destination", ""),
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     def _batch_summary(self, results: list[dict[str, Any]]) -> dict[str, Any]:
         """Fold per-item receipts into the batch summary."""
@@ -1256,13 +1311,36 @@ class StorageBackend:
         refused = self._batch_refusal(pairs, label="pairs")
         if refused is not None:
             return refused
-        results = [self._move_pair_item(pair, create_parents=create_parents) for pair in pairs]
+        results = [
+            self._guarded_pair_item(pair, self._move_pair_item, create_parents=create_parents)
+            for pair in pairs
+        ]
         return json.dumps(self._batch_summary(results))
 
     def _move_pair_item(self, pair: dict[str, str], *, create_parents: bool) -> dict[str, Any]:
-        """Normalize one pair to ``{source, destination, ok, error?}``."""
+        """Normalize one pair to ``{source, destination, ok, error?}``.
+
+        Malformed pairs are per-pair data, never a batch abort: a
+        non-dict element or a non-string source/destination records its
+        own error so the batch contract (never a mid-batch abort)
+        holds even on malformed input.
+        """
+        if not isinstance(pair, dict):
+            return {
+                "source": "",
+                "destination": "",
+                "ok": False,
+                "error": "malformed pair: expected an object with source and destination",
+            }
         source = pair.get("source", "")
         destination = pair.get("destination", "")
+        if not isinstance(source, str) or not isinstance(destination, str):
+            return {
+                "source": source,
+                "destination": destination,
+                "ok": False,
+                "error": "pair requires non-empty string source and destination",
+            }
         if not source or not destination:
             return {
                 "source": source,
@@ -1491,7 +1569,7 @@ class StorageBackend:
         refused = self._batch_refusal(paths)
         if refused is not None:
             return refused
-        results = [self._batch_item(path, self._make_dir_entry(path)) for path in paths]
+        results = [self._guarded_path_item(path, self._make_dir_entry) for path in paths]
         return json.dumps(self._batch_summary(results))
 
     def read_file_range(
