@@ -574,10 +574,11 @@ class RuntimeResources:
         if self._mcp_tool_pool is not None:
             try:
                 await self._mcp_tool_pool.aclose()
-            except asyncio.CancelledError:
+            except BaseException:
                 logger.debug(
-                    "RuntimeResources: pool aclose cancelled during deferred "
-                    "teardown; subprocess cleanup best-effort"
+                    "RuntimeResources: pool aclose interrupted during deferred "
+                    "teardown; subprocess cleanup best-effort",
+                    exc_info=True,
                 )
             self._mcp_tool_pool = None
         await self._close_proxy_pool()
@@ -597,7 +598,13 @@ class RuntimeResources:
         try:
             await self._proxy_pool.start()
         except BaseException:
-            await self._proxy_pool.aclose()
+            try:
+                await self._proxy_pool.aclose()
+            except BaseException:
+                logger.debug(
+                    "RuntimeResources: proxy pool close failed after start failure",
+                    exc_info=True,
+                )
             self._proxy_pool = None
             raise
         self._proxy_routes = self._proxy_pool.routes
@@ -609,7 +616,13 @@ class RuntimeResources:
     async def _close_proxy_pool(self) -> None:
         """Close host-owned proxy processes and discard their provider routes."""
         if self._proxy_pool is not None:
-            await self._proxy_pool.aclose()
+            try:
+                await self._proxy_pool.aclose()
+            except BaseException:
+                logger.debug(
+                    "RuntimeResources: proxy pool close interrupted; discarding routes anyway",
+                    exc_info=True,
+                )
             self._proxy_pool = None
         self._proxy_routes = {}
 
@@ -652,7 +665,7 @@ class RuntimeResources:
             # then re-raise so the caller knows startup failed.
             try:
                 await self._mcp_tool_pool.aclose()
-            except Exception:  # pylint: disable=broad-except
+            except BaseException:
                 logger.debug("RuntimeResources: pool aclose after failed start", exc_info=True)
             self._mcp_tool_pool = None
             raise
@@ -724,9 +737,9 @@ class RuntimeResources:
             if self._mcp_started_event is not None and not self._mcp_started_event.is_set():
                 try:
                     await self._mcp_started_event.wait()
-                except Exception:  # pylint: disable=broad-except
+                except BaseException:
                     logger.debug(
-                        "RuntimeResources: deferred build failed during aclose",
+                        "RuntimeResources: deferred build wait interrupted during aclose",
                         exc_info=True,
                     )
             self._mcp_close_signal.set()
@@ -749,7 +762,7 @@ class RuntimeResources:
                     "deferred start task teardown; suppressing (start task "
                     "finishes teardown best-effort)"
                 )
-            except Exception:  # pylint: disable=broad-except
+            except BaseException:
                 # The task may raise the cached build-phase exception or a
                 # teardown error; we're tearing down either way.
                 logger.debug(
@@ -775,7 +788,13 @@ class RuntimeResources:
         # Proxy-first teardown is verified to complete cleanly.
         await self._close_proxy_pool()
         if self._mcp_tool_pool is not None:
-            await self._mcp_tool_pool.aclose()
+            try:
+                await self._mcp_tool_pool.aclose()
+            except BaseException:
+                logger.debug(
+                    "RuntimeResources: MCP pool close interrupted; discarding pool anyway",
+                    exc_info=True,
+                )
             self._mcp_tool_pool = None
         self._mcp_started = False
         self._mcp_start_task = None

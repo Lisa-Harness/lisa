@@ -2706,12 +2706,12 @@ class MCPToolPool:
         for stack in stacks:
             try:
                 await stack.aclose()
-            except asyncio.CancelledError:
-                # CancelledError is BaseException in 3.9+, so the broad
-                # except below misses it. Suppress so shutdown never
-                # crashes when the event loop cancels subprocess waits.
-                logger.debug("Server stack close cancelled during aclose")
-            except Exception:  # pylint: disable=broad-except
+            except BaseException:
+                # Python 3.11 can surface anyio cancel scopes as
+                # CancelledError or BaseExceptionGroup during subprocess
+                # stack shutdown. Teardown is best-effort: keep closing the
+                # remaining stacks and never let one cancel scope escape
+                # aclose() and crash an asyncio runner.
                 logger.debug("Server stack close failed during aclose", exc_info=True)
         self._restarting.clear()
         self._restart_timestamps.clear()

@@ -15,8 +15,10 @@ from __future__ import annotations
 # pylint: disable=protected-access
 import asyncio
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
+from kernel.tools.mcp_client import MCPToolPool
 from runtime.runtime import HostRuntime
 
 
@@ -96,5 +98,42 @@ def test_aclose_idempotent_after_cancelled_teardown(tmp_path: Path) -> None:
             pytest.fail("aclose must not propagate CancelledError")
         # Second call must not raise and must not error.
         await runtime.aclose()
+
+    asyncio.run(_scenario())
+
+
+def test_aclose_suppresses_base_exception_group(tmp_path: Path) -> None:
+    """Runtime shutdown suppresses anyio-style teardown exception groups."""
+
+    class FakePool:
+        async def aclose(self) -> None:
+            raise BaseExceptionGroup(
+                "MCP teardown",
+                [RuntimeError("cancel scope exited in wrong task")],
+            )
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_tool_pool = cast(Any, FakePool())
+        runtime.resources._mcp_started = True
+        await runtime.aclose()
+        assert runtime.resources._mcp_tool_pool is None
+
+    asyncio.run(_scenario())
+
+
+def test_mcp_pool_aclose_suppresses_child_stack_base_exception_group() -> None:
+    class FakeStack:
+        async def aclose(self) -> None:
+            raise BaseExceptionGroup(
+                "MCP child stack",
+                [RuntimeError("cancel scope exited in wrong task")],
+            )
+
+    async def _scenario() -> None:
+        pool = MCPToolPool([])
+        pool._child_stacks["fake"] = cast(Any, FakeStack())
+        await pool.aclose()
+        assert pool._child_stacks == {}
 
     asyncio.run(_scenario())
