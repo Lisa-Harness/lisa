@@ -55,9 +55,9 @@ class ForcedAction:
     several targets, expected tool ``fork``) or a single handoff
     (``kind == "transition"``, one target, expected tool
     ``transition_stage``). The dispatch loop increments
-    ``non_compliant_dispatches`` on every tool call that is not
-    ``expected_tool``; at ``forced_action_non_compliant_cap`` the kernel
-    synthesizes the call itself. The kind is *derived* from the target
+    ``non_compliant_dispatches`` once for each model completion whose tool
+    batch lacks ``expected_tool``; at ``forced_action_non_compliant_cap`` the
+    kernel synthesizes the call itself. The kind is *derived* from the target
     list — ``targets`` is the only state.
     """
 
@@ -360,8 +360,8 @@ class _TurnState:
     itself if the model refuses: a ``fork:<csv>`` target (kind ``fork``)
     or any single-handoff target — ``plan``, ``search``, ``remember`` …
     (kind ``transition``). The dispatch loop increments
-    ``non_compliant_dispatches`` on every tool call that is not the
-    expected tool (``fork`` / ``transition_stage``); at
+    ``non_compliant_dispatches`` once per model completion whose tool batch
+    omits the expected tool (``fork`` / ``transition_stage``); at
     ``forced_action_non_compliant_cap`` the kernel synthesizes the call
     itself. ``None`` when there is no pending deterministic routing
     decision. Replaces the pre-Phase-5 ``forced_fork_target`` /

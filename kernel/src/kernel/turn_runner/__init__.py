@@ -7900,6 +7900,7 @@ def _enforce_forced_action_on_dispatch(
     tool_arguments: Any,
     batch_has_expected: bool,
     log: logging.Logger,
+    count_non_compliant_batch: bool = True,
 ) -> tuple[str, Any]:
     """Override a non-compliant dispatch with the forced-action tool call.
 
@@ -7914,17 +7915,18 @@ def _enforce_forced_action_on_dispatch(
     2026-07-30 400k-token pre-plan tool-cycling burn; the 2026-08-07
     ``plan → remember → search`` stall where ``search`` never ran).
 
-    Each non-expected dispatch increments ``non_compliant_dispatches``; at
-    the (trust-aware) cap the kernel synthesizes the expected call itself by
-    overriding the current tool call's name/arguments and letting the caller
-    dispatch it. A batch that already contains the expected tool is
-    compliant as a whole: the model did call it, so no sibling in that batch
-    counts as a refusal. Mutates the current ``tool_call`` dict IN PLACE — it is the
-    same object referenced by the assistant message already appended to
-    ``messages``, so overriding ``function.name`` / ``function.arguments``
-    here keeps the assistant message and the tool result message consistent
-    (the 2026-07-27 follow-on: a fresh ``forced_fork_N`` id was rejected by
-    the provider with ``tool_call_id not found``). Returns
+    Each model completion's non-compliant tool batch increments
+    ``non_compliant_dispatches`` once. At the (trust-aware) cap the kernel
+    synthesizes the expected call itself by overriding the first eligible
+    tool call's name/arguments and letting the caller dispatch it. A batch
+    that already contains the expected tool is compliant as a whole: the
+    model did call it, so no sibling in that batch counts as a refusal.
+    Mutates the current ``tool_call`` dict IN PLACE — it is the same object
+    referenced by the assistant message already appended to ``messages``, so
+    overriding ``function.name`` / ``function.arguments`` here keeps the
+    assistant message and the tool result message consistent (the 2026-07-27
+    follow-on: a fresh ``forced_fork_N`` id was rejected by the provider
+    with ``tool_call_id not found``). Returns
     ``(tool_name, tool_arguments)`` — unchanged when the enforcer did not
     fire. The expected tool's calls reset the state and never trigger the
     enforcer.
@@ -7954,6 +7956,9 @@ def _enforce_forced_action_on_dispatch(
     is_reasoning = getattr(state.effective_model, "reasoning_model", False)
 
     if is_frontier or is_reasoning or reliability >= _PLAN_MODEL_RELIABILITY_EXEMPT:
+        return tool_name, tool_arguments
+
+    if not count_non_compliant_batch:
         return tool_name, tool_arguments
 
     _forced.non_compliant_dispatches += 1
@@ -10324,6 +10329,7 @@ async def _prepare_tool_call_dispatch(
         tool_arguments=tool_arguments,
         batch_has_expected=_batch_contains_expected_tool(state, tool_calls, tool_call_id),
         log=log,
+        count_non_compliant_batch=tool_call is tool_calls[0],
     )
     from kernel.capability import resolve_capability_for_turn_limit
 

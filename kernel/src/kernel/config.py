@@ -244,7 +244,9 @@ class Settings(BaseSettings):
     # refuses to call the expected tool (``fork`` / ``transition_stage``),
     # burning iterations instead on read-only tools or empty completions,
     # this bounds how many non-compliant dispatches pass before the
-    # kernel synthesizes the required call itself. 2 bounds the
+    # kernel synthesizes the required call itself. The counter advances once
+    # per model completion whose tool batch omits the expected call; sibling
+    # calls in one batch cannot consume the cap independently. 2 bounds the
     # pre-handoff token burn to roughly ``2 × per-iteration tokens``
     # instead of the full ``max_tool_iterations`` budget (the 2026-07-27
     # fork incident; the 2026-07-30 400k-token pre-plan burn). Override

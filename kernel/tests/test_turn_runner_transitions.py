@@ -1318,13 +1318,62 @@ def test_enforcer_treats_a_batch_with_the_expected_tool_as_compliant() -> None:
     assert state.forced_action.non_compliant_dispatches == 0
 
 
+def test_enforcer_counts_one_non_compliant_batch_only_once() -> None:
+    """Parallel reads in one completion must not exhaust a two-batch cap."""
+    from kernel.turn_runner import _enforce_forced_action_on_dispatch
+
+    state = _ForcedState(_forced_single("planner"))
+    first_batch = [
+        _make_tool_call("call_0", "bash_run", {"commands": ["true"]}),
+        _make_tool_call("call_1", "bash_run", {"commands": ["true"]}),
+        _make_tool_call("call_2", "bash_run", {"commands": ["true"]}),
+    ]
+
+    for index, call in enumerate(first_batch):
+        name, arguments = _enforce_forced_action_on_dispatch(
+            hooks=TurnHooks(),
+            state=state,
+            mode_id="default",
+            query="q",
+            tool_call=call,
+            tool_name="bash_run",
+            tool_arguments={"commands": ["true"]},
+            batch_has_expected=False,
+            log=logging.getLogger("test"),
+            count_non_compliant_batch=index == 0,
+        )
+        assert name == "bash_run"
+        assert arguments == {"commands": ["true"]}
+
+    assert state.forced_action is not None
+    assert state.forced_action.non_compliant_dispatches == 1
+
+    second_batch_call = _make_tool_call("call_3", "bash_run", {"commands": ["true"]})
+    name, arguments = _enforce_forced_action_on_dispatch(
+        hooks=TurnHooks(),
+        state=state,
+        mode_id="default",
+        query="q",
+        tool_call=second_batch_call,
+        tool_name="bash_run",
+        tool_arguments={"commands": ["true"]},
+        batch_has_expected=False,
+        log=logging.getLogger("test"),
+        count_non_compliant_batch=True,
+    )
+
+    assert name == "transition_stage"
+    assert arguments["target_stage_id"] == "planner"
+    assert state.forced_action is None
+
+
 def test_enforcer_still_forces_when_no_call_in_the_batch_complies() -> None:
     """The guard is NOT weakened: a batch with no transition still gets forced.
 
     The routing-hint backstop exists because a model can burn iterations on
     read-only tools forever. Batch-awareness must not disable it, only stop it
-    from misfiring on a batch that already complied. The enforcer fires on the
-    dispatch that reaches ``forced_action_non_compliant_cap`` (default 2) and
+    from misfiring on siblings inside one batch. The enforcer fires on the
+    batch that reaches ``forced_action_non_compliant_cap`` (default 2) and
     then clears ``state.forced_action``.
     """
     from kernel.turn_runner import (
@@ -1357,7 +1406,7 @@ def test_enforcer_still_forces_when_no_call_in_the_batch_complies() -> None:
             forced_arguments = arguments
             break
 
-    assert forced_on_call == "call_1", "cap=2 means the 2nd non-compliant dispatch forces"
+    assert forced_on_call == "call_1", "cap=2 means the 2nd non-compliant batch forces"
     assert forced_arguments["target_stage_id"] == "planner"
 
 
