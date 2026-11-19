@@ -106,7 +106,7 @@ def _run_scenario_once(
             cost=usage["cost_usd"],
         )
     )
-    print(f"verdict: {'PASS' if payload['passed'] else 'FAIL'} → {path}")
+    print(f"verdict: {'PASS' if payload['passed'] else 'FAIL'} -> {path}")
     return 0 if payload["passed"] else _EXIT_FAIL
 
 

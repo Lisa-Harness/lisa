@@ -202,7 +202,9 @@ async def _close_runtime(runtime: Any, outcome: DriverOutcome) -> None:
             outcome.aborted = outcome.aborted or f"runtime.aclose() failed: {exc}"
         else:
             outcome.aborted = outcome.aborted or "runtime.aclose() timed out"
-    except (asyncio.CancelledError, BaseExceptionGroup):
+    except asyncio.CancelledError:
+        return
+    except BaseExceptionGroup:
         outcome.aborted = outcome.aborted or "runtime.aclose() interrupted"
     except Exception as exc:
         outcome.aborted = outcome.aborted or f"runtime.aclose() failed: {exc}"
