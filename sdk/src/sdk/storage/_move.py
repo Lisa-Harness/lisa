@@ -37,6 +37,15 @@ class SecureMoveError(RuntimeError):
         self.details = details
 
 
+def _os_error_text(action: str, exc: OSError) -> str:
+    """Return a path-sanitized ``<action> failed`` message for an OSError.
+
+    A raw ``str(exc)`` on an OSError embeds the absolute filesystem path
+    of the sandbox in the receipt; this keeps the errno description only.
+    """
+    return f"{action} failed: {os.strerror(exc.errno or errno.EIO)}"
+
+
 def _platform_supported() -> bool:
     required_dir_fd = (os.open, os.mkdir, os.stat, os.rename)
     return (
@@ -156,7 +165,7 @@ def _hash_open_file(parent_fd: int, name: str, *, label: str) -> tuple[os.stat_r
     except FileNotFoundError as exc:
         raise SecureMoveError(f"{label} file not found") from exc
     except OSError as exc:
-        raise SecureMoveError(f"cannot inspect {label} file: {exc}") from exc
+        raise SecureMoveError(_os_error_text(f"inspect {label} file", exc)) from exc
     if not stat.S_ISREG(path_stat.st_mode):
         raise SecureMoveError(f"{label} path is not a regular file")
     if path_stat.st_nlink != 1:
@@ -165,7 +174,7 @@ def _hash_open_file(parent_fd: int, name: str, *, label: str) -> tuple[os.stat_r
     try:
         file_fd = os.open(name, _FILE_FLAGS, dir_fd=parent_fd)
     except OSError as exc:
-        raise SecureMoveError(f"cannot safely open {label} file: {exc}") from exc
+        raise SecureMoveError(_os_error_text(f"open {label} file", exc)) from exc
 
     try:
         opened_stat = os.fstat(file_fd)
@@ -183,7 +192,7 @@ def _hash_open_file(parent_fd: int, name: str, *, label: str) -> tuple[os.stat_r
             raise SecureMoveError(f"{label} file changed while it was being hashed")
         return final_stat, digest.hexdigest()
     except OSError as exc:
-        raise SecureMoveError(f"cannot read {label} file safely: {exc}") from exc
+        raise SecureMoveError(_os_error_text(f"read {label} file", exc)) from exc
     finally:
         os.close(file_fd)
 
@@ -224,7 +233,7 @@ def move_regular_file(
     try:
         root_fd = os.open(root, _DIRECTORY_FLAGS)
     except OSError as exc:
-        raise SecureMoveError(f"cannot safely open the files sandbox: {exc}") from exc
+        raise SecureMoveError(_os_error_text("open the files sandbox", exc)) from exc
 
     source_parent_fd = -1
     destination_parent_fd = -1
@@ -358,7 +367,7 @@ def move_directory(
     try:
         root_fd = os.open(root, _DIRECTORY_FLAGS)
     except OSError as exc:
-        raise SecureMoveError(f"cannot safely open the files sandbox: {exc}") from exc
+        raise SecureMoveError(_os_error_text("open the files sandbox", exc)) from exc
 
     source_parent_fd = -1
     destination_parent_fd = -1
@@ -369,7 +378,7 @@ def move_directory(
         except FileNotFoundError as exc:
             raise SecureMoveError("source directory not found") from exc
         except OSError as exc:
-            raise SecureMoveError(f"cannot inspect source directory: {exc}") from exc
+            raise SecureMoveError(_os_error_text("inspect source directory", exc)) from exc
         if not stat.S_ISDIR(source_stat.st_mode):
             raise SecureMoveError("source path is not a directory")
 

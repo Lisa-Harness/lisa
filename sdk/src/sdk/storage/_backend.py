@@ -14,7 +14,6 @@ can call the backend directly instead of spawning the MCP server.
 
 from __future__ import annotations
 
-import errno
 import fnmatch
 import hashlib
 import json
@@ -31,7 +30,12 @@ from typing import Any
 
 from sdk.content import is_safe_relative_path
 from sdk.layout import CONFIG_DIR, DATA_DIR, STATE_DIR
-from sdk.storage._move import SecureMoveError, move_directory, move_regular_file
+from sdk.storage._move import (
+    SecureMoveError,
+    _os_error_text,
+    move_directory,
+    move_regular_file,
+)
 
 __all__ = ["PathRejected", "StorageBackend"]
 
@@ -286,11 +290,6 @@ class PathRejected(Exception):
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _os_error_text(action: str, exc: OSError) -> str:
-    """Return a path-sanitized ``<action> failed`` message for an OSError."""
-    return f"{action} failed: {os.strerror(exc.errno or errno.EIO)}"
 
 
 class StorageBackend:
@@ -1554,7 +1553,7 @@ class StorageBackend:
         try:
             resolved.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            return {"error": f"make_dir failed: {exc}"}
+            return {"error": _os_error_text("make_dir", exc)}
         return {"ok": True, "path": path}
 
     def make_dirs(self, paths: list[str]) -> str:

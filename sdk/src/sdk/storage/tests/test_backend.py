@@ -900,6 +900,23 @@ def test_make_dirs_mid_batch_failure_does_not_abort(tmp_path: Path) -> None:
     assert (b.files_root() / "b").is_dir()
 
 
+def test_make_dir_error_text_has_no_absolute_path(tmp_path: Path) -> None:
+    """make_dir failures report a sanitized errno message, not the sandbox path.
+
+    A raw OSError interpolation embeds the absolute filesystem path of
+    the sandbox (``/tmp/.../data/files/...``) in the receipt; the
+    ``_os_error_text`` helper exists to prevent exactly that leak.
+    """
+    b = _backend(tmp_path)
+    b.write_file("blocker", "in the way")
+
+    receipt = json.loads(b.make_dir("blocker"))
+
+    assert "make_dir failed" in receipt["error"]
+    assert str(tmp_path) not in receipt["error"]
+    assert str(b.files_root()) not in receipt["error"]
+
+
 def test_make_dirs_batch_level_refusals(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     assert "empty" in json.loads(b.make_dirs([]))["error"]
