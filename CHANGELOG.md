@@ -4,6 +4,8 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-19
+
 ### Added
 
 - **Storage directory operations, reversible trash, and bounded batches**
