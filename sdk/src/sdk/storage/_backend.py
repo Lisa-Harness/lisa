@@ -1010,6 +1010,9 @@ class StorageBackend:
         error)`` — counts survive a partial failure so the receipt
         reports what was removed.
         """
+        if not self._supports_dirfd_recursive_delete():
+            return self._hard_delete_tree_by_path(target)
+
         removed_files = 0
         removed_dirs = 0
         parts, error = self._relative_parts_for_delete(target)
@@ -1034,6 +1037,76 @@ class StorageBackend:
             if isinstance(parent_fd, int) and parent_fd >= 0:
                 os.close(parent_fd)
             os.close(root_fd)
+
+    def _supports_dirfd_recursive_delete(self) -> bool:
+        """True when this runtime supports fd-relative unlink/rmdir operations."""
+        required = (os.open, os.unlink, os.rmdir)
+        return all(function in os.supports_dir_fd for function in required)
+
+    def _hard_delete_tree_by_path(self, target: Path) -> tuple[int, int, str | None]:
+        """Path-based fallback when dir-fd operations are unavailable."""
+        removed_files = 0
+        removed_dirs = 0
+        validation_error = self._validate_path_delete_root(target)
+        if validation_error is not None:
+            return removed_files, removed_dirs, validation_error
+        entries, scan_error = self._scandir_path_entries(target)
+        if scan_error is not None:
+            return removed_files, removed_dirs, scan_error
+        assert entries is not None
+        for entry in entries:
+            entry_files, entry_dirs, entry_error = self._hard_delete_path_entry(entry)
+            removed_files += entry_files
+            removed_dirs += entry_dirs
+            if entry_error is not None:
+                return removed_files, removed_dirs, entry_error
+        remove_error = self._rmdir_path_error(target)
+        if remove_error is not None:
+            return removed_files, removed_dirs, remove_error
+        return removed_files, removed_dirs + 1, None
+
+    def _validate_path_delete_root(self, target: Path) -> str | None:
+        """Validate path-based recursive delete target type."""
+        try:
+            target_info = target.lstat()
+        except FileNotFoundError:
+            return "delete failed: No such file or directory"
+        except OSError as exc:
+            return _os_error_text("delete", exc)
+        if stat.S_ISLNK(target_info.st_mode):
+            return "delete failed: path is symlink"
+        if not stat.S_ISDIR(target_info.st_mode):
+            return "delete failed: path is not a directory"
+        return None
+
+    def _scandir_path_entries(
+        self, target: Path
+    ) -> tuple[list[os.DirEntry[str]] | None, str | None]:
+        """Return ``(entries, error)`` for path-based ``os.scandir``."""
+        try:
+            return list(os.scandir(target)), None
+        except OSError as exc:
+            return None, _os_error_text("delete", exc)
+
+    def _rmdir_path_error(self, target: Path) -> str | None:
+        """Return ``os.rmdir`` error text for path-based delete fallback."""
+        try:
+            os.rmdir(target)
+        except OSError as exc:
+            return _os_error_text("delete", exc)
+        return None
+
+    def _hard_delete_path_entry(self, entry: os.DirEntry[str]) -> tuple[int, int, str | None]:
+        """Delete one child entry for path-based recursive fallback."""
+        try:
+            if entry.is_symlink() or entry.is_file(follow_symlinks=False):
+                os.unlink(entry.path)
+                return 1, 0, None
+            if entry.is_dir(follow_symlinks=False):
+                return self._hard_delete_tree_by_path(Path(entry.path))
+            return 0, 0, None
+        except OSError as exc:
+            return 0, 0, _os_error_text("delete", exc)
 
     def _relative_parts_for_delete(self, target: Path) -> tuple[tuple[str, ...] | None, str | None]:
         """Return target parts relative to files root for descriptor-relative delete."""
@@ -1061,8 +1134,10 @@ class StorageBackend:
                 try:
                     next_fd = os.open(component, _DIRECTORY_OPEN_FLAGS, dir_fd=current_fd)
                 except FileNotFoundError:
+                    os.close(current_fd)
                     return "delete failed: No such file or directory"
                 except OSError as exc:
+                    os.close(current_fd)
                     return _os_error_text("delete", exc)
                 os.close(current_fd)
                 current_fd = next_fd
