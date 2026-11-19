@@ -139,7 +139,6 @@ servers:
       - append_file
       - edit_file
       - move_file
-      - move_directory
 
   # ── Fetch server (cold — lazily connected on first use) ──
   # ``capability: fetch`` makes this the built-in implementation of the

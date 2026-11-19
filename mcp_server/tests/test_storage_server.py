@@ -504,6 +504,26 @@ async def test_delete_directory_hard_delete_end_to_end(storage_setup: None) -> N
 
 
 @pytest.mark.asyncio
+async def test_delete_directory_rejects_parent_symlink_component(
+    tmp_path: Path, storage_setup: None
+) -> None:
+    from mcp_server.storage.server import mcp
+
+    outside = tmp_path / "outside"
+    victim = outside / "victim"
+    victim.mkdir(parents=True)
+    (victim / "keep.txt").write_text("keep", encoding="utf-8")
+    (tmp_path / "data" / "files" / "linked").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ToolError, match="symlink component"):
+        await mcp.call_tool(
+            "delete_directory",
+            {"path": "linked/victim", "recursive": True, "trash": False},
+        )
+    assert (outside / "victim" / "keep.txt").is_file()
+
+
+@pytest.mark.asyncio
 async def test_make_dir_is_not_marked_destructive(storage_setup: None) -> None:
     """mkdir creates; it never destroys — the annotation must say so."""
     from mcp_server.storage.server import mcp
@@ -553,6 +573,28 @@ async def test_purge_trash_end_to_end(storage_setup: None) -> None:
     # After the purge, restore is no longer possible: the session is gone.
     with pytest.raises(ToolError, match="does not exist"):
         await mcp.call_tool("move_directory", {"source": trashed_to, "destination": "tree"})
+
+
+@pytest.mark.asyncio
+async def test_purge_trash_ignores_timestamped_symlink_sessions(
+    tmp_path: Path, storage_setup: None
+) -> None:
+    from mcp_server.storage.server import mcp
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    linked_session = tmp_path / "data" / "files" / ".trash" / "2026-01-01T00-00-00.000001"
+    linked_session.parent.mkdir(parents=True, exist_ok=True)
+    linked_session.symlink_to(outside, target_is_directory=True)
+
+    result = await mcp.call_tool("purge_trash", {})
+    data = json.loads(_tool_text(result))
+
+    assert data["ok"] is True
+    assert data["purged"] == 0
+    assert linked_session.is_symlink()
+    assert (outside / "keep.txt").is_file()
 
 
 @pytest.mark.asyncio

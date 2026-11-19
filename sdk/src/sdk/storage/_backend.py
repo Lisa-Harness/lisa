@@ -14,6 +14,7 @@ can call the backend directly instead of spawning the MCP server.
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import hashlib
 import json
@@ -277,6 +278,11 @@ class PathRejected(Exception):
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _os_error_text(action: str, exc: OSError) -> str:
+    """Return a path-sanitized ``<action> failed`` message for an OSError."""
+    return f"{action} failed: {os.strerror(exc.errno or errno.EIO)}"
 
 
 class StorageBackend:
@@ -733,13 +739,13 @@ class StorageBackend:
         except FileNotFoundError:
             return {"error": f"file not found: {path}"}
         except OSError as exc:
-            return {"error": f"delete failed: {exc}"}
+            return {"error": _os_error_text("delete", exc)}
         if stat.S_ISDIR(info.st_mode):
             return {"error": "delete_file targets a directory; use a file path"}
         try:
             target.unlink()
         except OSError as exc:
-            return {"error": f"delete failed: {exc}"}
+            return {"error": _os_error_text("delete", exc)}
         return {"ok": True, "path": path}
 
     def delete_files(self, paths: list[str]) -> str:
@@ -843,7 +849,7 @@ class StorageBackend:
         try:
             os.rmdir(target)
         except OSError as exc:
-            return json.dumps({"error": f"delete failed: {exc}"})
+            return json.dumps({"error": _os_error_text("delete", exc)})
         return json.dumps({"ok": True, "path": path, "removed_files": 0, "removed_dirs": 1})
 
     def _recursive_delete(self, target: Path, parts: tuple[str, ...], *, trash: bool) -> str:
@@ -869,21 +875,54 @@ class StorageBackend:
         )
 
     def _resolve_delete_directory(self, path: str) -> tuple[Path, tuple[str, ...]] | str:
-        """Resolve and type-check one delete_directory target."""
+        """Resolve and type-check one delete_directory target.
+
+        Directory delete is nofollow end-to-end: any symlinked path
+        component is refused before recursion/trash runs.
+        """
         prepared = self._move_path_parts(path, label="path", allow_trash=True)
         if isinstance(prepared, str):
             return prepared
-        parts = prepared
-        target = self.files_root().joinpath(*parts)
+        return self._resolve_existing_directory_nofollow(path, prepared)
+
+    def _resolve_existing_directory_nofollow(
+        self, original_path: str, parts: tuple[str, ...]
+    ) -> tuple[Path, tuple[str, ...]] | str:
+        """Resolve existing directory parts without following symlinks."""
+        current = self.files_root()
+        for index, component in enumerate(parts):
+            target = current / component
+            info, error = self._lstat_directory_component(
+                target,
+                original_path=original_path,
+                is_leaf=index == len(parts) - 1,
+            )
+            if error is not None:
+                return error
+            assert info is not None
+            if stat.S_ISLNK(info.st_mode):
+                return json.dumps({"error": "path rejected: symlink component"})
+            if not stat.S_ISDIR(info.st_mode):
+                if index == len(parts) - 1:
+                    return json.dumps(
+                        {"error": "delete_directory targets a file; use a directory path"}
+                    )
+                return json.dumps({"error": "path rejected: unsafe or escapes sandbox"})
+            current = target
+        return current, parts
+
+    def _lstat_directory_component(
+        self, target: Path, *, original_path: str, is_leaf: bool
+    ) -> tuple[os.stat_result | None, str | None]:
+        """Return ``(lstat, error_json)`` for a directory-delete component."""
         try:
-            info = target.lstat()
+            return target.lstat(), None
         except FileNotFoundError:
-            return json.dumps({"error": f"directory not found: {path}"})
+            if is_leaf:
+                return None, json.dumps({"error": f"directory not found: {original_path}"})
+            return None, json.dumps({"error": "path rejected: unsafe or escapes sandbox"})
         except OSError as exc:
-            return json.dumps({"error": f"delete failed: {exc}"})
-        if not stat.S_ISDIR(info.st_mode):
-            return json.dumps({"error": "delete_directory targets a file; use a directory path"})
-        return target, parts
+            return None, json.dumps({"error": _os_error_text("delete", exc)})
 
     def _refuse_non_empty(
         self, target: Path, path: str, *, expected_empty: bool, recursive: bool
@@ -901,7 +940,7 @@ class StorageBackend:
         try:
             has_entries = any(os.scandir(target))
         except OSError as exc:
-            return json.dumps({"error": f"delete failed: {exc}"})
+            return json.dumps({"error": _os_error_text("delete", exc)})
         if has_entries:
             return json.dumps({"error": f"directory is not empty{reason}: {path}"})
         return None
@@ -923,10 +962,15 @@ class StorageBackend:
         removed_dirs = 1
         try:
             for _root, dirnames, filenames in os.walk(target, topdown=True):
-                removed_dirs += len(dirnames)
+                for dirname in dirnames:
+                    candidate = Path(_root) / dirname
+                    if candidate.is_symlink():
+                        removed_files += 1
+                    else:
+                        removed_dirs += 1
                 removed_files += len(filenames)
         except OSError as exc:
-            return {"error": f"trash failed: {exc}"}
+            return {"error": _os_error_text("trash", exc)}
         stamp = datetime.now(tz=UTC).strftime(_TRASH_TIMESTAMP_FORMAT)
         trash_root = self.files_root() / _TRASH_SUBDIR
         try:
@@ -934,7 +978,7 @@ class StorageBackend:
             session_dir = trash_root / stamp
             session_dir.mkdir()
         except OSError as exc:
-            return {"error": f"trash failed: {exc}"}
+            return {"error": _os_error_text("trash", exc)}
         destination = session_dir.joinpath(*parts)
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -942,7 +986,7 @@ class StorageBackend:
         except OSError as exc:
             with suppress(OSError):
                 shutil.rmtree(session_dir)
-            return {"error": f"trash failed: {exc}"}
+            return {"error": _os_error_text("trash", exc)}
         return {
             "ok": True,
             "path": "/".join(parts),
@@ -964,29 +1008,67 @@ class StorageBackend:
         """
         removed_files = 0
         removed_dirs = 0
-        try:
-            entries = list(os.scandir(target))
-        except OSError as exc:
-            return removed_files, removed_dirs, f"delete failed: {exc}"
+        root_error = self._validate_delete_root(target)
+        if root_error is not None:
+            return removed_files, removed_dirs, root_error
+
+        entries, scan_error = self._scandir_entries(target)
+        if scan_error is not None:
+            return removed_files, removed_dirs, scan_error
+        assert entries is not None
+
         for entry in entries:
-            try:
-                if entry.is_symlink() or entry.is_file(follow_symlinks=False):
-                    os.unlink(entry.path)
-                    removed_files += 1
-                elif entry.is_dir(follow_symlinks=False):
-                    sub_files, sub_dirs, error = self._hard_delete_tree(Path(entry.path))
-                    removed_files += sub_files
-                    removed_dirs += sub_dirs
-                    if error is not None:
-                        return removed_files, removed_dirs, error
-            except OSError as exc:
-                return removed_files, removed_dirs, f"delete failed: {exc}"
+            entry_files, entry_dirs, entry_error = self._hard_delete_entry(entry)
+            removed_files += entry_files
+            removed_dirs += entry_dirs
+            if entry_error is not None:
+                return removed_files, removed_dirs, entry_error
+
+        remove_error = self._rmdir_error(target)
+        if remove_error is not None:
+            return removed_files, removed_dirs, remove_error
+        return removed_files, removed_dirs + 1, None
+
+    def _validate_delete_root(self, target: Path) -> str | None:
+        """Validate that the recursive-delete root is a real directory."""
+        try:
+            target_info = target.lstat()
+        except FileNotFoundError:
+            return "delete failed: No such file or directory"
+        except OSError as exc:
+            return _os_error_text("delete", exc)
+        if stat.S_ISLNK(target_info.st_mode):
+            return "delete failed: path is symlink"
+        if not stat.S_ISDIR(target_info.st_mode):
+            return "delete failed: path is not a directory"
+        return None
+
+    def _scandir_entries(self, target: Path) -> tuple[list[os.DirEntry[str]] | None, str | None]:
+        """Return ``(entries, error)`` for scandir on ``target``."""
+        try:
+            return list(os.scandir(target)), None
+        except OSError as exc:
+            return None, _os_error_text("delete", exc)
+
+    def _hard_delete_entry(self, entry: os.DirEntry[str]) -> tuple[int, int, str | None]:
+        """Delete one recursive-entry and return ``(files, dirs, error)``."""
+        try:
+            if entry.is_symlink() or entry.is_file(follow_symlinks=False):
+                os.unlink(entry.path)
+                return 1, 0, None
+            if entry.is_dir(follow_symlinks=False):
+                return self._hard_delete_tree(Path(entry.path))
+            return 0, 0, None
+        except OSError as exc:
+            return 0, 0, _os_error_text("delete", exc)
+
+    def _rmdir_error(self, target: Path) -> str | None:
+        """Return the rmdir error for ``target`` or ``None`` on success."""
         try:
             os.rmdir(target)
         except OSError as exc:
-            return removed_files, removed_dirs, f"delete failed: {exc}"
-        removed_dirs += 1
-        return removed_files, removed_dirs, None
+            return _os_error_text("delete", exc)
+        return None
 
     def move_file(
         self,
@@ -1205,14 +1287,15 @@ class StorageBackend:
         if isinstance(sessions, str):
             return sessions
         purgeable = [(stamp, name) for stamp, name in sessions if cutoff is None or stamp < cutoff]
-        has_more = len(purgeable) > limit
         purged = 0
         for _stamp, name in purgeable[:limit]:
             _files, _dirs, error = self._hard_delete_tree(self.files_root() / _TRASH_SUBDIR / name)
             if error is not None:
-                return json.dumps({"error": error, "purged": purged, "has_more": has_more})
+                remaining = len(purgeable) - purged
+                return json.dumps({"error": error, "purged": purged, "has_more": remaining > 0})
             purged += 1
-        return json.dumps({"ok": True, "purged": purged, "has_more": has_more})
+        remaining = len(purgeable) - purged
+        return json.dumps({"ok": True, "purged": purged, "has_more": remaining > 0})
 
     def _parse_purge_cutoff(self, older_than: str | None) -> datetime | str | None:
         """Parse the RFC 3339 age cutoff; ``None`` means no cutoff.
@@ -1244,13 +1327,15 @@ class StorageBackend:
                 return []
             sessions = []
             for entry in os.scandir(trash_root):
+                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                    continue
                 try:
                     stamp = datetime.strptime(entry.name, _TRASH_TIMESTAMP_FORMAT)
                 except ValueError:
                     continue
                 sessions.append((stamp.replace(tzinfo=UTC), entry.name))
         except OSError as exc:
-            return json.dumps({"error": f"purge failed: {exc}"})
+            return json.dumps({"error": _os_error_text("purge", exc)})
         sessions.sort()
         return sessions
 

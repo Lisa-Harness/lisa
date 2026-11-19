@@ -6,6 +6,18 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Added
 
+- Storage safety hardening for new directory/trash APIs (SDK + MCP + runtime):
+  `delete_directory` now rejects symlinked path components (nofollow traversal),
+  `purge_trash` ignores timestamp-named symlink entries, and error receipts from
+  delete/trash/purge paths now return path-sanitized OS error text instead of
+  embedding absolute host paths. Trash receipts now count symlinked directories
+  as removed files (matching hard-delete semantics), purge `has_more` is
+  computed after attempted deletions, and `move_directory` was removed from
+  ambient `storage` default tools (it remains available via `storage.*` but is
+  no longer auto-allowed in every mode). Regression tests were added in
+  `sdk/src/sdk/storage/tests/test_backend.py` and
+  `mcp_server/tests/test_storage_server.py`.
+
 - **Dynamic turn-token-envelope compaction cap** (kernel): the intra-turn
   compaction governor's effective window now tightens as the turn spends
   its processed-token envelope, using the same accounting as the budget

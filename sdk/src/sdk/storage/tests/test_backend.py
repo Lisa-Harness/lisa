@@ -535,6 +535,21 @@ def test_delete_directory_recursive_does_not_follow_symlinks(tmp_path: Path) -> 
     assert not (b.files_root() / "tree").exists()
 
 
+def test_delete_directory_refuses_parent_symlink_component(tmp_path: Path) -> None:
+    """Recursive delete must not traverse symlinked path components."""
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    victim = outside / "victim"
+    victim.mkdir(parents=True)
+    (victim / "keep.txt").write_text("keep", encoding="utf-8")
+    (b.files_root() / "linked").symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.delete_directory("linked/victim", recursive=True, trash=False))
+
+    assert "symlink component" in receipt["error"]
+    assert (outside / "victim" / "keep.txt").is_file()
+
+
 def test_delete_directory_trash_counts_and_trashed_to(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("tree/a.txt", "a")
@@ -550,6 +565,20 @@ def test_delete_directory_trash_counts_and_trashed_to(tmp_path: Path) -> None:
     assert not (b.files_root() / "tree").exists()
     # The trash subtree is deny-glob hidden from list_files.
     assert json.loads(b.list_files("")) == []
+
+
+def test_delete_directory_trash_counts_symlinked_directories_as_files(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    b.make_dir("tree")
+    (b.files_root() / "tree" / "linkdir").symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 1
+    assert receipt["removed_dirs"] == 1
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
@@ -689,6 +718,42 @@ def test_purge_trash_leaves_foreign_entries_alone(tmp_path: Path) -> None:
     assert receipt["ok"] is True
     assert receipt["purged"] == 1
     assert (foreign / "keep.txt").is_file()
+
+
+def test_purge_trash_ignores_timestamped_symlink_sessions(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    linked_session = b.files_root() / ".trash" / "2026-01-01T00-00-00.000001"
+    linked_session.parent.mkdir(parents=True, exist_ok=True)
+    linked_session.symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.purge_trash())
+
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 0
+    assert receipt["has_more"] is False
+    assert linked_session.is_symlink()
+    assert (outside / "keep.txt").is_file()
+
+
+def test_purge_trash_error_reports_remaining_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-02T00-00-00.000001")
+
+    def _fail_delete(_target: Path) -> tuple[int, int, str | None]:
+        return 0, 0, "delete failed: injected"
+
+    monkeypatch.setattr(b, "_hard_delete_tree", _fail_delete)
+    receipt = json.loads(b.purge_trash(limit=2))
+
+    assert receipt["purged"] == 0
+    assert receipt["has_more"] is True
+    assert "injected" in receipt["error"]
 
 
 def test_purge_trash_readonly_fails_closed(tmp_path: Path) -> None:
