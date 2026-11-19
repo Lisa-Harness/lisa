@@ -19,6 +19,7 @@ from e2etest.environment import RunPaths
 from e2etest.scenario import Scenario
 
 _APPROVAL_SCHEMA = "lisa.approval.v1"
+_RUNTIME_ACLOSE_TIMEOUT_S = 120
 
 
 @dataclass
@@ -201,7 +202,7 @@ async def _drive(runtime: Any, scenario: Scenario, outcome: DriverOutcome) -> No
         outcome.aborted = f"budget exceeded: wall_clock_s={scenario.budgets.wall_clock_s}"
     finally:
         try:
-            await asyncio.wait_for(runtime.aclose(), timeout=30)
+            await asyncio.wait_for(runtime.aclose(), timeout=_RUNTIME_ACLOSE_TIMEOUT_S)
         except TimeoutError:
             outcome.aborted = outcome.aborted or "runtime.aclose() timed out"
 
