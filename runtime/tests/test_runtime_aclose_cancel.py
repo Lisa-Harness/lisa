@@ -218,3 +218,39 @@ def test_aclose_caches_cancelled_deferred_start(tmp_path: Path) -> None:
         assert isinstance(runtime.resources._mcp_start_exc, asyncio.CancelledError)
 
     asyncio.run(_scenario())
+
+
+def test_cancelled_deferred_start_is_cached_by_readiness(tmp_path: Path) -> None:
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        start_task = asyncio.create_task(asyncio.sleep(10))
+        start_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await start_task
+        runtime.resources._mcp_start_task = start_task
+        runtime.resources._mcp_started_event = asyncio.Event()
+        runtime.resources._mcp_started_event.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.resources.ensure_pool_ready()
+        assert isinstance(runtime.resources._mcp_start_exc, asyncio.CancelledError)
+
+    asyncio.run(_scenario())
+
+
+def test_aclose_preserves_existing_start_error_over_cancellation(tmp_path: Path) -> None:
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        start_task = asyncio.create_task(asyncio.sleep(10))
+        start_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await start_task
+        runtime.resources._mcp_start_task = start_task
+        runtime.resources._mcp_start_exc = RuntimeError("existing startup failure")
+
+        await runtime.aclose()
+
+        assert isinstance(runtime.resources._mcp_start_exc, RuntimeError)
+        assert str(runtime.resources._mcp_start_exc) == "existing startup failure"
+
+    asyncio.run(_scenario())

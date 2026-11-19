@@ -490,10 +490,9 @@ class RuntimeResources:
                 and self._mcp_start_task.done()
                 and not self._mcp_started
             ):
-                start_error = self._mcp_start_task.exception()
-                if start_error is not None:
-                    self._mcp_start_exc = start_error
-                    raise start_error
+                self._capture_mcp_start_error()
+                if self._mcp_start_exc is not None:
+                    raise self._mcp_start_exc
             return
         if self._mcp_start_task is not None:
             # Sync-start fallback path: the task is a completed no-op or
@@ -718,13 +717,14 @@ class RuntimeResources:
         if self._mcp_start_task is None:
             return
         if self._mcp_start_task.cancelled():
-            self._mcp_start_exc = asyncio.CancelledError("deferred MCP startup cancelled")
+            if self._mcp_start_exc is None:
+                self._mcp_start_exc = asyncio.CancelledError("deferred MCP startup cancelled")
             return
         try:
             start_error = self._mcp_start_task.exception()
         except BaseException:
             return
-        if start_error is not None:
+        if start_error is not None and self._mcp_start_exc is None:
             self._mcp_start_exc = start_error
 
     def _reset_deferred_close_state(self) -> None:
