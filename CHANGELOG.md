@@ -421,6 +421,14 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ### Fixed
 
+- Offline token accounting no longer crashes on a cold tiktoken cache:
+  `sdk.providers.token_counting` caught only `KeyError` (unknown model),
+  so a known encoding whose first-use download fails offline
+  (`ConnectionError` fetching `o200k_base`) escaped `count_request_tokens`
+  and crashed the turn loop's per-request token accounting — and the
+  offline fallback branch of its own test. The loader now degrades to
+  the explicit estimate for any load failure, keeping offline turns and
+  the suite hermetic (seen 2026-11-19: 1 failed / 2113 passed offline).
 - Storage directory/trash hardening now rejects symlinked path components
   during directory delete, ignores timestamp-shaped symlink sessions during
   purge, sanitizes delete/trash/purge OS error text so absolute host paths
