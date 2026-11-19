@@ -16,7 +16,13 @@ All notable changes to the Lisa Harness will be documented in this file.
   routine operations and restored by moving the exact `trashed_to` receipt path
   back to its original destination. The same release adds non-transactional,
   explicit-list `delete_files`, `make_dirs`, and `move_files` batches with a
-  100-item cap, ordered execution, and per-item receipts. Directory moves and
+  100-item cap, ordered execution, and per-item receipts. Bare
+  `.trash` root deletes are refused (the deny-glob also covers the
+  trash root itself) so `purge_trash` stays the only bounded drain;
+  batch items can no longer abort the batch on malformed entries
+  (the non-transactional contract is now exception-safe); and
+  `make_dir` error text no longer embeds absolute sandbox paths.
+  Directory moves and
   recursive hard deletes fail closed when their required platform primitives
   are unavailable; there is no copy fallback or automatic trash purge. The
   canonical contract is in `docs/STORAGE.md`, with the shipped design digest in

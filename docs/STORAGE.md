@@ -160,13 +160,18 @@ leaf link itself, and hard deletes inside a tree unlink links rather
 than their targets. Recursive hard delete fails closed on platforms that do
 not support descriptor-relative unlink/rmdir operations.
 
-The `.trash/**` subtree is deny-glob hidden from every routine operation.
-Restore is the sanctioned exception — `move_directory` accepts a
-`.trash/...` source, so `move_directory(trashed_to, original_path)`
-undoes a trashed delete. `purge_trash` is the drain: each call hard-deletes
-at most `limit` (default 100) of the oldest sessions and returns
-`{purged, has_more}`, so a large trash empties across bounded calls.
-`older_than` (RFC 3339; a naive value reads as UTC) skips newer sessions.
+The `.trash/**` subtree — and the bare `.trash` root itself — is
+deny-glob hidden from every routine operation. Restore is the
+sanctioned exception — `move_directory` accepts a `.trash/...`
+source, so `move_directory(trashed_to, original_path)` undoes a
+trashed delete. `purge_trash` is the drain: each call hard-deletes at
+most `limit` (default 100) of the oldest sessions and returns
+`{purged, has_more}`, so a large trash empties across bounded calls;
+`delete_directory` refuses the bare `.trash` root so one unbounded
+call cannot drain every session at once (deleting a single
+`.trash/<ts>/...` session subtree remains the sanctioned per-session
+purge). `older_than` (RFC 3339; a naive value reads as UTC) skips
+newer sessions.
 Foreign entries and symlinked timestamp-shaped entries are ignored rather
 than followed or removed. A failed purge reports `error`, the completed
 `purged` count, and whether eligible sessions remain. Nothing auto-purges —
