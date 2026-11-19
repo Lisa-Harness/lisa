@@ -122,6 +122,50 @@ metadata changes observed while hashing, checks inode identity after the
 rename, and reports or rolls back an observed swap. Independent processes
 that bypass the storage seam remain outside those cooperative guarantees.
 
+### Directory operations and trash
+
+`move_directory` renames a whole subtree inside `data/files` as one atomic
+no-overwrite operation. It refuses a destination inside the source, and a
+missing destination chain is created only when `create_parents=true`.
+
+`delete_directory` is rmdir-only by default: a non-empty directory is
+refused unless `recursive=true` names the blast radius. The recursive
+default trashes first — the subtree is renamed into a timestamped
+`.trash/<ts>/` session and the receipt carries `trashed_to`, so the delete
+is reversible. `expected_empty` binds the call to the caller's belief that
+the directory is empty (the directory analogue of `expected_sha256`); the
+refusal lands before the trash rename. `trash=false` is the hard delete,
+and deleting a `.trash/...` path is always a hard delete. Symlinks are
+never followed anywhere in the delete surface: `delete_file` unlinks a
+leaf link itself, and hard deletes inside a tree unlink links rather
+than their targets.
+
+The `.trash/**` subtree is deny-glob hidden from every routine operation.
+Restore is the sanctioned exception — `move_directory` accepts a
+`.trash/...` source, so `move_directory(trashed_to, original_path)`
+undoes a trashed delete. `purge_trash` is the drain: each call hard-deletes
+at most `limit` (default 100) of the oldest sessions and returns
+`{purged, has_more}`, so a large trash empties across bounded calls.
+`older_than` (RFC 3339; a naive value reads as UTC) skips newer sessions.
+Nothing auto-purges — the trash window exists to be drained explicitly.
+
+### Batch operations
+
+`delete_files`, `make_dirs`, and `move_files` take explicit path or pair
+lists — no glob expansion, ever. Each item is validated and executed in
+list order; a failing item records its own error and the batch never
+aborts mid-way. Batches cap at 100 items per call.
+
+A batch is a queue of independent atomic operations with one receipt,
+not a transaction: `{ok, count, succeeded, failed, results}` with `ok`
+true only when every item succeeded. All-or-nothing deletes are not
+offered; trash-first (`delete_directory` with the default `trash=true`)
+is the reversible substrate when that shape is needed. Batch-level
+refusals (read-only storage, empty list, over-cap) fire before the first
+item executes and surface as tool errors; per-item failures are summary
+data. `move_files` pairs carry an optional `expected_sha256` that binds
+that pair's move to a revision reported by `stat_file`.
+
 Host-owned persistence and backend implementations sometimes need direct I/O.
 The repository's [direct-I/O check](../scripts/check_direct_io_policy.py) is
 an AST-based contributor gate:
