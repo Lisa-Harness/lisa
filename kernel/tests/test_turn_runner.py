@@ -3324,6 +3324,10 @@ async def test_fork_spent_parent_wall_returns_honest_timeouts() -> None:
             "kernel.turn_runner._defaults.remaining_wall_ms",
             lambda **_kwargs: 0,
         )
+        monkeypatch.setattr(
+            "kernel.turn_phases._fork.remaining_wall_ms",
+            lambda **_kwargs: 0,
+        )
         # Parent wall budget spent: 600s budget, 600s elapsed, 30s grace.
         budget = TurnBudget(
             max_tool_calls=0,
@@ -3407,6 +3411,10 @@ async def test_fork_child_wall_tightened_by_parent_remaining() -> None:
         hooks.models.resolve_model = resolve_model
         monkeypatch.setattr(
             "kernel.turn_runner._defaults.remaining_wall_ms",
+            lambda **_kwargs: 90_000,
+        )
+        monkeypatch.setattr(
+            "kernel.turn_phases._fork.remaining_wall_ms",
             lambda **_kwargs: 90_000,
         )
         # Parent: 600s budget, 510s elapsed → 90s remaining; 300s spec

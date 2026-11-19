@@ -44,6 +44,17 @@ def _dirfd_recursive_delete_supported() -> bool:
     return all(function in getattr(os, "supports_dir_fd", ()) for function in required)
 
 
+def _secure_move_supported() -> bool:
+    required_dir_fd = (os.open, os.mkdir, os.stat, os.rename)
+    return (
+        sys.platform.startswith("linux")
+        and bool(getattr(os, "O_DIRECTORY", 0))
+        and bool(getattr(os, "O_NOFOLLOW", 0))
+        and all(function in getattr(os, "supports_dir_fd", ()) for function in required_dir_fd)
+        and os.stat in getattr(os, "supports_follow_symlinks", ())
+    )
+
+
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
 
@@ -568,7 +579,7 @@ async def test_purge_trash_is_marked_destructive_and_non_idempotent(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.skipif(not _secure_move_supported(), reason="secure move capability unavailable")
 async def test_purge_trash_end_to_end(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
@@ -649,7 +660,7 @@ async def test_make_dirs_end_to_end(storage_setup: None) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+@pytest.mark.skipif(not _secure_move_supported(), reason="secure move capability unavailable")
 async def test_move_files_end_to_end(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 

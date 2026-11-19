@@ -492,7 +492,6 @@ async def _default_fork_fn(
             # remaining wall tightens the same ceiling (parity with the
             # delegate path).
             wall_deadline_ms=_child_wall_deadline_ms(spec.timeout_seconds),
-            parent_remaining_wall_ms=parent_remaining_ms,
             # Lineage (Evidence Envelope §4): each child records the dispatch
             # that spawned this fan-out as its ``parent_dispatch_id``.
             parent_dispatch_id=spec.dispatch_id,
