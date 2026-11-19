@@ -270,7 +270,7 @@ def _atomic_replace(target: Path, payload: bytes) -> str | None:
         os.replace(temporary_path, target)
         temporary_path = None
     except OSError as exc:
-        return json.dumps({"error": f"edit failed: {exc}"})
+        return json.dumps({"error": _os_error_text("edit", exc)})
     finally:
         if temporary_path is not None:
             with suppress(OSError):
@@ -468,7 +468,7 @@ class StorageBackend:
         except UnicodeDecodeError:
             return json.dumps({"error": "file is not valid text for the requested encoding"})
         except OSError as exc:
-            return json.dumps({"error": f"read failed: {exc}"})
+            return json.dumps({"error": _os_error_text("read", exc)})
 
     def write_file(self, path: str, content: str) -> str:
         """Write text content to a file in the files sandbox.
@@ -531,7 +531,7 @@ class StorageBackend:
                 }
             )
         except OSError as exc:
-            return json.dumps({"error": f"write failed: {exc}"})
+            return json.dumps({"error": _os_error_text("write", exc)})
 
     def edit_file(
         self,
@@ -649,7 +649,7 @@ class StorageBackend:
         except UnicodeDecodeError:
             return json.dumps({"error": "file is not valid text for the requested encoding"})
         except OSError as exc:
-            return json.dumps({"error": f"read failed: {exc}"})
+            return json.dumps({"error": _os_error_text("read", exc)})
         if expected_sha256:
             current = hashlib.sha256(original_bytes).hexdigest()
             if expected_sha256.strip().lower() != current:
@@ -1520,7 +1520,7 @@ class StorageBackend:
             try:
                 digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
             except OSError as exc:
-                return json.dumps({"error": f"read failed: {exc}"})
+                return json.dumps({"error": _os_error_text("read", exc)})
         return json.dumps(
             {
                 "path": path,
@@ -1607,7 +1607,7 @@ class StorageBackend:
         except UnicodeDecodeError:
             return json.dumps({"error": "file is not valid text for the requested encoding"})
         except OSError as exc:
-            return json.dumps({"error": f"read failed: {exc}"})
+            return json.dumps({"error": _os_error_text("read", exc)})
 
         total = len(text)
         s = max(0, int(start))
@@ -1664,7 +1664,7 @@ class StorageBackend:
         except UnicodeEncodeError:
             return json.dumps({"error": "content is not valid UTF-8 text"})
         except OSError as exc:
-            return json.dumps({"error": f"append failed: {exc}"})
+            return json.dumps({"error": _os_error_text("append", exc)})
 
     # ── Model manifests ─────────────────────────────────────────────────────
 
@@ -1683,7 +1683,7 @@ class StorageBackend:
         try:
             return path.read_text(encoding="utf-8")
         except OSError as exc:
-            return json.dumps({"error": f"read_model_manifest failed: {exc}"})
+            return json.dumps({"error": _os_error_text("read_model_manifest", exc)})
 
     def write_model_manifest(self, content: str, which: str = "proposal") -> str:
         """Write text content to the active or proposed model manifest.
@@ -1712,4 +1712,4 @@ class StorageBackend:
                 handle.write(payload)
             return json.dumps({"ok": True, "which": which, "bytes": len(payload)})
         except OSError as exc:
-            return json.dumps({"error": f"write_model_manifest failed: {exc}"})
+            return json.dumps({"error": _os_error_text("write_model_manifest", exc)})

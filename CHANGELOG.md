@@ -20,8 +20,9 @@ All notable changes to the Lisa Harness will be documented in this file.
   `.trash` root deletes are refused (the deny-glob also covers the
   trash root itself) so `purge_trash` stays the only bounded drain;
   batch items can no longer abort the batch on malformed entries
-  (the non-transactional contract is now exception-safe); and
-  `make_dir` error text no longer embeds absolute sandbox paths.
+  (the non-transactional contract is now exception-safe); and op error
+  text (make_dir, edit, read, write, append, and the model-manifest
+  ops) no longer embeds absolute sandbox paths.
   Directory moves and
   recursive hard deletes fail closed when their required platform primitives
   are unavailable; there is no copy fallback or automatic trash purge. The

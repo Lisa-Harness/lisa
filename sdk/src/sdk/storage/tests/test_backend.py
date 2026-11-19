@@ -917,6 +917,37 @@ def test_make_dir_error_text_has_no_absolute_path(tmp_path: Path) -> None:
     assert str(b.files_root()) not in receipt["error"]
 
 
+def test_read_error_text_is_sanitized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An injected OSError reports the errno description, never the path.
+
+    OSError's str() embeds the absolute sandbox path (its third
+    constructor argument); the receipt must carry only the errno
+    description, exactly as ``_os_error_text`` builds it.
+    """
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "x")
+
+    def _raise(self: Path, encoding: str = "utf-8") -> str:
+        raise OSError(errno.EIO, "boom", str(self))
+
+    monkeypatch.setattr(Path, "read_text", _raise)
+    receipt = json.loads(b.read_file("doc.txt"))
+
+    assert receipt["error"] == "read failed: Input/output error"
+    assert str(tmp_path) not in receipt["error"]
+
+
+def test_no_raw_exception_interpolation_in_error_text() -> None:
+    """Source lock: no op error message interpolates a raw exception.
+
+    A raw ``{exc}`` in an error f-string embeds the absolute sandbox
+    path on OSError. Every op routes through ``_os_error_text``
+    instead; this pins that no ``failed: {exc}`` pattern returns.
+    """
+    source = (Path(__file__).resolve().parent.parent / "_backend.py").read_text(encoding="utf-8")
+    assert "failed: {exc}" not in source
+
+
 def test_make_dirs_batch_level_refusals(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     assert "empty" in json.loads(b.make_dirs([]))["error"]
