@@ -172,6 +172,20 @@ def test_cancelled_aclose_keeps_deferred_state_until_task_finishes(tmp_path: Pat
     asyncio.run(_scenario())
 
 
+def test_readiness_cancellation_does_not_cache_startup_error(tmp_path: Path) -> None:
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_started_event = asyncio.Event()
+        readiness = asyncio.create_task(runtime.ensure_pool_ready())
+        await asyncio.sleep(0)
+        readiness.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await readiness
+        assert runtime.resources._mcp_start_exc is None
+
+    asyncio.run(_scenario())
+
+
 def test_aclose_preserves_completed_deferred_start_error(tmp_path: Path) -> None:
     async def _fail_start() -> None:
         raise RuntimeError("deferred startup failed")

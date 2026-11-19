@@ -468,6 +468,19 @@ class RuntimeResources:
         with stage("pool_readiness"):
             await self._ensure_pool_ready_impl()
 
+    async def _await_mcp_started_event(self) -> None:
+        """Wait for deferred pool construction without caching caller cancellation."""
+        event = self._mcp_started_event
+        if event is None:
+            return
+        try:
+            await event.wait()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # pylint: disable=broad-except
+            self._mcp_start_exc = exc
+            raise
+
     async def _ensure_pool_ready_impl(self) -> None:
         """Readiness body (wrapped by :meth:`ensure_pool_ready`'s stage timer)."""
         if self._mcp_start_exc is not None:
@@ -476,11 +489,7 @@ class RuntimeResources:
             # Deferred start: wait for the pool to be constructed (not for
             # the task to finish — the task is long-lived and only ends at
             # teardown). Cache the exception once if the build phase failed.
-            try:
-                await self._mcp_started_event.wait()
-            except BaseException as exc:  # pylint: disable=broad-except
-                self._mcp_start_exc = exc
-                raise
+            await self._await_mcp_started_event()
             if self._mcp_start_exc is not None:
                 raise self._mcp_start_exc
             # If the build phase failed, the task ended with an exception
@@ -801,7 +810,6 @@ class RuntimeResources:
                 return
             self._capture_mcp_start_error()
             self._reset_deferred_close_state()
-            self._mcp_start_exc = None
             logger.debug("RuntimeResources: MCP pool closed (deferred)")
             return
         # Sync-start path (start() was called directly, or the deferred
