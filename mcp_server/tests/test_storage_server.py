@@ -61,7 +61,7 @@ def storage_readonly(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_storage_lists_seventeen_tools(storage_setup: None) -> None:
+async def test_storage_lists_eighteen_tools(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
     tools = await mcp.list_tools()
@@ -77,6 +77,7 @@ async def test_storage_lists_seventeen_tools(storage_setup: None) -> None:
         "delete_files",
         "move_file",
         "move_directory",
+        "move_files",
         "delete_directory",
         "purge_trash",
         "stat_file",
@@ -595,12 +596,43 @@ async def test_make_dirs_end_to_end(storage_setup: None) -> None:
 
 
 @pytest.mark.asyncio
+async def test_move_files_end_to_end(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "a.txt", "content": "a"})
+    await mcp.call_tool("write_file", {"path": "b.txt", "content": "b"})
+
+    result = await mcp.call_tool(
+        "move_files",
+        {
+            "pairs": [
+                {"source": "a.txt", "destination": "a_moved.txt"},
+                {"source": "missing.txt", "destination": "missing_moved.txt"},
+                {"source": "b.txt", "destination": "b_moved.txt"},
+            ]
+        },
+    )
+    data = json.loads(_tool_text(result))
+
+    # A per-pair failure is summary data, not a tool error.
+    assert data["ok"] is False
+    assert data["succeeded"] == 2
+    assert data["failed"] == 1
+    assert data["results"][1]["source"] == "missing.txt"
+    with pytest.raises(ToolError, match="not found"):
+        await mcp.call_tool("read_file", {"path": "a.txt"})
+    stat = json.loads(_tool_text(await mcp.call_tool("stat_file", {"path": "b_moved.txt"})))
+    assert stat["is_dir"] is False
+
+
+@pytest.mark.asyncio
 async def test_batch_tool_annotations(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
     tools = {t.name: t for t in await mcp.list_tools()}
     assert tools["delete_files"].annotations.destructive_hint is True
     assert tools["make_dirs"].annotations.destructive_hint is False
+    assert tools["move_files"].annotations.destructive_hint is True
 
 
 # ── Readonly mode ───────────────────────────────────────────────────────────

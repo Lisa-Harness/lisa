@@ -801,6 +801,107 @@ def test_make_dirs_readonly_fails_closed(tmp_path: Path) -> None:
     assert json.loads(readonly.make_dirs(["a"]))["error"] == "server is read-only"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_files_moves_in_order_with_per_pair_receipts(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    b.write_file("b.txt", "b")
+
+    receipt = json.loads(
+        b.move_files(
+            [
+                {"source": "a.txt", "destination": "moved/a.txt"},
+                {"source": "b.txt", "destination": "moved/b.txt"},
+            ],
+            create_parents=True,
+        )
+    )
+
+    assert receipt["ok"] is True
+    assert receipt["count"] == 2
+    assert receipt["failed"] == 0
+    assert receipt["results"] == [
+        {"source": "a.txt", "destination": "moved/a.txt", "ok": True},
+        {"source": "b.txt", "destination": "moved/b.txt", "ok": True},
+    ]
+    assert b.read_file("moved/a.txt") == "a\n"
+    assert not (b.files_root() / "a.txt").exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_files_mid_batch_failure_does_not_abort(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    b.write_file("blocker.txt", "old")
+    b.write_file("c.txt", "c")
+
+    receipt = json.loads(
+        b.move_files(
+            [
+                {"source": "a.txt", "destination": "a2.txt"},
+                {"source": "blocker.txt", "destination": "a2.txt"},
+                {"source": "c.txt", "destination": "c2.txt"},
+            ]
+        )
+    )
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 2
+    assert receipt["failed"] == 1
+    # Pair 2 fails because pair 1 already created its destination.
+    assert "already exists" in receipt["results"][1]["error"]
+    # Later items still executed after the failure.
+    assert not (b.files_root() / "c.txt").exists()
+    assert b.read_file("blocker.txt") == "old\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_files_per_pair_hash_guard(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+
+    receipt = json.loads(
+        b.move_files([{"source": "a.txt", "destination": "a2.txt", "expected_sha256": "0" * 64}])
+    )
+
+    assert receipt["ok"] is False
+    assert "sha256 mismatch" in receipt["results"][0]["error"]
+    # The guarded source is untouched.
+    assert b.read_file("a.txt") == "a\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_files_malformed_pair_is_per_pair_error(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+
+    receipt = json.loads(
+        b.move_files([{"source": "a.txt", "destination": "a2.txt"}, {"destination": "x"}])
+    )
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 1
+    assert receipt["failed"] == 1
+    assert "requires non-empty source" in receipt["results"][1]["error"]
+
+
+def test_move_files_batch_level_refusals(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    assert "empty" in json.loads(b.move_files([]))["error"]
+    assert (
+        "cap"
+        in json.loads(
+            b.move_files([{"source": f"s{i}", "destination": f"d{i}"} for i in range(101)])
+        )["error"]
+    )
+
+
+def test_move_files_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    pairs = [{"source": "a", "destination": "b"}]
+    assert json.loads(readonly.move_files(pairs))["error"] == "server is read-only"
+
+
 def test_stat_file(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("stat_me.txt", "12345")

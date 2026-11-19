@@ -4,7 +4,7 @@ Extracted verbatim from the former ``mcp_server/storage/server.py``: the
 sandbox resolver, deny-glob matcher, ``PathRejected`` exception, and
 model-manifest path logic. The MCP server is now a thin wrapper — it
 wires ``--data-dir`` / ``--readonly`` / ``--deny-globs`` into a
-:class:`StorageBackend` and exposes the 15 file tools plus the manifest
+:class:`StorageBackend` and exposes the 16 file tools plus the manifest
 pair.
 
 This gives the SDK a complete contract for storage access that can be
@@ -761,16 +761,16 @@ class StorageBackend:
         results = [self._batch_item(path, self._delete_file_entry(path)) for path in paths]
         return json.dumps(self._batch_summary(results))
 
-    def _batch_refusal(self, paths: list[str]) -> str | None:
+    def _batch_refusal(self, items: list[Any], *, label: str = "paths") -> str | None:
         """Refuse an empty or over-cap batch before anything executes.
 
         Batch-level refusals are the only abort mode and happen before
         the first item runs; once execution starts, failures are
         per-item data. The cap is 100 items per batch (R9).
         """
-        if not paths:
-            return json.dumps({"error": "batch paths list is empty"})
-        if len(paths) > _BATCH_CAP:
+        if not items:
+            return json.dumps({"error": f"batch {label} list is empty"})
+        if len(items) > _BATCH_CAP:
             return json.dumps({"error": f"batch exceeds the {_BATCH_CAP}-item cap"})
         return None
 
@@ -1003,13 +1003,35 @@ class StorageBackend:
         unsupported platforms fail closed. Symlinks, hard-linked files, and
         directories are refused.
         """
+        return json.dumps(
+            self._move_file_entry(
+                source,
+                destination,
+                expected_sha256=expected_sha256,
+                create_parents=create_parents,
+            )
+        )
+
+    def _move_file_entry(
+        self,
+        source: str,
+        destination: str,
+        *,
+        expected_sha256: str = "",
+        create_parents: bool = False,
+    ) -> dict[str, Any]:
+        """Move one regular file, returning the receipt dict.
+
+        Mirrors :meth:`_delete_file_entry`: ``move_file`` wraps it
+        unchanged and the batch ``move_files`` reuses it per pair.
+        """
         prepared = self._prepare_move(source, destination, expected_sha256=expected_sha256)
         if isinstance(prepared, str):
-            return prepared
+            return {"error": json.loads(prepared)["error"]}
         source_parts, destination_parts, expected = prepared
 
         try:
-            receipt = move_regular_file(
+            return move_regular_file(
                 self.files_root(),
                 source_parts=source_parts,
                 destination_parts=destination_parts,
@@ -1017,8 +1039,7 @@ class StorageBackend:
                 create_parents=create_parents,
             )
         except SecureMoveError as exc:
-            return json.dumps({"error": str(exc), **exc.details})
-        return json.dumps(receipt)
+            return {"error": str(exc), **exc.details}
 
     def move_directory(self, source: str, destination: str, *, create_parents: bool = False) -> str:
         """Atomically move one directory without overwriting anything.
@@ -1047,6 +1068,56 @@ class StorageBackend:
         except SecureMoveError as exc:
             return json.dumps({"error": str(exc), **exc.details})
         return json.dumps(receipt)
+
+    def move_files(
+        self,
+        pairs: list[dict[str, str]],
+        *,
+        create_parents: bool = False,
+    ) -> str:
+        """Move regular files in list order with per-pair receipts.
+
+        Same batch contract as :meth:`delete_files`: validate then
+        execute in list order, per-pair receipts, never a mid-batch
+        abort, no glob expansion, 100-pair cap. Each pair is
+        ``{"source": ..., "destination": ..., "expected_sha256"?: ...}``;
+        the hash is optional per pair and binds that move to a revision
+        reported by ``stat_file``. A malformed pair is a per-pair
+        error, not a batch refusal.
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        refused = self._batch_refusal(pairs, label="pairs")
+        if refused is not None:
+            return refused
+        results = [self._move_pair_item(pair, create_parents=create_parents) for pair in pairs]
+        return json.dumps(self._batch_summary(results))
+
+    def _move_pair_item(self, pair: dict[str, str], *, create_parents: bool) -> dict[str, Any]:
+        """Normalize one pair to ``{source, destination, ok, error?}``."""
+        source = pair.get("source", "")
+        destination = pair.get("destination", "")
+        if not source or not destination:
+            return {
+                "source": source,
+                "destination": destination,
+                "ok": False,
+                "error": "pair requires non-empty source and destination",
+            }
+        receipt = self._move_file_entry(
+            source,
+            destination,
+            expected_sha256=pair.get("expected_sha256", ""),
+            create_parents=create_parents,
+        )
+        if "ok" in receipt:
+            return {"source": source, "destination": destination, "ok": True}
+        return {
+            "source": source,
+            "destination": destination,
+            "ok": False,
+            "error": receipt["error"],
+        }
 
     def _prepare_move(
         self, source: str, destination: str, *, expected_sha256: str

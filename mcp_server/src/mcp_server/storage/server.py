@@ -6,11 +6,11 @@ resolution, deny-glob policy, and model-manifest read/write. Hosts or
 tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (17 total):
+Tools (18 total):
 
-- File I/O (15): ``read_file``, ``read_file_range``, ``write_file``,
+- File I/O (16): ``read_file``, ``read_file_range``, ``write_file``,
   ``append_file``, ``edit_file``, ``list_files``, ``delete_file``,
-  ``delete_files``, ``move_file``, ``move_directory``,
+  ``delete_files``, ``move_file``, ``move_directory``, ``move_files``,
   ``delete_directory``, ``purge_trash``, ``stat_file``, ``make_dir``,
   ``make_dirs`` — scoped to ``data_dir / "files"``.
   ``read_file_range`` returns a char-bounded slice (never splits
@@ -21,9 +21,9 @@ Tools (17 total):
   rename; ``delete_directory`` is rmdir-only by default and trashes
   the subtree when recursion is explicitly named; ``purge_trash``
   hard-deletes the oldest trash sessions in bounded slices; the batch
-  tools (``delete_files``, ``make_dirs``) take explicit path lists
-  (no glob expansion), execute in order with per-item receipts, never
-  abort mid-batch, and cap at 100 items.
+  tools (``delete_files``, ``make_dirs``, ``move_files``) take explicit
+  path or pair lists (no glob expansion), execute in order with
+  per-item receipts, never abort mid-batch, and cap at 100 items.
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
   ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
 
@@ -418,6 +418,29 @@ async def move_directory(
             destination,
             create_parents=create_parents,
         )
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def move_files(
+    pairs: list[dict[str, str]],
+    create_parents: bool = False,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Move regular files in list order with per-pair receipts.
+
+    Same batch contract as ``delete_files``: validate-then-execute in
+    list order, per-pair receipts, never a mid-batch abort, no glob
+    expansion, 100-pair cap. Each pair is ``{"source": ...,
+    "destination": ..., "expected_sha256"?: ...}`` — the hash is
+    optional per pair and binds that move to a revision reported by
+    ``stat_file``. Set ``create_parents`` to create missing
+    destination directory chains. Raises :class:`ToolError` only on
+    batch-level refusals (readonly, empty list, over-cap); per-pair
+    failures are summary data.
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.move_files(pairs, create_parents=create_parents)
     )
 
 
