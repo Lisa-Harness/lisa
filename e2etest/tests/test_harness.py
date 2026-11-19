@@ -131,6 +131,30 @@ def _write_memory_db(data_dir: Path, rows: list[tuple[str, str, str]]) -> None:
         conn.executemany("INSERT INTO memories VALUES ('episodic', 'active', ?, ?, ?)", rows)
 
 
+@pytest.mark.asyncio
+async def test_driver_distinguishes_close_timeout_from_close_failure() -> None:
+    from types import SimpleNamespace
+
+    from e2etest.driver import DriverOutcome, _drive
+
+    class FakeRuntime:
+        async def start(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            raise TimeoutError("close raised directly")
+
+    scenario = SimpleNamespace(
+        turns=[],
+        budgets=SimpleNamespace(wall_clock_s=1),
+    )
+    outcome = DriverOutcome()
+
+    await _drive(FakeRuntime(), scenario, outcome)
+
+    assert outcome.aborted == "runtime.aclose() failed: close raised directly"
+
+
 def test_driver_forwards_surface_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``run_conversation`` must pass scenario.surface into ``build_runtime``."""
     captured: dict[str, Any] = {}

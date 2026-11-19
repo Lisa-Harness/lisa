@@ -822,8 +822,8 @@ class RuntimeResources:
                 )
             self._mcp_tool_pool = None
         self._mcp_started = False
+        self._capture_mcp_start_error()
         self._mcp_start_task = None
-        self._mcp_start_exc = None
         self._mcp_started_event = None
         self._mcp_close_signal = None
         self._release_shared_session_lease()
@@ -833,8 +833,16 @@ class RuntimeResources:
         """Release this build's shared-session lease (idempotent)."""
         lease = self._shared_session_lease
         if lease is not None:
-            lease.release()
-            self._shared_session_lease = None
+            try:
+                lease.release()
+            except BaseException:
+                logger = logging.getLogger(__name__)
+                logger.debug(
+                    "RuntimeResources: shared-session lease release failed",
+                    exc_info=True,
+                )
+            finally:
+                self._shared_session_lease = None
 
 
 def _archive_boot_session_plan(

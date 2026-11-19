@@ -14,6 +14,7 @@ from __future__ import annotations
 
 # pylint: disable=protected-access
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import Any, cast
 
@@ -167,5 +168,39 @@ def test_cancelled_aclose_keeps_deferred_state_until_task_finishes(tmp_path: Pat
         pool.release.set()
         await runtime.aclose()
         assert runtime.resources._mcp_tool_pool is None
+
+    asyncio.run(_scenario())
+
+
+def test_aclose_preserves_completed_deferred_start_error(tmp_path: Path) -> None:
+    async def _fail_start() -> None:
+        raise RuntimeError("deferred startup failed")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        start_task = asyncio.create_task(_fail_start())
+        with contextlib.suppress(RuntimeError):
+            await start_task
+        runtime.resources._mcp_start_task = start_task
+        runtime.resources._mcp_started_event = asyncio.Event()
+        runtime.resources._mcp_started_event.set()
+        runtime.resources._mcp_close_signal = asyncio.Event()
+        await runtime.aclose()
+        assert isinstance(runtime.resources._mcp_start_exc, RuntimeError)
+        assert str(runtime.resources._mcp_start_exc) == "deferred startup failed"
+
+    asyncio.run(_scenario())
+
+
+def test_aclose_suppresses_shared_session_lease_release_error(tmp_path: Path) -> None:
+    class FakeLease:
+        def release(self) -> None:
+            raise RuntimeError("lease close failed")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._shared_session_lease = cast(Any, FakeLease())
+        await runtime.aclose()
+        assert runtime.resources._shared_session_lease is None
 
     asyncio.run(_scenario())

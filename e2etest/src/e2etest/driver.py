@@ -190,6 +190,26 @@ class _BudgetExceededError(Exception):
     pass
 
 
+async def _close_runtime(runtime: Any, outcome: DriverOutcome) -> None:
+    """Close a scenario runtime and record teardown failures as aborted evidence."""
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        await asyncio.wait_for(runtime.aclose(), timeout=_RUNTIME_ACLOSE_TIMEOUT_S)
+    except TimeoutError as exc:
+        elapsed = loop.time() - started
+        if elapsed < _RUNTIME_ACLOSE_TIMEOUT_S:
+            outcome.aborted = outcome.aborted or f"runtime.aclose() failed: {exc}"
+        else:
+            outcome.aborted = outcome.aborted or "runtime.aclose() timed out"
+    except (asyncio.CancelledError, BaseExceptionGroup):
+        outcome.aborted = outcome.aborted or "runtime.aclose() interrupted"
+    except Exception as exc:
+        outcome.aborted = outcome.aborted or f"runtime.aclose() failed: {exc}"
+    except BaseException as exc:
+        outcome.aborted = outcome.aborted or f"runtime.aclose() interrupted: {exc}"
+
+
 async def _drive(runtime: Any, scenario: Scenario, outcome: DriverOutcome) -> None:
     conversation = _Conversation(runtime, scenario, outcome)
     await runtime.start()
@@ -201,14 +221,7 @@ async def _drive(runtime: Any, scenario: Scenario, outcome: DriverOutcome) -> No
     except TimeoutError:
         outcome.aborted = f"budget exceeded: wall_clock_s={scenario.budgets.wall_clock_s}"
     finally:
-        try:
-            await asyncio.wait_for(runtime.aclose(), timeout=_RUNTIME_ACLOSE_TIMEOUT_S)
-        except TimeoutError:
-            outcome.aborted = outcome.aborted or "runtime.aclose() timed out"
-        except (asyncio.CancelledError, BaseExceptionGroup):
-            outcome.aborted = outcome.aborted or "runtime.aclose() interrupted"
-        except Exception as exc:
-            outcome.aborted = outcome.aborted or f"runtime.aclose() failed: {exc}"
+        await _close_runtime(runtime, outcome)
 
 
 def run_conversation(scenario: Scenario, paths: RunPaths, packs_venv: Path) -> DriverOutcome:
