@@ -36,6 +36,29 @@ def _make_runtime(tmp_path: Path) -> HostRuntime:
     )
 
 
+def test_discover_pack_slice_provider_factory_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kernel.slice_provider_discovery as discovery
+
+    from runtime import turn_hooks_builder
+
+    class Entry:
+        pack_name = "test-pack"
+        factory = staticmethod(lambda: lambda view, session_plan: SimpleNamespace(name="provider"))
+
+    monkeypatch.setattr(
+        discovery,
+        "discover_slice_provider_factories",
+        lambda: [Entry()],
+    )
+
+    providers = turn_hooks_builder._discover_pack_slice_providers(
+        view=SimpleNamespace(),
+        session_plan=SimpleNamespace(),
+    )
+    assert len(providers) == 1
+    assert providers[0].name == "provider"
+
+
 def test_view_declares_seam_slots() -> None:
     """``_SliceProviderHooksView`` declares the dispatch and model seams in __slots__."""
     assert "execute_tool" in _SliceProviderHooksView.__slots__
