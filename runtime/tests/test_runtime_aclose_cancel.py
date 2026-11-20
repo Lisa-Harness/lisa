@@ -560,18 +560,27 @@ def test_deferred_pool_aclose_suppresses_base_exception(tmp_path: Path) -> None:
 
 
 def test_deferred_aclose_suppresses_task_base_exception(tmp_path: Path) -> None:
+    release = None
+
     async def _raise_base_exception() -> None:
+        assert release is not None
+        await release.wait()
         raise BaseException("deferred start task interrupted")
 
     async def _scenario() -> None:
+        nonlocal release
         runtime = _make_runtime(tmp_path)
+        release = asyncio.Event()
         runtime.resources._mcp_started_event = asyncio.Event()
         runtime.resources._mcp_started_event.set()
         runtime.resources._mcp_close_signal = asyncio.Event()
         runtime.resources._mcp_start_task = asyncio.create_task(_raise_base_exception())
         await asyncio.sleep(0)
 
-        await runtime.aclose()
+        aclose_task = asyncio.create_task(runtime.aclose())
+        await asyncio.sleep(0)
+        release.set()
+        await aclose_task
         assert runtime.resources._mcp_start_task is None
 
     asyncio.run(_scenario())

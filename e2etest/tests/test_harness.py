@@ -182,6 +182,23 @@ async def test_driver_suppresses_close_cancellation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_runtime_records_wait_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import e2etest.driver as driver_module
+
+    class FakeRuntime:
+        async def aclose(self) -> None:
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(driver_module, "_RUNTIME_ACLOSE_TIMEOUT_S", 0.01)
+    outcome = DriverOutcome()
+    await driver_module._close_runtime(FakeRuntime(), outcome)
+
+    assert outcome.aborted == "runtime.aclose() timed out"
+
+
+@pytest.mark.asyncio
 async def test_close_runtime_records_direct_base_exception_group() -> None:
     from e2etest.driver import DriverOutcome, _close_runtime
 
