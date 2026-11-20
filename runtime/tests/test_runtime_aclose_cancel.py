@@ -104,6 +104,21 @@ def test_aclose_idempotent_after_cancelled_teardown(tmp_path: Path) -> None:
     asyncio.run(_scenario())
 
 
+def test_runtime_resources_no_optional_pool_paths(tmp_path: Path) -> None:
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        await runtime.resources._await_mcp_started_event()
+        await runtime.resources._build_proxy_pool()
+        await runtime.resources._close_proxy_pool()
+        runtime.resources._mcp_warm_configs = []
+        runtime.resources._mcp_cold_configs = []
+        await runtime.resources._build_pool()
+        assert runtime.resources._mcp_started is True
+        assert runtime.resources._mcp_tool_pool is None
+
+    asyncio.run(_scenario())
+
+
 def test_aclose_suppresses_base_exception_group(tmp_path: Path) -> None:
     """Runtime shutdown suppresses anyio-style teardown exception groups."""
 
@@ -352,6 +367,56 @@ def test_aclose_deferred_build_wait_interruption_is_suppressed(tmp_path: Path) -
             await asyncio.sleep(0)
 
         runtime.resources._mcp_start_task = asyncio.create_task(_fake_start_task())
+        await runtime.aclose()
+        assert runtime.resources._mcp_start_task is None
+
+    asyncio.run(_scenario())
+
+
+def test_capture_mcp_start_error_handles_task_without_result(tmp_path: Path) -> None:
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_start_task = None
+        runtime.resources._capture_mcp_start_error()
+        assert runtime.resources._mcp_start_exc is None
+
+        runtime.resources._mcp_start_task = asyncio.create_task(asyncio.sleep(0))
+        await runtime.resources._mcp_start_task
+        runtime.resources._capture_mcp_start_error()
+        assert runtime.resources._mcp_start_exc is None
+
+    asyncio.run(_scenario())
+
+
+def test_capture_mcp_start_error_handles_task_exception_method_error(tmp_path: Path) -> None:
+    class BrokenTask:
+        def cancelled(self) -> bool:
+            return False
+
+        def exception(self) -> BaseException:
+            raise RuntimeError("task exception access failed")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_start_task = cast(Any, BrokenTask())
+        runtime.resources._capture_mcp_start_error()
+        assert runtime.resources._mcp_start_exc is None
+
+    asyncio.run(_scenario())
+
+
+def test_aclose_deferred_task_base_exception_covers_state_reset(tmp_path: Path) -> None:
+    async def _fail_task() -> None:
+        raise RuntimeError("deferred task failed")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_started_event = asyncio.Event()
+        runtime.resources._mcp_started_event.set()
+        runtime.resources._mcp_close_signal = asyncio.Event()
+        runtime.resources._mcp_start_task = asyncio.create_task(_fail_task())
+        await asyncio.sleep(0)
+
         await runtime.aclose()
         assert runtime.resources._mcp_start_task is None
 
