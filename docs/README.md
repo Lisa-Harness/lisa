@@ -88,7 +88,8 @@ The [project README](../README.md) explains the project and its current status.
 ## Contribute and maintain
 
 - [Contributing](../CONTRIBUTING.md) and [Python development](python-BCP.md).
-- [Testing](TESTING.md), [packstest](../packstest/README.md), and
+- [Testing runbook](TESTING_RUNBOOK.md), [testing policy](TESTING.md),
+  [packstest](../packstest/README.md), and
   [whole-runtime scenarios](../e2etest/README.md).
 - [Coding workflow](CODING_WORKFLOW.md), including the standing test
   assurances. The coding-pack workflow is distinct from contributing to this

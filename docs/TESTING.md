@@ -4,6 +4,8 @@ Run commands from the framework workspace root after
 `uv sync --frozen --extra dev`. The root [pyproject.toml](../pyproject.toml)
 defines pytest paths, markers, Ruff, mypy, and coverage settings;
 [CI](../.github/workflows/ci.yml) is authoritative for required jobs.
+For a copy-paste command sequence and failure triage, use the
+[testing runbook](TESTING_RUNBOOK.md).
 
 Documentation-only changes — paths matching the
 [CI](../.github/workflows/ci.yml) `paths-ignore` filter (`docs/**`, `*.md`,
