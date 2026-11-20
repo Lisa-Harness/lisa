@@ -16,5 +16,8 @@ Use the repository customization taxonomy in this order:
 - Prefer the smallest rule file that can explain the intent. Keep instructions concise and task-driven.
 - Resolve scope explicitly. A change should bind to the narrowest `applyTo` that still covers the relevant files.
 - Treat the repository as a hard-cutover codebase. Do not add compatibility shims or stale aliases for old patterns.
-- Follow the shared engineering loop: verify, review the diff, then commit. Land changes on `main` by rebase or squash — never a merge commit. If a change is already shared or pushed, prefer a `fixup!` commit over rewriting history.
+- Follow the shared engineering loop: verify, review the diff, then commit.
+  Land logical commits on `main` with rebase and merge — never a whole-PR
+  squash or merge commit. Fold `fixup!` review commits with autosquash before
+  landing.
 - Keep troubleshooting notes, incident logs, and one-off test workarounds out of instructions. Put them in docs or tests instead.

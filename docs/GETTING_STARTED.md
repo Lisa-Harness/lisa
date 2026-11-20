@@ -65,7 +65,7 @@ From a source checkout:
 ```sh
 git clone https://github.com/Lisa-Harness/lisa.git
 cd lisa
-uv sync --frozen --extra dev
+uv sync --locked --extra dev
 uv run pytest packstest/tests -m "not live" -q
 ```
 

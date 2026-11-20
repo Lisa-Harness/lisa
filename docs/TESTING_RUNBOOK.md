@@ -9,7 +9,7 @@ see [testing and quality gates](TESTING.md).
 Run all commands from the framework repository root:
 
 ```bash
-uv sync --frozen --extra dev
+uv sync --locked --extra dev
 ```
 
 ## Choose a test layer

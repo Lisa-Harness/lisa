@@ -36,7 +36,7 @@ The [documentation index](docs/README.md) links the full reference corpus.
 ```sh
 git clone https://github.com/Lisa-Harness/lisa.git
 cd lisa
-uv sync --frozen --extra dev
+uv sync --locked --extra dev
 uv run pytest packstest/tests -m "not live" -q
 ```
 
@@ -203,14 +203,16 @@ Read [storage](docs/STORAGE.md) and the [security policy](SECURITY.md).
 Prepare releases in a PR, not with direct pushes to `main`. Follow the
 [release checklist](docs/RELEASE_CHECKLIST.md#pr-based-releases-and-protected-main):
 update versions and release notes, pass the required **Merge gate** and a manual
-`Publish` validation, then land the PR by rebase or squash and tag the verified
-main commit. `main` keeps a linear history: merge commits are rejected.
+`Publish` validation, then land the PR by rebase and merge and tag the verified
+main commit. `main` keeps a linear history: squash merges and merge commits are
+disabled.
 
 The `Publish` workflow validates CI, builds wheels and source distributions for
 all ten workspace packages, checks distribution metadata, and retains the build
-artifacts. Run it manually on `main` to validate without publishing. Pushing a
-`v<version>` tag additionally publishes to PyPI and creates a GitHub release with
-the distributions attached. Every package version must match the tag.
+artifacts. Run it manually on the release branch to validate without
+publishing. Pushing a `v<version>` tag additionally publishes to PyPI and
+creates a GitHub release with the distributions attached. Every package
+version must match the tag.
 
 Before the first tag, register GitHub pending publishers in
 [PyPI publishing settings](https://pypi.org/manage/account/publishing/).

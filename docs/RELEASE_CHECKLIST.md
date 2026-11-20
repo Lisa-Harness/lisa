@@ -7,22 +7,29 @@ forever.
 
 ## PR-based releases and protected main
 
-All changes, including release preparation, reach `main` through pull requests.
-Main protection requires the GitHub Actions **Merge gate** check, with the branch
-up to date before merging. It covers quality, documentation, and the full
-OS/Python test and coverage matrix, including docs-only changes. Failed,
-cancelled, or skipped dependencies cannot produce a successful merge gate.
+`main` is the only integration branch and remains continuously releasable.
+Product changes reach it from short-lived feature branches through pull
+requests; no long-lived `dev` branch accumulates unvalidated work. Each PR must
+include its tests, docs, and changelog entry before merging.
+
+Main protection requires the GitHub Actions **Merge gate** check, with the
+branch up to date before merging. It covers quality, documentation, the full
+OS/Python test and coverage matrix, and an all-package distribution build.
+Failed, cancelled, or skipped dependencies cannot produce a successful merge
+gate.
 
 Require PR conversations to be resolved, block force pushes and branch deletion,
 and enforce protection for administrators. No approving review is mandatory so a
 solo maintainer can merge their own passing PR. Configure these repository
 settings in GitHub; workflow files alone do not enable branch protection.
 
-Merge policy is **linear history**: enable **rebase and merge** and **squash and
-merge**, disable **merge commits**, and enable required linear history. GitHub
-enforces this at the server — a merge commit cannot land and no workflow check
-duplicates it. Rebase a branch onto `main` instead of merging `main` into it,
-and fold `fixup!` commits with `git rebase --autosquash` before merging.
+Merge policy is **linear history**: enable **rebase and merge** only; disable
+**squash merge** and **merge commits**, and enable required linear history.
+GitHub enforces this at the server. Rebase a branch onto `main` instead of
+merging `main` into it. A PR preserves its logical commits, so use multiple
+focused PRs rather than accumulating unrelated work and collapsing it into one
+commit. Fold correction commits into their target with `git commit --fixup`
+followed by `git rebase --autosquash` before landing.
 
 1. Create a `release/vX.Y.Z` branch from current `main`.
 2. Update the root workspace and all ten package versions, refresh `uv.lock`,
@@ -34,10 +41,9 @@ and fold `fixup!` commits with `git rebase --autosquash` before merging.
    validation and distribution build without uploading to PyPI. Verify that
    the run succeeded on the PR's latest commit; rerun after changes.
 5. Rebase the release branch if `main` moved, then land the PR with **rebase and
-   merge** or **squash and merge** — never a merge commit. Fetch the resulting
-   `main`, wait for its checks to pass, then create and push an annotated
-   `vX.Y.Z` tag on that verified main commit. Never tag an unmerged release
-   branch.
+   merge** — never squash merge or a merge commit. Fetch the resulting `main`,
+   wait for its checks to pass, then create and push an annotated `vX.Y.Z` tag
+   on that verified main commit. Never tag an unmerged release branch.
 6. Monitor `Publish` through all ten uploads and GitHub release creation.
    Do not move a release tag or reuse a published version.
 

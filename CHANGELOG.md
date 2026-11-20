@@ -4,6 +4,12 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Main is now the sole integration branch and pull requests must land with
+  rebase-and-merge so logical commits stay visible. Every PR validates release
+  metadata and builds and checks all distributions before the merge gate.
+
 ## [0.6.0] - 2026-11-19
 
 ### Added

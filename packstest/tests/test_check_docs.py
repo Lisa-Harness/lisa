@@ -79,6 +79,11 @@ class TestCorpusSelection:
         workflow = (_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         assert "paths-ignore:" not in workflow
 
+    def test_readme_release_instructions_are_rebase_only(self) -> None:
+        readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        assert "land the PR by rebase and merge" in readme
+        assert "rebase or squash" not in readme
+
 
 class TestDetectedDefects:
     """Each check fires on the defect it claims to catch."""
