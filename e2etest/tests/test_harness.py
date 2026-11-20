@@ -209,6 +209,20 @@ async def test_close_runtime_records_ordinary_close_exception() -> None:
     assert outcome.aborted == "runtime.aclose() failed: close failed"
 
 
+@pytest.mark.asyncio
+async def test_close_runtime_records_direct_base_exception() -> None:
+    from e2etest.driver import DriverOutcome, _close_runtime
+
+    class FakeRuntime:
+        async def aclose(self) -> None:
+            raise BaseException("close interrupted")
+
+    outcome = DriverOutcome()
+    await _close_runtime(FakeRuntime(), outcome)
+
+    assert outcome.aborted == "runtime.aclose() interrupted: close interrupted"
+
+
 def test_driver_forwards_surface_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``run_conversation`` must pass scenario.surface into ``build_runtime``."""
     captured: dict[str, Any] = {}

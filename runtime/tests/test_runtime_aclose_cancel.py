@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import runtime.thread as thread_module
 from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
 from runtime.runtime import HostRuntime
 
@@ -526,3 +527,69 @@ def test_aclose_preserves_existing_start_error_over_cancellation(tmp_path: Path)
         assert str(runtime.resources._mcp_start_exc) == "existing startup failure"
 
     asyncio.run(_scenario())
+
+
+def test_deferred_pool_aclose_suppresses_base_exception(tmp_path: Path) -> None:
+    class BaseExceptionPool:
+        async def aclose(self) -> None:
+            raise BaseException("deferred pool close interrupted")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_close_signal = asyncio.Event()
+        runtime.resources._mcp_started_event = asyncio.Event()
+        runtime.resources._mcp_tool_pool = cast(Any, BaseExceptionPool())
+
+        async def _build_proxy_pool() -> None:
+            return None
+
+        async def _build_pool() -> None:
+            runtime.resources._mcp_started = True
+
+        runtime.resources._build_proxy_pool = _build_proxy_pool
+        runtime.resources._build_pool = _build_pool
+        runtime.resources._mcp_start_task = asyncio.create_task(
+            runtime.resources._start_pool_impl(deferred=True)
+        )
+        await runtime.resources._mcp_started_event.wait()
+        runtime.resources._mcp_close_signal.set()
+        await runtime.resources._mcp_start_task
+        assert runtime.resources._mcp_tool_pool is None
+
+    asyncio.run(_scenario())
+
+
+def test_deferred_aclose_suppresses_task_base_exception(tmp_path: Path) -> None:
+    async def _raise_base_exception() -> None:
+        raise BaseException("deferred start task interrupted")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_started_event = asyncio.Event()
+        runtime.resources._mcp_started_event.set()
+        runtime.resources._mcp_close_signal = asyncio.Event()
+        runtime.resources._mcp_start_task = asyncio.create_task(_raise_base_exception())
+        await asyncio.sleep(0)
+
+        await runtime.aclose()
+        assert runtime.resources._mcp_start_task is None
+
+    asyncio.run(_scenario())
+
+
+def test_refresh_run_manifest_failure_preserves_previous_ref(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path)
+    runtime._run_ref = "r" + "1" * 64
+    original = thread_module.persist_thread_tool_result
+
+    def _fail_persist(*_args: Any, **_kwargs: Any) -> str:
+        del _args, _kwargs
+        raise RuntimeError("manifest persist failed")
+
+    thread_module.persist_thread_tool_result = _fail_persist
+    try:
+        result = runtime.refresh_run_manifest()
+    finally:
+        thread_module.persist_thread_tool_result = original
+
+    assert result == runtime._run_ref
