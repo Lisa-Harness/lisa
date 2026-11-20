@@ -16,8 +16,10 @@ The [project README](../README.md) explains the project and its current status.
   and exact-action decisions.
 - [Troubleshooting](TROUBLESHOOTING.md): setup failures, catalog collisions,
   blocked work, approvals, and useful diagnostics.
-- [Storage and data handling](STORAGE.md): persistence, backups, privacy,
-  and the direct-I/O policy.
+- [Storage and data handling](STORAGE.md): persistence, sandbox operations,
+  reversible directory trash, backups, privacy, and the direct-I/O policy.
+- [Storage directory operations](SPEC/STORAGE-DIRECTORY-OPS.md):
+  the implemented directory, trash, purge, and batch contract.
 - [Logging](LOGGING.md): observability configuration and contributor standards.
 - [Turn forensics](FORENSICS.md): how to read the evidence for a past turn —
   the four sources, the `turn_index` join, the three failure shapes, and what
@@ -49,6 +51,12 @@ The [project README](../README.md) explains the project and its current status.
   and the migration phases behind it.
 - [Model router](../sdk/src/sdk/router/README.md): per-iteration CEL rules
   and provider-independent model selection.
+- [Model data layers specification](SPEC/implemented/MODEL-DATA-LAYERS.md): separate
+  provider facts, measured data, and operator-owned model settings.
+- [Coding edit schema recovery proposal](design/coding-edit-schema-recovery.md):
+  authored validation recovery and digest normalization for the coding pack.
+- [Cache efficiency specification](SPEC/implemented/CACHE-EFFICIENCY.md): telemetry,
+  history folding, cache-preserving handoffs, and before/after measurement.
 - [Context routing](CONTEXT_ROUTING_GUIDE.md): evidence selectors, lanes,
   ranking, required candidates, and admission budgets.
 - [Context lifecycle](CONTEXT_LIFECYCLE.md): lossless references, resident
@@ -59,6 +67,16 @@ The [project README](../README.md) explains the project and its current status.
   consolidation, and thread provenance.
 - [Thread store specification](SPEC/THREAD_STORE.md): files, records,
   result references, and bounded read paths.
+- Observability and replay program (proposed, in order):
+  1. [Evidence envelope](SPEC/EVIDENCE-ENVELOPE.md): versioned ledger rows,
+     call-level join keys, run provenance, and delegation lineage.
+  2. [Model call archive](SPEC/MODEL-CALL-ARCHIVE.md): archived response for
+     every in-turn and off-turn model call.
+  3. [Turn replay](SPEC/TURN-REPLAY.md): re-run a recorded turn, detect
+     divergence, and export it as a regression scenario.
+  4. [Trace export and timeline](SPEC/TRACE-EXPORT-AND-TIMELINE.md): span
+     tree, OpenTelemetry export, propagation, timeline, and retention. Can
+     start after step 1.
 - [Prompt startup proposal](SPEC/PROMPT_STARTUP.md): deferred cache/lifecycle,
   in-process content/catalog, import and CLI correctness work.
 - [Go Connector SDK contract](GO_CONNECTOR_SDK.md): the language-neutral
@@ -70,7 +88,8 @@ The [project README](../README.md) explains the project and its current status.
 ## Contribute and maintain
 
 - [Contributing](../CONTRIBUTING.md) and [Python development](python-BCP.md).
-- [Testing](TESTING.md), [packstest](../packstest/README.md), and
+- [Testing runbook](TESTING_RUNBOOK.md), [testing policy](TESTING.md),
+  [packstest](../packstest/README.md), and
   [whole-runtime scenarios](../e2etest/README.md).
 - [Coding workflow](CODING_WORKFLOW.md), including the standing test
   assurances. The coding-pack workflow is distinct from contributing to this

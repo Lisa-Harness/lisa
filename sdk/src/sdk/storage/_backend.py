@@ -4,7 +4,7 @@ Extracted verbatim from the former ``mcp_server/storage/server.py``: the
 sandbox resolver, deny-glob matcher, ``PathRejected`` exception, and
 model-manifest path logic. The MCP server is now a thin wrapper — it
 wires ``--data-dir`` / ``--readonly`` / ``--deny-globs`` into a
-:class:`StorageBackend` and exposes the 8 file tools plus the manifest
+:class:`StorageBackend` and exposes the 16 file tools plus the manifest
 pair.
 
 This gives the SDK a complete contract for storage access that can be
@@ -22,16 +22,38 @@ import os
 import shutil
 import stat
 import tempfile
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from typing import Any
 
 from sdk.content import is_safe_relative_path
 from sdk.layout import CONFIG_DIR, DATA_DIR, STATE_DIR
+from sdk.storage._move import (
+    SecureMoveError,
+    _os_error_text,
+    move_directory,
+    move_regular_file,
+)
 
 __all__ = ["PathRejected", "StorageBackend"]
 
 _FILES_SUBDIR = "files"
+_SHA256_HEX_LENGTH = 64
+_TRASH_SUBDIR = ".trash"
+_TRASH_DENY_GLOB = ".trash/**"
+_TRASH_ROOT_DENY_GLOB = ".trash"
+_TRASH_TIMESTAMP_FORMAT = "%Y-%m-%dT%H-%M-%S.%f"
+#: Batches are queues of independent atomic ops, capped at 100 items
+#: per call (R9 — the provisional 64 was raised).
+_BATCH_CAP = 100
+_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +270,7 @@ def _atomic_replace(target: Path, payload: bytes) -> str | None:
         os.replace(temporary_path, target)
         temporary_path = None
     except OSError as exc:
-        return json.dumps({"error": f"edit failed: {exc}"})
+        return json.dumps({"error": _os_error_text("edit", exc)})
     finally:
         if temporary_path is not None:
             with suppress(OSError):
@@ -294,6 +316,8 @@ class StorageBackend:
             match denies read/write/list/stat/delete/make_dir on that path.
             Empty by default (no denial). Glob syntax is portable
             (``*.db``, ``threads/**``, ``repl_history.txt``).
+            ``.trash/**`` and the bare ``.trash`` root are always
+            appended — trash is policy-hidden.
     """
 
     def __init__(
@@ -305,7 +329,17 @@ class StorageBackend:
     ) -> None:
         self._data_dir: Path = data_dir
         self._readonly: bool = readonly
-        self._deny_globs: tuple[str, ...] = tuple(deny_globs)
+        # `.trash/**` and the bare `.trash` root are always appended: the
+        # trash subtree stays hidden from every routine operation
+        # (list/read/write/stat/edit/delete) and cannot be un-hidden by
+        # caller configuration. The sanctioned exceptions — purge, restore
+        # moves out of trash, and deletes on a trash session subtree —
+        # bypass the glob in their own seams.
+        self._deny_globs: tuple[str, ...] = (
+            *deny_globs,
+            _TRASH_DENY_GLOB,
+            _TRASH_ROOT_DENY_GLOB,
+        )
         if not readonly:
             (data_dir / DATA_DIR / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)
         # One-time migration: the legacy ``checkpoints/`` directory was
@@ -434,7 +468,7 @@ class StorageBackend:
         except UnicodeDecodeError:
             return json.dumps({"error": "file is not valid text for the requested encoding"})
         except OSError as exc:
-            return json.dumps({"error": f"read failed: {exc}"})
+            return json.dumps({"error": _os_error_text("read", exc)})
 
     def write_file(self, path: str, content: str) -> str:
         """Write text content to a file in the files sandbox.
@@ -497,7 +531,7 @@ class StorageBackend:
                 }
             )
         except OSError as exc:
-            return json.dumps({"error": f"write failed: {exc}"})
+            return json.dumps({"error": _os_error_text("write", exc)})
 
     def edit_file(
         self,
@@ -615,7 +649,7 @@ class StorageBackend:
         except UnicodeDecodeError:
             return json.dumps({"error": "file is not valid text for the requested encoding"})
         except OSError as exc:
-            return json.dumps({"error": f"read failed: {exc}"})
+            return json.dumps({"error": _os_error_text("read", exc)})
         if expected_sha256:
             current = hashlib.sha256(original_bytes).hexdigest()
             if expected_sha256.strip().lower() != current:
@@ -668,23 +702,803 @@ class StorageBackend:
     def delete_file(self, path: str) -> str:
         """Delete a file from the files sandbox.
 
-        Fails on directories. Respects ``readonly``.
+        Fails on directories. Does not follow symlinks: a leaf symlink
+        is unlinked itself, never its target (POSIX ``rm`` semantics).
+        Respects ``readonly``.
         """
         if self._readonly:
             return json.dumps({"error": "server is read-only"})
-        resolved, err = self.resolve_or_error(path)
-        if err is not None:
-            return err
-        assert resolved is not None
-        if not resolved.exists():
-            return json.dumps({"error": f"file not found: {path}"})
-        if resolved.is_dir():
-            return json.dumps({"error": "delete_file targets a directory; use a file path"})
+        return json.dumps(self._delete_file_entry(path))
+
+    def _resolve_nofollow(self, path: str) -> tuple[Path, tuple[str, ...]] | dict[str, Any]:
+        """Resolve a path's parent while keeping the leaf name unresolved.
+
+        Validation mirrors :meth:`resolve_file_path` — traversal,
+        deny-glob, and sandbox containment — but only the parent is
+        resolved. The leaf comes back as a plain name inside that parent
+        so callers can ``lstat`` and unlink the entry itself: a leaf
+        symlink is deleted, never its target.
+        """
+        raw = path.strip()
+        if not raw or Path(raw).is_absolute():
+            return {"error": "path rejected: unsafe or escapes sandbox"}
+        normalized = raw.strip("/\\")
+        if "\0" in normalized or not is_safe_relative_path(normalized):
+            return {"error": "path rejected: unsafe or escapes sandbox"}
+        if self.denied_by_policy(normalized):
+            return {"error": "path denied by policy"}
+        parts = tuple(normalized.split("/"))
+        root = self.files_root()
+        parent = root.joinpath(*parts[:-1]).resolve()
         try:
-            resolved.unlink()
+            parent.relative_to(root.resolve())
+        except ValueError:
+            return {"error": "path rejected: unsafe or escapes sandbox"}
+        return parent / parts[-1], parts
+
+    def _delete_file_entry(self, path: str) -> dict[str, Any]:
+        """Delete one file without following a leaf symlink.
+
+        Returns the receipt dict — ``{"ok": True, "path": ...}`` or
+        ``{"error": ...}`` — so ``delete_file`` wraps it unchanged and
+        the batch delete can reuse it per item.
+        """
+        resolved = self._resolve_nofollow(path)
+        if not isinstance(resolved, tuple):
+            return resolved
+        target, _ = resolved
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            return {"error": f"file not found: {path}"}
         except OSError as exc:
-            return json.dumps({"error": f"delete failed: {exc}"})
-        return json.dumps({"ok": True, "path": path})
+            return {"error": _os_error_text("delete", exc)}
+        if stat.S_ISDIR(info.st_mode):
+            return {"error": "delete_file targets a directory; use a file path"}
+        try:
+            target.unlink()
+        except OSError as exc:
+            return {"error": _os_error_text("delete", exc)}
+        return {"ok": True, "path": path}
+
+    def delete_files(self, paths: list[str]) -> str:
+        """Delete files in list order with per-item receipts.
+
+        A batch is a queue of independent atomic operations with one
+        receipt, not a transaction (spec §6): each item is validated
+        (existence, policy, type) and executed in list order, a failing
+        item records its own error, and the batch never aborts
+        mid-way. No glob expansion — explicit path lists only; a glob
+        turns one typo into a wipe. The summary's ``ok`` is True only
+        when every item succeeded.
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        refused = self._batch_refusal(paths)
+        if refused is not None:
+            return refused
+        results = [self._guarded_path_item(path, self._delete_file_entry) for path in paths]
+        return json.dumps(self._batch_summary(results))
+
+    def _batch_refusal(self, items: list[Any], *, label: str = "paths") -> str | None:
+        """Refuse an empty or over-cap batch before anything executes.
+
+        Batch-level refusals are the only abort mode and happen before
+        the first item runs; once execution starts, failures are
+        per-item data. The cap is 100 items per batch (R9).
+        """
+        if not items:
+            return json.dumps({"error": f"batch {label} list is empty"})
+        if len(items) > _BATCH_CAP:
+            return json.dumps({"error": f"batch exceeds the {_BATCH_CAP}-item cap"})
+        return None
+
+    def _batch_item(self, path: str, receipt: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one per-item receipt to ``{path, ok, error?}``."""
+        if "ok" in receipt:
+            return {"path": path, "ok": True}
+        return {"path": path, "ok": False, "error": receipt["error"]}
+
+    def _guarded_path_item(
+        self,
+        item: Any,
+        entry: Callable[[str], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Run one path-batch entry call, converting any failure to data.
+
+        The batch contract (never a mid-batch abort) must hold even on
+        malformed input: a non-str path records its own per-item error,
+        and an unexpected exception from the entry call is converted to
+        a receipt instead of escaping the loop. The guard stays tight
+        to the item call — batch-level refusals (readonly, empty,
+        over-cap) still fire before the first item.
+        """
+        if not isinstance(item, str):
+            return {
+                "path": item,
+                "ok": False,
+                "error": "malformed path: expected a non-empty string",
+            }
+        try:
+            return self._batch_item(item, entry(item))
+        except Exception as exc:  # pylint: disable=broad-except
+            return {"path": item, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _guarded_pair_item(
+        self,
+        item: Any,
+        entry: Callable[..., dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Run one pair-batch entry call, converting any failure to data.
+
+        Same isolation contract as :meth:`_guarded_path_item` for the
+        move-pair shape: a non-dict pair or an unexpected exception
+        becomes per-pair data, never a batch abort.
+        """
+        if not isinstance(item, dict):
+            return {
+                "source": "",
+                "destination": "",
+                "ok": False,
+                "error": "malformed pair: expected an object with source and destination",
+            }
+        try:
+            return entry(item, **kwargs)
+        except Exception as exc:  # pylint: disable=broad-except
+            return {
+                "source": item.get("source", ""),
+                "destination": item.get("destination", ""),
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    def _batch_summary(self, results: list[dict[str, Any]]) -> dict[str, Any]:
+        """Fold per-item receipts into the batch summary."""
+        succeeded = sum(1 for entry in results if entry["ok"])
+        return {
+            "ok": succeeded == len(results),
+            "count": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
+            "results": results,
+        }
+
+    def delete_directory(
+        self,
+        path: str,
+        *,
+        recursive: bool = False,
+        trash: bool = True,
+        expected_empty: bool = False,
+    ) -> str:
+        """Delete one directory: rmdir-only by default, trash-first.
+
+        The default is the reorg-residue case: ``recursive=False`` is
+        rmdir-only and fails with a clear error if the directory has any
+        content. ``recursive=True`` is the explicitly-named blast-radius
+        mode. ``trash=True`` (the default) renames the directory into a
+        timestamped ``.trash/<ts>/`` subtree first, so the plain
+        recursive opt-in rides on a reversible substrate; the receipt
+        carries ``trashed_to`` so restore is actionable.
+
+        ``expected_empty`` binds the delete to the caller's belief the
+        directory is empty: with it set, a non-empty directory is
+        refused even under ``recursive=True`` (staleness guard, the
+        directory analogue of ``expected_sha256``).
+
+        Deleting a ``.trash/...`` subtree is the sanctioned purge path
+        and is never denied — but it is always a hard delete: trashing
+        trash would nest forever. The bare ``.trash`` root itself is
+        refused: one unbounded call must not drain every session at
+        once — ``purge_trash`` is the bounded drain.
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        prepared = self._resolve_delete_directory(path)
+        if isinstance(prepared, str):
+            return prepared
+        target, parts = prepared
+
+        if parts == (_TRASH_SUBDIR,):
+            return json.dumps(
+                {
+                    "error": (
+                        "refusing to delete the entire .trash root in one call; "
+                        "purge_trash drains it in bounded slices"
+                    )
+                }
+            )
+
+        if self._is_trash_path("/".join(parts)):
+            trash = False
+
+        error = self._refuse_non_empty(
+            target, path, expected_empty=expected_empty, recursive=recursive
+        )
+        if error is not None:
+            return error
+
+        if not recursive:
+            return self._rmdir_directory(target, path)
+        return self._recursive_delete(target, parts, trash=trash)
+
+    def _rmdir_directory(self, target: Path, path: str) -> str:
+        """Remove one empty directory (the rmdir-only default)."""
+        try:
+            os.rmdir(target)
+        except OSError as exc:
+            return json.dumps({"error": _os_error_text("delete", exc)})
+        return json.dumps({"ok": True, "path": path, "removed_files": 0, "removed_dirs": 1})
+
+    def _recursive_delete(self, target: Path, parts: tuple[str, ...], *, trash: bool) -> str:
+        """Recursive blast-radius mode: trash-first, or the hard delete."""
+        if trash:
+            return json.dumps(self._trash_directory(target, parts))
+        removed_files, removed_dirs, error = self._hard_delete_tree(target)
+        if error is not None:
+            return json.dumps(
+                {
+                    "error": error,
+                    "removed_files": removed_files,
+                    "removed_dirs": removed_dirs,
+                }
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "path": "/".join(parts),
+                "removed_files": removed_files,
+                "removed_dirs": removed_dirs,
+            }
+        )
+
+    def _resolve_delete_directory(self, path: str) -> tuple[Path, tuple[str, ...]] | str:
+        """Resolve and type-check one delete_directory target.
+
+        Directory delete is nofollow end-to-end: any symlinked path
+        component is refused before recursion/trash runs.
+        """
+        prepared = self._move_path_parts(path, label="path", allow_trash=True)
+        if isinstance(prepared, str):
+            return prepared
+        return self._resolve_existing_directory_nofollow(path, prepared)
+
+    def _resolve_existing_directory_nofollow(
+        self, original_path: str, parts: tuple[str, ...]
+    ) -> tuple[Path, tuple[str, ...]] | str:
+        """Resolve existing directory parts without following symlinks."""
+        current = self.files_root()
+        for index, component in enumerate(parts):
+            target = current / component
+            info, error = self._lstat_directory_component(
+                target,
+                original_path=original_path,
+            )
+            if error is not None:
+                return error
+            assert info is not None
+            if stat.S_ISLNK(info.st_mode):
+                return json.dumps({"error": "path rejected: symlink component"})
+            if not stat.S_ISDIR(info.st_mode):
+                if index == len(parts) - 1:
+                    return json.dumps(
+                        {"error": "delete_directory targets a file; use a directory path"}
+                    )
+                return json.dumps({"error": "path rejected: unsafe or escapes sandbox"})
+            current = target
+        return current, parts
+
+    def _lstat_directory_component(
+        self, target: Path, *, original_path: str
+    ) -> tuple[os.stat_result | None, str | None]:
+        """Return ``(lstat, error_json)`` for a directory-delete component."""
+        try:
+            return target.lstat(), None
+        except FileNotFoundError:
+            return None, json.dumps({"error": f"directory not found: {original_path}"})
+        except OSError as exc:
+            return None, json.dumps({"error": _os_error_text("delete", exc)})
+
+    def _refuse_non_empty(
+        self, target: Path, path: str, *, expected_empty: bool, recursive: bool
+    ) -> str | None:
+        """Refuse a non-empty target unless recursion is sanctioned.
+
+        ``rmdir-only`` (the default) and ``expected_empty`` both bind the
+        delete to emptiness, and the refusal must land before the trash
+        rename so a default call can never silently move content into
+        ``.trash`` instead of failing (spec §3).
+        """
+        if recursive and not expected_empty:
+            return None
+        reason = " (expected_empty)" if expected_empty else ""
+        try:
+            has_entries = any(os.scandir(target))
+        except OSError as exc:
+            return json.dumps({"error": _os_error_text("delete", exc)})
+        if has_entries:
+            return json.dumps({"error": f"directory is not empty{reason}: {path}"})
+        return None
+
+    def _trash_directory(self, target: Path, parts: tuple[str, ...]) -> dict[str, Any]:
+        """Rename the directory into a timestamped trash subtree.
+
+        Rename-first, always (spec §5): no hard-link fallback, no copy.
+        The timestamped directory is unique per trash operation so
+        repeated trashes of the same path never collide; the original
+        relative layout is preserved inside it, so restore is simply
+        ``move_directory('.trash/<ts>/<relpath>', '<relpath>')``.
+
+        Entry counts are taken before the rename: ``.trash/**`` is
+        deny-glob hidden from ``list_files``, so the receipt's counts
+        are the caller's only visibility into what left the tree.
+        """
+        removed_files = 0
+        removed_dirs = 1
+        try:
+            for _root, dirnames, filenames in os.walk(target, topdown=True):
+                for dirname in dirnames:
+                    candidate = Path(_root) / dirname
+                    if candidate.is_symlink():
+                        removed_files += 1
+                    else:
+                        removed_dirs += 1
+                removed_files += len(filenames)
+        except OSError as exc:
+            return {"error": _os_error_text("trash", exc)}
+        stamp = datetime.now(tz=UTC).strftime(_TRASH_TIMESTAMP_FORMAT)
+        trash_root = self.files_root() / _TRASH_SUBDIR
+        try:
+            trash_root.mkdir(parents=True, exist_ok=True)
+            session_dir = trash_root / stamp
+            session_dir.mkdir()
+        except OSError as exc:
+            return {"error": _os_error_text("trash", exc)}
+        destination = session_dir.joinpath(*parts)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(target, destination)
+        except OSError as exc:
+            with suppress(OSError):
+                shutil.rmtree(session_dir)
+            return {"error": _os_error_text("trash", exc)}
+        return {
+            "ok": True,
+            "path": "/".join(parts),
+            "trashed_to": f"{_TRASH_SUBDIR}/{stamp}/{'/'.join(parts)}",
+            "removed_files": removed_files,
+            "removed_dirs": removed_dirs,
+        }
+
+    def _hard_delete_tree(self, target: Path) -> tuple[int, int, str | None]:
+        """Hard-delete a directory tree without following symlinks.
+
+        Symlinked entries are unlinked themselves (R7), never their
+        targets; real directories are recursed into and each subtree
+        root is removed by its own recursive call. The target root is
+        removed last, so a partial failure leaves the shallowest
+        possible remains. Returns ``(removed_files, removed_dirs,
+        error)`` — counts survive a partial failure so the receipt
+        reports what was removed.
+        """
+        if not self._supports_dirfd_recursive_delete():
+            return (
+                0,
+                0,
+                "delete failed: recursive hard delete requires dir_fd support on this platform",
+            )
+
+        removed_files = 0
+        removed_dirs = 0
+        parts, error = self._relative_parts_for_delete(target)
+        if error is not None:
+            return removed_files, removed_dirs, error
+        assert parts is not None
+
+        root_fd = self._open_root_directory_fd()
+        if isinstance(root_fd, str):
+            return removed_files, removed_dirs, root_fd
+        parent_fd = -1
+        try:
+            opened_parent = self._open_parent_directory_fd(root_fd, parts[:-1])
+            if isinstance(opened_parent, str):
+                return removed_files, removed_dirs, opened_parent
+            parent_fd = opened_parent
+            removed_files, removed_dirs, error = self._hard_delete_directory_entry(
+                parent_fd,
+                parts[-1],
+            )
+            return removed_files, removed_dirs, error
+        finally:
+            if isinstance(parent_fd, int) and parent_fd >= 0:
+                os.close(parent_fd)
+            os.close(root_fd)
+
+    def _supports_dirfd_recursive_delete(self) -> bool:
+        """True when this runtime supports fd-relative unlink/rmdir operations."""
+        required = (os.open, os.unlink, os.rmdir)
+        return all(function in os.supports_dir_fd for function in required)
+
+    def _relative_parts_for_delete(self, target: Path) -> tuple[tuple[str, ...] | None, str | None]:
+        """Return target parts relative to files root for descriptor-relative delete."""
+        try:
+            relative = target.relative_to(self.files_root())
+        except ValueError:
+            return None, "delete failed: path is outside the files sandbox"
+        parts = relative.parts
+        if not parts:
+            return None, "delete failed: cannot remove the files sandbox root"
+        return parts, None
+
+    def _open_root_directory_fd(self) -> int | str:
+        """Open the files sandbox root for descriptor-relative deletion."""
+        try:
+            return os.open(self.files_root(), _DIRECTORY_OPEN_FLAGS)
+        except OSError as exc:
+            return _os_error_text("delete", exc)
+
+    def _open_parent_directory_fd(self, root_fd: int, parts: tuple[str, ...]) -> int | str:
+        """Open parent directories without following symlinks."""
+        current_fd = os.dup(root_fd)
+        try:
+            for component in parts:
+                try:
+                    next_fd = os.open(component, _DIRECTORY_OPEN_FLAGS, dir_fd=current_fd)
+                except FileNotFoundError:
+                    os.close(current_fd)
+                    return "delete failed: No such file or directory"
+                except OSError as exc:
+                    os.close(current_fd)
+                    return _os_error_text("delete", exc)
+                os.close(current_fd)
+                current_fd = next_fd
+            return current_fd
+        except BaseException:
+            os.close(current_fd)
+            raise
+
+    def _hard_delete_directory_entry(
+        self, parent_fd: int, name: str
+    ) -> tuple[int, int, str | None]:
+        """Delete one directory entry under ``parent_fd`` recursively."""
+        try:
+            directory_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return 0, 0, "delete failed: No such file or directory"
+        except OSError as exc:
+            return 0, 0, _os_error_text("delete", exc)
+        try:
+            entries = list(os.scandir(directory_fd))
+        except OSError as exc:
+            os.close(directory_fd)
+            return 0, 0, _os_error_text("delete", exc)
+
+        removed_files = 0
+        removed_dirs = 0
+        try:
+            for entry in entries:
+                entry_files, entry_dirs, entry_error = self._hard_delete_child_entry(
+                    directory_fd, entry
+                )
+                removed_files += entry_files
+                removed_dirs += entry_dirs
+                if entry_error is not None:
+                    return removed_files, removed_dirs, entry_error
+        finally:
+            os.close(directory_fd)
+
+        try:
+            os.rmdir(name, dir_fd=parent_fd)
+        except OSError as exc:
+            return removed_files, removed_dirs, _os_error_text("delete", exc)
+        return removed_files, removed_dirs + 1, None
+
+    def _hard_delete_child_entry(
+        self, directory_fd: int, entry: os.DirEntry[str]
+    ) -> tuple[int, int, str | None]:
+        """Delete one child entry from an open directory fd."""
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                return self._hard_delete_directory_entry(directory_fd, entry.name)
+            os.unlink(entry.name, dir_fd=directory_fd)
+            return 1, 0, None
+        except FileNotFoundError:
+            return 0, 0, None
+        except OSError as exc:
+            return 0, 0, _os_error_text("delete", exc)
+
+    def move_file(
+        self,
+        source: str,
+        destination: str,
+        *,
+        expected_sha256: str = "",
+        create_parents: bool = False,
+    ) -> str:
+        """Atomically move one regular file without overwriting anything.
+
+        Both paths are interpreted relative to the files sandbox. Linux
+        uses descriptor-relative traversal and ``renameat2(RENAME_NOREPLACE)``;
+        unsupported platforms fail closed. Symlinks, hard-linked files, and
+        directories are refused.
+        """
+        return json.dumps(
+            self._move_file_entry(
+                source,
+                destination,
+                expected_sha256=expected_sha256,
+                create_parents=create_parents,
+            )
+        )
+
+    def _move_file_entry(
+        self,
+        source: str,
+        destination: str,
+        *,
+        expected_sha256: str = "",
+        create_parents: bool = False,
+    ) -> dict[str, Any]:
+        """Move one regular file, returning the receipt dict.
+
+        Mirrors :meth:`_delete_file_entry`: ``move_file`` wraps it
+        unchanged and the batch ``move_files`` reuses it per pair.
+        """
+        prepared = self._prepare_move(source, destination, expected_sha256=expected_sha256)
+        if isinstance(prepared, str):
+            return {"error": json.loads(prepared)["error"]}
+        source_parts, destination_parts, expected = prepared
+
+        try:
+            return move_regular_file(
+                self.files_root(),
+                source_parts=source_parts,
+                destination_parts=destination_parts,
+                expected_sha256=expected,
+                create_parents=create_parents,
+            )
+        except SecureMoveError as exc:
+            return {"error": str(exc), **exc.details}
+
+    def move_directory(self, source: str, destination: str, *, create_parents: bool = False) -> str:
+        """Atomically move one directory without overwriting anything.
+
+        Both paths are interpreted relative to the files sandbox. Reuses
+        the secure-mover machinery — descriptor-relative parent walk,
+        ``renameat2(RENAME_NOREPLACE)`` — so the whole subtree moves as
+        one atomic rename with the same ``EEXIST``/``EXDEV`` failure
+        modes as ``move_file``. The source must be a real directory
+        (symlinks are refused); a destination inside the source subtree
+        is refused. The receipt omits ``sha256`` — a directory has no
+        content hash to pin.
+        """
+        prepared = self._prepare_move(source, destination, expected_sha256="")
+        if isinstance(prepared, str):
+            return prepared
+        source_parts, destination_parts, _ = prepared
+
+        try:
+            receipt = move_directory(
+                self.files_root(),
+                source_parts=source_parts,
+                destination_parts=destination_parts,
+                create_parents=create_parents,
+            )
+        except SecureMoveError as exc:
+            return json.dumps({"error": str(exc), **exc.details})
+        return json.dumps(receipt)
+
+    def move_files(
+        self,
+        pairs: list[dict[str, str]],
+        *,
+        create_parents: bool = False,
+    ) -> str:
+        """Move regular files in list order with per-pair receipts.
+
+        Same batch contract as :meth:`delete_files`: validate then
+        execute in list order, per-pair receipts, never a mid-batch
+        abort, no glob expansion, 100-pair cap. Each pair is
+        ``{"source": ..., "destination": ..., "expected_sha256"?: ...}``;
+        the hash is optional per pair and binds that move to a revision
+        reported by ``stat_file``. A malformed pair is a per-pair
+        error, not a batch refusal.
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        refused = self._batch_refusal(pairs, label="pairs")
+        if refused is not None:
+            return refused
+        results = [
+            self._guarded_pair_item(pair, self._move_pair_item, create_parents=create_parents)
+            for pair in pairs
+        ]
+        return json.dumps(self._batch_summary(results))
+
+    def _move_pair_item(self, pair: dict[str, str], *, create_parents: bool) -> dict[str, Any]:
+        """Normalize one pair to ``{source, destination, ok, error?}``.
+
+        Malformed pairs are per-pair data, never a batch abort: a
+        non-dict element or a non-string source/destination records its
+        own error so the batch contract (never a mid-batch abort)
+        holds even on malformed input.
+        """
+        if not isinstance(pair, dict):
+            return {
+                "source": "",
+                "destination": "",
+                "ok": False,
+                "error": "malformed pair: expected an object with source and destination",
+            }
+        source = pair.get("source", "")
+        destination = pair.get("destination", "")
+        if not isinstance(source, str) or not isinstance(destination, str):
+            return {
+                "source": source,
+                "destination": destination,
+                "ok": False,
+                "error": "pair requires non-empty string source and destination",
+            }
+        if not source or not destination:
+            return {
+                "source": source,
+                "destination": destination,
+                "ok": False,
+                "error": "pair requires non-empty source and destination",
+            }
+        receipt = self._move_file_entry(
+            source,
+            destination,
+            expected_sha256=pair.get("expected_sha256", ""),
+            create_parents=create_parents,
+        )
+        if "ok" in receipt:
+            return {"source": source, "destination": destination, "ok": True}
+        return {
+            "source": source,
+            "destination": destination,
+            "ok": False,
+            "error": receipt["error"],
+        }
+
+    def _prepare_move(
+        self, source: str, destination: str, *, expected_sha256: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...], str] | str:
+        """Validate move arguments before any filesystem mutation."""
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        # A trash source is the sanctioned restore path: the deny-glob
+        # that hides trash from routine ops must not block moving a
+        # trashed entry back out. Destinations are never exempt.
+        source_parts = self._move_path_parts(source, label="source", allow_trash=True)
+        if isinstance(source_parts, str):
+            return source_parts
+        destination_parts = self._move_path_parts(destination, label="destination")
+        if isinstance(destination_parts, str):
+            return destination_parts
+        if source_parts == destination_parts:
+            return json.dumps({"error": "source and destination are the same path"})
+        expected = expected_sha256.strip().lower()
+        if expected and (
+            len(expected) != _SHA256_HEX_LENGTH
+            or any(ch not in "0123456789abcdef" for ch in expected)
+        ):
+            return json.dumps({"error": "expected_sha256 must be 64 hexadecimal characters"})
+        return source_parts, destination_parts, expected
+
+    def _move_path_parts(
+        self, path: str, *, label: str, allow_trash: bool = False
+    ) -> tuple[str, ...] | str:
+        """Return canonical final-name components without resolving symlinks."""
+        raw = path.strip()
+        windows_path = PureWindowsPath(raw)
+        if (
+            not raw
+            or "\0" in raw
+            or raw.startswith(("/", "\\"))
+            or Path(raw).is_absolute()
+            or windows_path.drive
+            or windows_path.root
+        ):
+            return json.dumps({"error": f"{label} path rejected: unsafe or escapes sandbox"})
+
+        normalized = raw.replace("\\", "/")
+        parts = tuple(normalized.split("/"))
+        if any(part in {"", ".", ".."} for part in parts):
+            return json.dumps({"error": f"{label} path rejected: unsafe or escapes sandbox"})
+        if self.denied_by_policy(normalized) and not (
+            allow_trash and self._is_trash_path(normalized)
+        ):
+            return json.dumps({"error": f"{label} path denied by policy"})
+        return parts
+
+    def _is_trash_path(self, normalized: str) -> bool:
+        """True for the trash root or anything under it.
+
+        The restore/purge seams pass ``allow_trash=True`` so the
+        ``.trash/**`` deny-glob — which hides trash from every routine
+        operation — does not block the sanctioned exceptions: moving a
+        trashed entry back out, or deleting a trash subtree outright.
+        """
+        posix = normalized.replace("\\", "/")
+        return posix == _TRASH_SUBDIR or posix.startswith(_TRASH_SUBDIR + "/")
+
+    def purge_trash(self, older_than: str | None = None, limit: int = 100) -> str:
+        """Hard-delete the oldest trash sessions, bounded per call.
+
+        The sanctioned purge path (R8): each call removes at most
+        ``limit`` oldest timestamped ``.trash/<ts>/`` sessions and
+        returns ``{purged, has_more}``, so a large trash is drained
+        across bounded calls rather than one unbounded sweep.
+        ``older_than`` is an optional RFC 3339 cutoff — only sessions
+        strictly older than it are removed. Purge only ever runs when
+        explicitly called; there is no background sweeper, and delete
+        never auto-purges (that would destroy the safety window the
+        trash substrate exists to provide).
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        cutoff = self._parse_purge_cutoff(older_than)
+        if isinstance(cutoff, str):
+            return cutoff
+        if limit < 1:
+            return json.dumps({"error": "limit must be a positive integer"})
+        sessions = self._trash_sessions()
+        if isinstance(sessions, str):
+            return sessions
+        purgeable = [(stamp, name) for stamp, name in sessions if cutoff is None or stamp < cutoff]
+        purged = 0
+        for _stamp, name in purgeable[:limit]:
+            _files, _dirs, error = self._hard_delete_tree(self.files_root() / _TRASH_SUBDIR / name)
+            if error is not None:
+                remaining = len(purgeable) - purged
+                return json.dumps({"error": error, "purged": purged, "has_more": remaining > 0})
+            purged += 1
+        remaining = len(purgeable) - purged
+        return json.dumps({"ok": True, "purged": purged, "has_more": remaining > 0})
+
+    def _parse_purge_cutoff(self, older_than: str | None) -> datetime | str | None:
+        """Parse the RFC 3339 age cutoff; ``None`` means no cutoff.
+
+        A timestamp without an offset is naive; RFC 3339 requires an
+        offset, but a naive value is treated as UTC rather than
+        refused — the trash stamps themselves are UTC by construction.
+        """
+        if older_than is None:
+            return None
+        try:
+            cutoff = datetime.fromisoformat(older_than)
+        except ValueError:
+            return json.dumps({"error": f"older_than is not RFC 3339: {older_than}"})
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=UTC)
+        return cutoff
+
+    def _trash_sessions(self) -> list[tuple[datetime, str]] | str:
+        """Oldest-first ``(stamp, name)`` pairs for the trash sessions.
+
+        Session names are the UTC ``_TRASH_TIMESTAMP_FORMAT`` stamps
+        the trash substrate writes; anything else in ``.trash/`` is
+        foreign and left alone rather than counted or removed.
+        """
+        trash_root = self.files_root() / _TRASH_SUBDIR
+        try:
+            if not trash_root.exists():
+                return []
+            sessions = []
+            for entry in os.scandir(trash_root):
+                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                    continue
+                try:
+                    stamp = datetime.strptime(entry.name, _TRASH_TIMESTAMP_FORMAT)
+                except ValueError:
+                    continue
+                sessions.append((stamp.replace(tzinfo=UTC), entry.name))
+        except OSError as exc:
+            return json.dumps({"error": _os_error_text("purge", exc)})
+        sessions.sort()
+        return sessions
 
     def stat_file(self, path: str) -> str:
         """Return file metadata (size, modified timestamp, is_dir, sha256).
@@ -706,7 +1520,7 @@ class StorageBackend:
             try:
                 digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
             except OSError as exc:
-                return json.dumps({"error": f"read failed: {exc}"})
+                return json.dumps({"error": _os_error_text("read", exc)})
         return json.dumps(
             {
                 "path": path,
@@ -724,15 +1538,38 @@ class StorageBackend:
         """
         if self._readonly:
             return json.dumps({"error": "server is read-only"})
+        return json.dumps(self._make_dir_entry(path))
+
+    def _make_dir_entry(self, path: str) -> dict[str, Any]:
+        """Create one directory (and parents), returning the receipt dict.
+
+        Mirrors :meth:`_delete_file_entry`: ``make_dir`` wraps it
+        unchanged and the batch ``make_dirs`` reuses it per item.
+        """
         resolved, err = self.resolve_or_error(path)
         if err is not None:
-            return err
+            return {"error": json.loads(err)["error"]}
         assert resolved is not None
         try:
             resolved.mkdir(parents=True, exist_ok=True)
-            return json.dumps({"ok": True, "path": path})
         except OSError as exc:
-            return json.dumps({"error": f"make_dir failed: {exc}"})
+            return {"error": _os_error_text("make_dir", exc)}
+        return {"ok": True, "path": path}
+
+    def make_dirs(self, paths: list[str]) -> str:
+        """Create directories (and parents) in list order, per-item receipts.
+
+        Same batch contract as :meth:`delete_files`: validate then
+        execute in list order, per-item receipts, never a mid-batch
+        abort, no glob expansion, 100-item cap.
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        refused = self._batch_refusal(paths)
+        if refused is not None:
+            return refused
+        results = [self._guarded_path_item(path, self._make_dir_entry) for path in paths]
+        return json.dumps(self._batch_summary(results))
 
     def read_file_range(
         self,
@@ -770,7 +1607,7 @@ class StorageBackend:
         except UnicodeDecodeError:
             return json.dumps({"error": "file is not valid text for the requested encoding"})
         except OSError as exc:
-            return json.dumps({"error": f"read failed: {exc}"})
+            return json.dumps({"error": _os_error_text("read", exc)})
 
         total = len(text)
         s = max(0, int(start))
@@ -827,7 +1664,7 @@ class StorageBackend:
         except UnicodeEncodeError:
             return json.dumps({"error": "content is not valid UTF-8 text"})
         except OSError as exc:
-            return json.dumps({"error": f"append failed: {exc}"})
+            return json.dumps({"error": _os_error_text("append", exc)})
 
     # ── Model manifests ─────────────────────────────────────────────────────
 
@@ -846,7 +1683,7 @@ class StorageBackend:
         try:
             return path.read_text(encoding="utf-8")
         except OSError as exc:
-            return json.dumps({"error": f"read_model_manifest failed: {exc}"})
+            return json.dumps({"error": _os_error_text("read_model_manifest", exc)})
 
     def write_model_manifest(self, content: str, which: str = "proposal") -> str:
         """Write text content to the active or proposed model manifest.
@@ -875,4 +1712,4 @@ class StorageBackend:
                 handle.write(payload)
             return json.dumps({"ok": True, "which": which, "bytes": len(payload)})
         except OSError as exc:
-            return json.dumps({"error": f"write_model_manifest failed: {exc}"})
+            return json.dumps({"error": _os_error_text("write_model_manifest", exc)})

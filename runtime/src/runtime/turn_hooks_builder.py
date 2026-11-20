@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any, cast
 from kernel.capability_binding import CapabilityRef
 from kernel.decision_telemetry import (
     MODEL_REQUEST_TOPIC,
+    ROUTING_DECISION_TOPIC,
+    ROUTING_FORCED_TOPIC,
     TOOL_TELEMETRY_TOPIC,
     TURN_DECISION_TOPIC,
 )
@@ -36,7 +38,6 @@ from kernel.models import (
     OperationExecutionContext,
     OperationResult,
     ToolResult,
-    resolve_turn_index,
 )
 from kernel.operations.registry import execute_operation
 from kernel.provider_gateway_discovery import discover_provider_gateway_factories
@@ -47,6 +48,7 @@ from kernel.sandbox_floor import (
     discover_sandbox_implementations,
     merge_sandbox_floor,
     resolve_sandbox_owner,
+    resolve_sandbox_runner,
 )
 from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import ContentRegistry, ExtensionItemBuilder, ModelRouter
@@ -76,6 +78,7 @@ from runtime.content_roots import load_disabled_pack_names
 from runtime.context_assembly import (
     assemble_dynamic_user_context,
     assemble_system_prompt,
+    assemble_system_prompt_parts,
     context_budget_values_from_config,
 )
 from runtime.introspect import gather_introspection
@@ -88,6 +91,7 @@ from runtime.thread import (
     build_recent_thread_excerpt,
     project_thread_messages,
 )
+from runtime.turn_context_identity import TurnContextIdentity
 from runtime.turn_continuation import persist_request
 
 if TYPE_CHECKING:
@@ -458,6 +462,12 @@ async def _complete_via_provider_gateways(
             temperature=temperature,
             tools=tools,
             response_format=response_format,
+            # FIX-2: explicit call origin. This seam serves off-turn
+            # slice completions (thread-mining distills, auto-capture),
+            # so its gateway requests are auxiliary — a consumer that
+            # must distinguish call origins (the replay gateway) routes
+            # on this, never on the request's shape.
+            call_kind="auxiliary",
         )
     )
 
@@ -492,8 +502,12 @@ def _discover_pack_slice_providers(
             if _resolve_factory_arity(entry.factory, default_params=2) == 0:
                 # Factory-factory: call with 0 args to get the real
                 # ``(turn_hooks, session_plan) -> provider | None`` factory.
-                factory = entry.factory()  # type: ignore[call-arg]
-                provider = factory(view, session_plan)  # type: ignore[misc]
+                factory_factory = cast(Callable[[], Any], entry.factory)
+                factory_candidate = factory_factory()
+                if not callable(factory_candidate):
+                    raise TypeError("Slice provider entry point must return a callable factory")
+                factory_callable = cast(Callable[..., Any], factory_candidate)
+                provider = factory_callable(view, session_plan)
             else:
                 # Direct factory: call with 2 args. The provider reads
                 # last_context_snapshot off the view and invokes
@@ -577,6 +591,7 @@ async def _maybe_auto_capture(
     response_text: str,
     messages: list[dict[str, Any]],
     effect_receipts: list[Any],
+    identity: TurnContextIdentity,
     ctx_dict: dict[str, Any],
     capability_binding_provider: Any,
     model_router: Any,
@@ -653,14 +668,23 @@ async def _maybe_auto_capture(
         )
         # Stamp the global turn index into the capture context so the
         # distilled memory record carries a thread-turn provenance
-        # pointer (memory → thread linkage).
-        raw_turn_index = ctx_dict.get("turn_index")
+        # pointer (memory → thread linkage). Read from the typed carrier, not
+        # the out-parameter dict: identity has exactly one source.
+        raw_turn_index = identity.turn_index
         if isinstance(raw_turn_index, int):
             capture_ctx.extra["thread_turn"] = raw_turn_index
         # Durable off-turn recording: the distillation call is a model
         # call the turn's own ``turn_input.calls`` never captures, so
         # give the dispatch the same recorder the turn loop uses.
         capture_ctx.request_recorder = partial(
+            persist_request,
+            runtime.paths.thread_path,
+            runtime.paths.ephemeral_results_path,
+        )
+        # The response half of the same archive (Spec: MODEL-CALL-ARCHIVE
+        # §1): the same persist shape, so the distillation call's response
+        # lands next to its request.
+        capture_ctx.response_recorder = partial(
             persist_request,
             runtime.paths.thread_path,
             runtime.paths.ephemeral_results_path,
@@ -877,6 +901,22 @@ def _wire_runtime_context_seams(
             method_name="publish_model_request",
             destination=runtime.paths.decisions_path,
             label="model.request",
+        )
+        _subscribe_telemetry(
+            bus=bus,
+            topic=ROUTING_DECISION_TOPIC,
+            handler=decision_handler,
+            method_name="publish_routing_decision",
+            destination=runtime.paths.decisions_path,
+            label="routing.decision",
+        )
+        _subscribe_telemetry(
+            bus=bus,
+            topic=ROUTING_FORCED_TOPIC,
+            handler=decision_handler,
+            method_name="publish_routing_forced",
+            destination=runtime.paths.decisions_path,
+            label="routing.forced",
         )
     # Publish the subscribed bus so off-turn slice providers can reach the
     # same durable ledgers (see SessionState.event_bus).
@@ -1109,6 +1149,7 @@ def _run_behavioral_signals_slice_impl(
 def _assemble_dynamic_user_context(
     *,
     runtime: HostRuntime,
+    identity: TurnContextIdentity,
     ctx_dict: dict[str, Any],
     resolve_model: Callable[[str], Any],
     item_builder: Any,
@@ -1131,10 +1172,10 @@ def _assemble_dynamic_user_context(
     # Prepend the global turn index to the briefing so the model sees
     # its own turn number ("Turn 42") and can use it to address prior
     # turns via ``thread_read_range`` / the markdown render operation.
-    # The number is computed at turn start in ``_execute_mode_turn``
-    # and threaded through ``run_context`` — the same value stamped on
-    # the thread entry, so the model's self-address matches the log.
-    turn_index = ctx_dict.get("turn_index")
+    # The number is computed at turn start and carried on the typed identity
+    # — the same value stamped on the thread entry, so the model's
+    # self-address matches the log.
+    turn_index = identity.turn_index
     if isinstance(turn_index, int):
         pre_turn_briefing = f"Turn {turn_index}\n\n{pre_turn_briefing}"
 
@@ -1234,6 +1275,7 @@ class _WiredHooks:
     __slots__ = (
         "approval_service",
         "assemble_system_prompt",
+        "assemble_system_prompt_parts",
         "assemble_user_context",
         "capability_binding_provider",
         "complete_stream",
@@ -1246,6 +1288,7 @@ class _WiredHooks:
         "post_turn_slice",
         "pre_turn_slice",
         "resolve_model",
+        "sandbox_runner",
         "slice_tuning",
         "state_provider",
         "wire_context_seams",
@@ -1257,6 +1300,7 @@ class _WiredHooks:
         resolve_model: Any,
         complete_stream: Any,
         assemble_system_prompt: Any,
+        assemble_system_prompt_parts: Any,
         assemble_user_context: Any,
         execute_operation: Any,
         on_turn_complete: Any,
@@ -1271,10 +1315,12 @@ class _WiredHooks:
         last_slice_finished_at: Any,
         slice_tuning: Any,
         wire_context_seams: Any,
+        sandbox_runner: Any = None,
     ) -> None:
         self.resolve_model = resolve_model
         self.complete_stream = complete_stream
         self.assemble_system_prompt = assemble_system_prompt
+        self.assemble_system_prompt_parts = assemble_system_prompt_parts
         self.assemble_user_context = assemble_user_context
         self.execute_operation = execute_operation
         self.on_turn_complete = on_turn_complete
@@ -1289,18 +1335,7 @@ class _WiredHooks:
         self.last_slice_finished_at = last_slice_finished_at
         self.slice_tuning = slice_tuning
         self.wire_context_seams = wire_context_seams
-
-
-def _coerce_turn_index(raw: Any) -> int | None:
-    """Coerce a turn-context value into an attributable turn index.
-
-    ``turn_index`` arrives from ``run_context``, which hosts populate with the
-    global thread ordinal computed at turn start. ``None`` means the work is
-    not attributable to a thread turn (off-turn slice work, or a host with no
-    thread) and stays ``None`` rather than collapsing to ``0`` — which is the
-    thread's first real turn. Anything unusable degrades to ``None``.
-    """
-    return resolve_turn_index(raw)
+        self.sandbox_runner = sandbox_runner
 
 
 def _assemble_turn_hooks(
@@ -1310,6 +1345,9 @@ def _assemble_turn_hooks(
     task_id: str = "",
     task_goal: str = "",
     turn_index: int | None = None,
+    turn_id: str = "",
+    parent_turn_id: str = "",
+    parent_dispatch_id: str = "",
 ) -> TurnHooks:
     """Compose the final ``TurnHooks`` dataclass from the wired callables.
 
@@ -1330,6 +1368,9 @@ def _assemble_turn_hooks(
         session_plan_digest=runtime.session_plan.plan_digest,
         task_id=task_id,
         turn_index=turn_index,
+        turn_id=turn_id,
+        parent_turn_id=parent_turn_id,
+        parent_dispatch_id=parent_dispatch_id,
         task_goal="diagnostic" if task_goal == "diagnostic" else "implementation",
     )
     artifact_store = runtime.services.code_change_artifact_store
@@ -1344,6 +1385,11 @@ def _assemble_turn_hooks(
                 runtime.paths.thread_path,
                 runtime.paths.ephemeral_results_path,
             ),
+            record_response=partial(
+                persist_request,
+                runtime.paths.thread_path,
+                runtime.paths.ephemeral_results_path,
+            ),
             count_request_tokens=count_request_tokens,
         ),
         tools=ToolHooks(
@@ -1351,12 +1397,17 @@ def _assemble_turn_hooks(
             mcp_tool_servers=runtime.resources.mcp_cold_configs,
             post_dispatch_result=runtime.decorate_pack_tool_result,
             persist_tool_result=build_persist_tool_result_hook(runtime.paths.thread_path),
+            # Session-owned execution override (Spec 3 slice 3): mirrors the
+            # ``provider_gateways_override`` seam — the session field is read
+            # at hook-assembly time, so ``handle_message`` is unchanged.
+            answer_tool_call=runtime.session.tool_call_answerer,
         ),
         operations=OperationHooks(
             execute_operation=wired.execute_operation,
         ),
         context=ContextHooks(
             assemble_system_prompt=wired.assemble_system_prompt,
+            assemble_system_prompt_parts=wired.assemble_system_prompt_parts,
             assemble_user_context=wired.assemble_user_context,
             # Stash the latest ContextBudgetSnapshot here each turn via the
             # _snapshot_sink wired into _assemble_user_context. Utilization-
@@ -1366,7 +1417,7 @@ def _assemble_turn_hooks(
                 build_open_task_messages,
                 thread_path=runtime.paths.thread_path,
                 ephemeral_results_path=runtime.paths.ephemeral_results_path,
-                budget_bytes=_effective_replay_budget_bytes(runtime),
+                budget_bytes=_effective_rehydrate_budget_bytes(runtime),
             ),
             project_messages=partial(
                 project_thread_messages,
@@ -1409,6 +1460,7 @@ def _assemble_turn_hooks(
             else None,
             data_dir=str(runtime.paths.data_dir),
             thread_dir=str(runtime.paths.thread_dir),
+            sandbox_runner=getattr(wired, "sandbox_runner", None),
         ),
         identity=turn_identity,
         recall=RecallHooks(
@@ -1477,6 +1529,27 @@ def _assemble_runtime_system_prompt(
 ) -> str:
     """Assemble the system prompt from mode/stage instructions and session context."""
     return assemble_system_prompt(
+        mode_instruction,
+        stage_instruction,
+        loader,
+        session_instruction=runtime.session_plan.instructions.primary_body,
+        copilot_customizations=runtime.copilot_customizations_text,
+    )
+
+
+def _assemble_runtime_system_prompt_parts(
+    runtime: HostRuntime,
+    loader: Callable[[str], str],
+    mode_instruction: str,
+    stage_instruction: str | None,
+) -> tuple[str, str]:
+    """Assemble the factored ``(invariant, mode)`` system-prompt parts.
+
+    Bound as ``ContextHooks.assemble_system_prompt_parts`` so the kernel
+    seeds an S0/S1 factored stable base and mid-turn handoffs swap only
+    the mode tail (docs/design-safe-handoff-prompt-layout.md).
+    """
+    return assemble_system_prompt_parts(
         mode_instruction,
         stage_instruction,
         loader,
@@ -1665,7 +1738,7 @@ def _declared_config_owners(runtime: HostRuntime) -> set[str]:
 
 def _merged_sandbox_floor(
     runtime: HostRuntime,
-) -> tuple[str | None, dict[str, Any] | None, tuple[str, ...]]:
+) -> tuple[str | None, dict[str, Any] | None, tuple[str, ...], Any]:
     """Resolve the sandbox owner + the exclusive-merged floor for the session.
 
     Follows the memory-capability shape: the session's explicit
@@ -1677,12 +1750,15 @@ def _merged_sandbox_floor(
     ``floor_from_config`` semantics) so the merge never produces a floor
     the enforcer cannot parse.
 
-    Returns ``(owner_pack_name, merged_floor_or_None, contributing_packs)``.
-    ``owner_pack_name`` is ``None`` when no implementation is registered
-    (e.g. a Windows host without bubblewrap): contributions are still
-    validated pack-to-pack — a manifest conflict is a load-time authoring
-    error regardless of platform — but the merged floor is inert (same
-    posture as configuration naming absent packs).
+    Returns ``(owner_pack_name, merged_floor_or_None, contributing_packs,
+    runner_or_None)``. ``owner_pack_name`` is ``None`` when no implementation
+    is registered (e.g. a Windows host without bubblewrap): contributions are
+    still validated pack-to-pack — a manifest conflict is a load-time
+    authoring error regardless of platform — but the merged floor is inert
+    (same posture as configuration naming absent packs). ``runner`` is the
+    owner's declared execution surface, already checked against the live tool
+    catalog; consumers requiring contained execution read it and fail closed
+    when it is ``None``.
     """
     manifest = runtime.session_plan.manifest
     pack_configurations = manifest.resources.packs.configuration
@@ -1712,7 +1788,7 @@ def _merged_sandbox_floor(
         # there is no enforced posture to anchor.
         contributions = collect_pack_floor(contribution_entries, pack_configurations, context)
         merge_sandbox_floor({}, contributions)
-        return None, None, ()
+        return None, None, (), None
 
     entry_config = pack_configurations.get(owner.pack_name)
     authored: dict[str, Any] | None = None
@@ -1734,7 +1810,21 @@ def _merged_sandbox_floor(
             ", ".join(merge.contributing_packs),
             owner.pack_name,
         )
-    return owner.pack_name, dict(merge.floor), merge.contributing_packs
+    runner = resolve_sandbox_runner(owner, available_tool_ids=_live_tool_ids())
+    return owner.pack_name, dict(merge.floor), merge.contributing_packs, runner
+
+
+def _live_tool_ids() -> set[str]:
+    """Tool ids actually executable in this process.
+
+    The catalog drops tools whose implementation module cannot be imported,
+    so this is the right existence test for a declared runner: a sandbox
+    pack whose ``sandbox`` entry point loads but whose run tool does not must
+    not leave consumers dispatching into nothing.
+    """
+    from kernel.tools.registry import get_tool_catalog
+
+    return set(get_tool_catalog())
 
 
 def _session_workspace_root(runtime: HostRuntime) -> str:
@@ -1773,12 +1863,19 @@ def _materialize_sandbox_floor(
     return out
 
 
-def _capability_binding_provider(runtime: HostRuntime) -> SessionCapabilityBindings:
+def _capability_binding_provider(
+    runtime: HostRuntime,
+) -> tuple[SessionCapabilityBindings, Any]:
     """Build the session capability bindings from the live catalogs.
 
     Extracted from ``build_turn_hooks`` to keep that assembler under the
     complexity ceiling; owns the operation/tool ref collection and the
     declared-config-owner resolution.
+
+    Returns the bindings plus the session's resolved sandbox runner. Both come
+    from one ``_merged_sandbox_floor`` call so the floor a consumer verifies
+    against and the runner it dispatches through can never come from two
+    different resolutions.
     """
     from kernel.operations.registry import get_operation_catalog
     from kernel.tools.registry import get_tool_catalog
@@ -1793,17 +1890,18 @@ def _capability_binding_provider(runtime: HostRuntime) -> SessionCapabilityBindi
         for definition in get_tool_catalog().values()
         if definition.owner_id
     )
-    owner_pack, merged_floor, _contributing = _merged_sandbox_floor(runtime)
+    owner_pack, merged_floor, _contributing, runner = _merged_sandbox_floor(runtime)
     configuration = _materialize_sandbox_floor(
         runtime.session_plan.manifest.resources.packs.configuration,
         owner_pack,
         merged_floor,
     )
-    return SessionCapabilityBindings(
+    bindings = SessionCapabilityBindings(
         configuration,
         capabilities=capability_refs or None,
         declared_owners=_declared_config_owners(runtime),
     )
+    return bindings, runner
 
 
 def _transport_forwarder(transport: Any, runtime: HostRuntime | None = None) -> Any:
@@ -1837,10 +1935,10 @@ def _transport_forwarder(transport: Any, runtime: HostRuntime | None = None) -> 
     return on_stage, on_delta
 
 
-def _effective_replay_budget_bytes(runtime: Any) -> int | None:
-    """Resolve explicit replay ceilings; absent ceilings defer to request allocation."""
-    ceiling = int(runtime.config.context_budget_replay_max_bytes)
-    knob = runtime.session_plan.manifest.context.history.replay_max_bytes
+def _effective_rehydrate_budget_bytes(runtime: Any) -> int | None:
+    """Resolve explicit rehydration ceilings; absent ceilings defer to request allocation."""
+    ceiling = int(runtime.config.context_budget_rehydrate_max_bytes)
+    knob = runtime.session_plan.manifest.context.history.rehydrate_max_bytes
     limits = [value for value in (ceiling, knob) if value is not None and value > 0]
     return min(limits) if limits else None
 
@@ -1850,16 +1948,24 @@ def build_turn_hooks(
     context: dict[str, Any] | None = None,
     transport: TransportCallbacks | None = None,
     *,
+    identity: TurnContextIdentity,
     extra_item_builders: list[ExtensionItemBuilder] | None = None,
 ) -> TurnHooks:
     """Build a ``TurnHooks`` dataclass wired to the host runtime.
 
     Args:
         runtime: The typed host runtime with config, manifest, MCP pool.
-        context: Optional mutable turn-context dict. When provided, the
-            ``on_turn_complete`` hook updates it with completion metadata.
-            When ``None``, a fresh dict is created internally.
+        context: Optional mutable turn-context dict. It is an *out-parameter*
+            only: the ``on_turn_complete`` hook writes completion metadata into
+            it and ``memory_ids`` accumulates there. Identity is never read
+            from it — that comes from ``identity``, so a caller that forgets a
+            field gets a ``TypeError`` instead of a blank on disk.
         transport: Optional transport callbacks for streaming/debug events.
+        identity: The execution identity and lineage these hooks carry. Required
+            because the alternative — reading a partially populated dict with
+            ``.get(...) or ""`` coercion — is what let identity silently reach
+            the ledger as ``null``. A caller with genuinely no turn context
+            passes ``NO_TURN_IDENTITY`` rather than omitting an argument.
         extra_item_builders: Optional host-supplied ``ExtensionItemBuilder``
             instances (e.g. the VS Code sidecar's editor-context bridge).
             Composed alongside the installed-pack builder so host-contributed
@@ -1871,7 +1977,7 @@ def build_turn_hooks(
     """
     ctx_dict = context if context is not None else {}
 
-    capability_binding_provider = _capability_binding_provider(runtime)
+    capability_binding_provider, sandbox_runner = _capability_binding_provider(runtime)
     approval_service = runtime.services.approval_service
 
     # ── Slice tuning ──────────────────────────────────────────────
@@ -1937,6 +2043,7 @@ def build_turn_hooks(
     ) -> str:
         return _assemble_dynamic_user_context(
             runtime=runtime,
+            identity=identity,
             ctx_dict=ctx_dict,
             resolve_model=_resolve_model,
             item_builder=_item_builder,
@@ -2044,6 +2151,7 @@ def build_turn_hooks(
             response_text=response_text,
             messages=messages,
             effect_receipts=effect_receipts,
+            identity=identity,
             ctx_dict=ctx_dict,
             capability_binding_provider=capability_binding_provider,
             model_router=_auto_capture_model_router,
@@ -2128,13 +2236,19 @@ def build_turn_hooks(
 
     return _assemble_turn_hooks(
         runtime=runtime,
-        task_id=str(ctx_dict.get("task_id") or ""),
-        task_goal=str(ctx_dict.get("task_goal") or ""),
-        turn_index=_coerce_turn_index(ctx_dict.get("turn_index")),
+        task_id=identity.task_id,
+        task_goal=identity.task_goal,
+        turn_index=identity.turn_index,
+        turn_id=identity.turn_id,
+        parent_turn_id=identity.parent_turn_id,
+        parent_dispatch_id=identity.parent_dispatch_id,
         wired=_WiredHooks(
             resolve_model=_resolve_model,
             complete_stream=_complete_stream,
             assemble_system_prompt=_assemble_system_prompt,
+            assemble_system_prompt_parts=partial(
+                _assemble_runtime_system_prompt_parts, runtime, loader
+            ),
             assemble_user_context=_assemble_user_context,
             execute_operation=_execute_operation,
             on_turn_complete=_on_turn_complete,
@@ -2149,5 +2263,6 @@ def build_turn_hooks(
             last_slice_finished_at=persisted_last_slice_finished_at,
             slice_tuning=slice_tuning,
             wire_context_seams=_wire_context_seams,
+            sandbox_runner=sandbox_runner,
         ),
     )

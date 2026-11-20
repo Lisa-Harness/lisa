@@ -26,6 +26,10 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="Run a scenario (live model, or scripted when declared).")
     run.add_argument("scenario", type=Path)
+    run.add_argument(
+        "--model",
+        help="Pin every mode to one concrete model from the base models manifest.",
+    )
     run.add_argument("--runs-dir", type=Path, default=_REPO_ROOT / ".e2e" / "runs")
     run.add_argument("--rebuild-venv", action="store_true")
     repeat = sub.add_parser(
@@ -33,6 +37,10 @@ def _parser() -> argparse.ArgumentParser:
         help="Run one live scenario N times in isolated processes; require --min-pass successes.",
     )
     repeat.add_argument("scenario", type=Path)
+    repeat.add_argument(
+        "--model",
+        help="Pin every mode to one concrete model from the base models manifest.",
+    )
     repeat.add_argument("--runs", type=int, default=3, help="Total independent runs (default 3).")
     repeat.add_argument(
         "--min-pass", type=int, default=None, help="Required passes (default: all runs)."
@@ -77,6 +85,7 @@ def _run_scenario_once(
     runs_dir: Path,
     rebuild_venv: bool,
     tag_suffix: str = "",
+    model_id: str = "",
 ) -> int:
     scenario = load_scenario(scenario_path)
     scripted = scenario.model_script is not None
@@ -85,7 +94,16 @@ def _run_scenario_once(
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     bundle_id = scenario.scenario_id.replace("/", "__") + tag_suffix
     run_dir = (runs_dir / bundle_id / stamp).resolve()
-    paths = prepare_run(scenario, run_dir, venv, base=base)
+    selected_model = model_id or str(getattr(scenario, "model_id", "") or "")
+    paths = prepare_run(
+        scenario,
+        run_dir,
+        venv,
+        base=base,
+        model_id=selected_model,
+    )
+    if selected_model:
+        print(f"model: {selected_model}", flush=True)
     print(f"run dir: {run_dir}", flush=True)
     outcome = run_conversation(scenario, paths, venv)
     evidence = Evidence(paths, outcome)
@@ -106,14 +124,17 @@ def _run_scenario_once(
             cost=usage["cost_usd"],
         )
     )
-    print(f"verdict: {'PASS' if payload['passed'] else 'FAIL'} → {path}")
+    print(f"verdict: {'PASS' if payload['passed'] else 'FAIL'} -> {path}")
     return 0 if payload["passed"] else _EXIT_FAIL
 
 
 def _run(args: argparse.Namespace) -> int:
     try:
         return _run_scenario_once(
-            args.scenario, runs_dir=args.runs_dir, rebuild_venv=args.rebuild_venv
+            args.scenario,
+            runs_dir=args.runs_dir,
+            rebuild_venv=args.rebuild_venv,
+            model_id=str(getattr(args, "model", "") or ""),
         )
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"setup error: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -147,6 +168,7 @@ def _repeat(args: argparse.Namespace) -> int:
                 "--runs-dir",
                 str(args.runs_dir),
                 *(["--rebuild-venv"] if args.rebuild_venv else []),
+                *(["--model", args.model] if getattr(args, "model", "") else []),
             ],
             capture_output=True,
             text=True,
@@ -164,6 +186,11 @@ def _repeat(args: argparse.Namespace) -> int:
         if passed:
             passes += 1
         print(f"run {index}/{args.runs}: {'PASS' if passed else 'FAIL'}")
+        for line in proc.stdout.splitlines():
+            if line.startswith(("model:", "usage:", "verdict:")) or (
+                not passed and line.startswith("FAIL ")
+            ):
+                print(f"  {line}")
     print(f"repeat verdict: {passes}/{args.runs} passed (required {min_pass})")
     return 0 if passes >= min_pass else _EXIT_FAIL
 

@@ -9,14 +9,14 @@ which answers with a create decision, and the second turn recalls via the
 surface, dispatch, dedup-candidate search, memory.add, receipts,
 persistence — is production code.
 
-See ``e2etest.scripted`` for the ScriptTurn/Reply contract.
+See ``runtime.testing.scripted`` for the ScriptTurn/Reply contract.
 """
 
 from __future__ import annotations
 
 import json
 
-from e2etest.scripted import Reply, ScriptError, ScriptTurn
+from runtime.testing.scripted import Reply, ScriptError, ScriptTurn
 
 LEARNING = "The lisa harness memory pack dedups facts at write time."
 

@@ -221,6 +221,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         # Thread the operation's own wall-clock ceiling so the children
         # force-complete gracefully before the registry's hard cancel.
         timeout_seconds=int(getattr(ctx, "operation_timeout_seconds", 0) or 0),
+        # Lineage (Evidence Envelope §4): every child records the dispatch that
+        # spawned this fan-out, so its entry joins back to this fork dispatch.
+        dispatch_id=str(getattr(ctx, "dispatch_id", "") or ""),
     )
 
     result = await host.fork(spec)

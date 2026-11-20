@@ -173,7 +173,7 @@ class TestSharedClient:
 
 
 @pytest.mark.asyncio
-async def test_encrypted_reasoning_replays_before_tools_only_to_its_model() -> None:
+async def test_encrypted_reasoning_rehydrates_before_tools_only_to_its_model() -> None:
     captured: dict[str, Any] = {}
     response = _responses_response()
     reasoning = {

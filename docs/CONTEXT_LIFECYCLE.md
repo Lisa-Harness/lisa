@@ -45,9 +45,11 @@ not a guarantee for every provider framing or multimodal payload.
 
 ## References and bounded retrieval
 
-Large tool results are persisted before provider projection. A result ref
-is `r<sha256>`; thread refs address a turn/message/call or field. A preview
-must still refer to the original content, not to another stored preview.
+Under compaction pressure, large tool results are persisted and replaced by
+previews carrying result refs; outside that pressure, results can stay inline
+until request fitting needs reduction. A result ref is `r<sha256>`; thread
+refs address a turn/message/call or field. A preview must still refer to the
+original content, not to another stored preview.
 
 Thread range, search, content-window, and find tools let the model retrieve
 addressed evidence on demand. Pagination and byte/character limits still
@@ -60,14 +62,14 @@ requested/effective completion ceiling, safety margin, append headroom,
 required/input tokens, result-byte allowance, counting method, and whether
 projection reduced the request.
 
-## Replay across turns
+## Rehydration across turns
 
-The host rebuilds the open task from the lossless transcript. Replay and
+The host rebuilds the open task from the lossless transcript. Rehydration and
 live tool results use the request's remaining model window rather than
 an unconditional fixed 64 KiB working set.
 
-The runtime replay ceiling defaults to **0** (no independent cap). A session
-can request `context.history.replay_max_bytes`; the tighter finite host/session
+The runtime rehydration ceiling defaults to **0** (no independent cap). A session
+can request `context.history.rehydrate_max_bytes`; the tighter finite host/session
 ceiling wins. This is separate from the token-capped recent-conversation
 and context lanes. Neither a reference nor a lane exclusion deletes evidence.
 
@@ -105,7 +107,7 @@ system prefix. An actual mode/stage change can establish a new cache boundary.
   without them according to the adapter contract.
 - Gemini uses implicit caching; explicit Cached Content lifecycle management
   is not supplied by this mechanism.
-- Provider-specific opaque reasoning continuation is replayed only for its
+- Provider-specific opaque reasoning continuation is rehydrated only for its
   owning provider/model, not converted into visible content.
 
 `LISA_PROMPT_CACHE_ENABLED=false` disables the host's explicit cache controls.

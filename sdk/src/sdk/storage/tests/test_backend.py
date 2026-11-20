@@ -9,10 +9,14 @@ without spawning the MCP server.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 import stat
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sdk.storage import PathRejected, StorageBackend
@@ -30,6 +34,11 @@ def _readonly_backend(tmp_path: Path) -> StorageBackend:
     # Pre-create the files dir so reads don't error on a missing root.
     (tmp_path / "data" / "files").mkdir(parents=True, exist_ok=True)
     return StorageBackend(tmp_path, readonly=True)
+
+
+def _dirfd_recursive_delete_supported() -> bool:
+    required = (os.open, os.unlink, os.rmdir)
+    return all(function in getattr(os, "supports_dir_fd", ()) for function in required)
 
 
 # ── Construction ──────────────────────────────────────────────────────────────
@@ -139,6 +148,1019 @@ def test_delete_file_missing(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     data = json.loads(b.delete_file("nope.txt"))
     assert "error" in data
+
+
+def test_delete_file_unlinks_symlink_not_target(tmp_path: Path) -> None:
+    """R7: delete_file never follows a leaf symlink.
+
+    The pre-normalization behavior resolved the link and deleted its
+    target; the nofollow normalization unlinks the link itself, so the
+    target survives (POSIX ``rm`` semantics).
+    """
+    b = _backend(tmp_path)
+    b.write_file("target.txt", "precious")
+    (b.files_root() / "link.txt").symlink_to(b.files_root() / "target.txt")
+
+    data = json.loads(b.delete_file("link.txt"))
+
+    assert data["ok"] is True
+    assert not (b.files_root() / "link.txt").is_symlink()
+    assert b.read_file("target.txt") == "precious\n"
+
+
+def test_delete_file_unlinks_symlink_to_directory(tmp_path: Path) -> None:
+    """A link to a directory is still a leaf entry: the link goes, not the dir."""
+    b = _backend(tmp_path)
+    (b.files_root() / "real").mkdir()
+    (b.files_root() / "real" / "keep.txt").write_text("x", encoding="utf-8")
+    (b.files_root() / "dirlink").symlink_to(b.files_root() / "real", target_is_directory=True)
+
+    data = json.loads(b.delete_file("dirlink"))
+
+    assert data["ok"] is True
+    assert not (b.files_root() / "dirlink").is_symlink()
+    assert (b.files_root() / "real" / "keep.txt").is_file()
+
+
+def test_delete_file_broken_symlink_is_removed(tmp_path: Path) -> None:
+    """A broken link is an entry too: it is unlinked, not reported missing."""
+    b = _backend(tmp_path)
+    (b.files_root() / "dangling.txt").symlink_to(b.files_root() / "never-existed.txt")
+
+    data = json.loads(b.delete_file("dangling.txt"))
+
+    assert data["ok"] is True
+    assert not (b.files_root() / "dangling.txt").is_symlink()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_renames_and_creates_parents(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("draft.md", "draft")
+    before_inode = (b.files_root() / "draft.md").stat().st_ino
+
+    receipt = json.loads(b.move_file("draft.md", "archive/final.md", create_parents=True))
+
+    assert receipt["ok"] is True
+    assert receipt["source"] == "draft.md"
+    assert receipt["destination"] == "archive/final.md"
+    assert receipt["bytes"] == len(b"draft\n")
+    assert receipt["sha256"] == hashlib.sha256(b"draft\n").hexdigest()
+    assert receipt["durable"] is True
+    assert not (b.files_root() / "draft.md").exists()
+    assert (b.files_root() / "archive" / "final.md").stat().st_ino == before_inode
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_refuses_existing_destination_without_overwrite(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "new")
+    b.write_file("destination.txt", "old")
+
+    receipt = json.loads(b.move_file("source.txt", "destination.txt"))
+
+    assert "already exists" in receipt["error"]
+    assert b.read_file("source.txt") == "new\n"
+    assert b.read_file("destination.txt") == "old\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_does_not_create_parents_by_default(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "content")
+
+    receipt = json.loads(b.move_file("source.txt", "missing/destination.txt"))
+
+    assert "parent directory does not exist" in receipt["error"]
+    assert not (b.files_root() / "missing").exists()
+    assert b.read_file("source.txt") == "content\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_hash_guard_leaves_source_in_place(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "content")
+
+    receipt = json.loads(
+        b.move_file(
+            "source.txt",
+            "destination.txt",
+            expected_sha256="0" * 64,
+        )
+    )
+
+    assert "sha256 mismatch" in receipt["error"]
+    assert receipt["sha256"] == hashlib.sha256(b"content\n").hexdigest()
+    assert b.read_file("source.txt") == "content\n"
+    assert not (b.files_root() / "destination.txt").exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rejects_symlink_source(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    external = tmp_path / "external.txt"
+    external.write_text("outside", encoding="utf-8")
+    (b.files_root() / "link.txt").symlink_to(external)
+
+    receipt = json.loads(b.move_file("link.txt", "renamed.txt"))
+
+    assert "not a regular file" in receipt["error"]
+    assert external.read_text(encoding="utf-8") == "outside"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rejects_symlinked_parent_and_stays_inside(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (b.files_root() / "linked").symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.move_file("linked/escaped.txt", "renamed.txt", create_parents=True))
+
+    assert "not a real directory" in receipt["error"]
+    assert not (outside / "renamed.txt").exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rolls_back_detected_source_identity_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "original")
+    root = b.files_root()
+    original_rename = secure_move._rename_noreplace
+    raced = False
+
+    def replace_source_before_rename(
+        source_parent_fd: int,
+        source_name: str,
+        destination_parent_fd: int,
+        destination_name: str,
+    ) -> None:
+        nonlocal raced
+        if not raced:
+            raced = True
+            (root / source_name).rename(root / "original-aside.txt")
+            (root / source_name).write_bytes(b"replacement")
+        original_rename(
+            source_parent_fd,
+            source_name,
+            destination_parent_fd,
+            destination_name,
+        )
+
+    monkeypatch.setattr(secure_move, "_rename_noreplace", replace_source_before_rename)
+
+    receipt = json.loads(b.move_file("source.txt", "destination.txt"))
+
+    assert "rolled back" in receipt["error"]
+    assert (root / "source.txt").read_bytes() == b"replacement"
+    assert (root / "original-aside.txt").read_bytes() == b"original\n"
+    assert not (root / "destination.txt").exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rejects_directories_and_hard_links(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "content")
+    (b.files_root() / "directory").mkdir()
+    (b.files_root() / "source-link.txt").hardlink_to(b.files_root() / "source.txt")
+
+    directory = json.loads(b.move_file("directory", "renamed-directory"))
+    linked = json.loads(b.move_file("source.txt", "renamed.txt"))
+
+    assert "not a regular file" in directory["error"]
+    assert "hard links" in linked["error"]
+    assert (b.files_root() / "directory").is_dir()
+    assert b.read_file("source.txt") == "content\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_file_rejects_denied_source_and_destination(tmp_path: Path) -> None:
+    b = _backend(tmp_path, deny_globs=("*.db", "private/**"))
+    b.write_file("source.txt", "content")
+    (b.files_root() / "secret.db").write_bytes(b"secret")
+
+    denied_source = json.loads(b.move_file("secret.db", "safe.txt"))
+    denied_destination = json.loads(
+        b.move_file("source.txt", "private/renamed.txt", create_parents=True)
+    )
+
+    assert denied_source["error"] == "source path denied by policy"
+    assert denied_destination["error"] == "destination path denied by policy"
+    assert b.read_file("source.txt") == "content\n"
+
+
+def test_move_file_readonly_and_unsupported_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.move_file("a.txt", "b.txt"))["error"] == "server is read-only"
+
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "content")
+    monkeypatch.setattr(secure_move.sys, "platform", "win32")
+    receipt = json.loads(b.move_file("a.txt", "b.txt"))
+    assert "unsupported on this platform" in receipt["error"]
+    assert b.read_file("a.txt") == "content\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_renames_whole_subtree(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("project/src/a.py", "a")
+    b.write_file("project/notes.md", "notes")
+    before_inode = (b.files_root() / "project").stat().st_ino
+
+    receipt = json.loads(b.move_directory("project", "archive/project", create_parents=True))
+
+    assert receipt["ok"] is True
+    assert receipt["source"] == "project"
+    assert receipt["destination"] == "archive/project"
+    assert receipt["durable"] is True
+    assert "sha256" not in receipt
+    assert not (b.files_root() / "project").exists()
+    moved = b.files_root() / "archive" / "project"
+    assert moved.stat().st_ino == before_inode
+    assert b.read_file("archive/project/src/a.py") == "a\n"
+    assert b.read_file("archive/project/notes.md") == "notes\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_refuses_existing_destination(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source/x.txt", "x")
+    (b.files_root() / "destination").mkdir()
+
+    receipt = json.loads(b.move_directory("source", "destination"))
+
+    assert "already exists" in receipt["error"]
+    assert (b.files_root() / "source" / "x.txt").is_file()
+    assert (b.files_root() / "destination").is_dir()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_refuses_destination_inside_source(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/inner/leaf.txt", "leaf")
+
+    receipt = json.loads(b.move_directory("tree", "tree/inner"))
+
+    assert "inside the source directory" in receipt["error"]
+    assert b.read_file("tree/inner/leaf.txt") == "leaf\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_refuses_symlink_source(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (b.files_root() / "linked").symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.move_directory("linked", "renamed"))
+
+    assert "not a directory" in receipt["error"]
+    assert outside.is_dir()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_refuses_file_source(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("plain.txt", "content")
+
+    receipt = json.loads(b.move_directory("plain.txt", "renamed"))
+
+    assert "not a directory" in receipt["error"]
+    assert b.read_file("plain.txt") == "content\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_creates_parents_only_when_asked(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("source/x.txt", "x")
+
+    refused = json.loads(b.move_directory("source", "missing/destination"))
+    assert "parent directory does not exist" in refused["error"]
+    assert not (b.files_root() / "missing").exists()
+
+    created = json.loads(b.move_directory("source", "missing/destination", create_parents=True))
+    assert created["ok"] is True
+    assert b.read_file("missing/destination/x.txt") == "x\n"
+
+
+def test_move_directory_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.move_directory("a", "b"))["error"] == "server is read-only"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_directory_denied_destination(tmp_path: Path) -> None:
+    b = _backend(tmp_path, deny_globs=("private/**",))
+    b.write_file("source/x.txt", "x")
+
+    receipt = json.loads(b.move_directory("source", "private/renamed"))
+
+    assert receipt["error"] == "destination path denied by policy"
+    assert b.read_file("source/x.txt") == "x\n"
+
+
+# ── delete_directory ────────────────────────────────────────────────────────
+
+
+def test_delete_directory_rmdir_only_by_default(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("empty_dir/placeholder.txt", "x")
+
+    receipt = json.loads(b.delete_directory("empty_dir"))
+
+    assert "not empty" in receipt["error"]
+    assert b.read_file("empty_dir/placeholder.txt") == "x\n"
+
+
+def test_delete_directory_removes_empty_dir(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("gone")
+
+    receipt = json.loads(b.delete_directory("gone"))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 0
+    assert receipt["removed_dirs"] == 1
+    assert not (b.files_root() / "gone").exists()
+
+
+def test_delete_directory_expected_empty_refuses_non_empty(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True, expected_empty=True))
+
+    assert "expected_empty" in receipt["error"]
+    assert b.read_file("tree/a.txt") == "a\n"
+
+
+def test_delete_directory_expected_empty_allows_empty(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("empty")
+
+    receipt = json.loads(b.delete_directory("empty", recursive=True, expected_empty=True))
+
+    assert receipt["ok"] is True
+    assert not (b.files_root() / "empty").exists()
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
+def test_delete_directory_recursive_hard_delete(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+    b.write_file("tree/sub/b.txt", "b")
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True, trash=False))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 2
+    assert receipt["removed_dirs"] == 2
+    assert not (b.files_root() / "tree").exists()
+
+
+def test_delete_directory_hard_delete_requires_dirfd_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: False)
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True, trash=False))
+
+    assert "requires dir_fd support" in receipt["error"]
+    assert b.read_file("tree/a.txt") == "a\n"
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
+def test_delete_directory_recursive_does_not_follow_symlinks(tmp_path: Path) -> None:
+    """R7: a symlink inside the tree is removed itself, not its target."""
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    b.write_file("tree/a.txt", "a")
+    (b.files_root() / "tree" / "link.txt").symlink_to(outside / "keep.txt")
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True, trash=False))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 2
+    assert (outside / "keep.txt").is_file()
+    assert not (b.files_root() / "tree").exists()
+
+
+def test_delete_directory_refuses_parent_symlink_component(tmp_path: Path) -> None:
+    """Recursive delete must not traverse symlinked path components."""
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    victim = outside / "victim"
+    victim.mkdir(parents=True)
+    (victim / "keep.txt").write_text("keep", encoding="utf-8")
+    (b.files_root() / "linked").symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.delete_directory("linked/victim", recursive=True, trash=False))
+
+    assert "symlink component" in receipt["error"]
+    assert (outside / "victim" / "keep.txt").is_file()
+
+
+def test_delete_directory_trash_counts_and_trashed_to(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+    b.write_file("tree/sub/b.txt", "b")
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 2
+    assert receipt["removed_dirs"] == 2
+    assert receipt["trashed_to"].startswith(".trash/")
+    assert receipt["trashed_to"].endswith("/tree")
+    assert not (b.files_root() / "tree").exists()
+    # The trash subtree is deny-glob hidden from list_files.
+    assert json.loads(b.list_files("")) == []
+
+
+def test_delete_directory_trash_counts_symlinked_directories_as_files(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    b.make_dir("tree")
+    (b.files_root() / "tree" / "linkdir").symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.delete_directory("tree", recursive=True))
+
+    assert receipt["ok"] is True
+    assert receipt["removed_files"] == 1
+    assert receipt["removed_dirs"] == 1
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_delete_directory_trash_restore_roundtrip(tmp_path: Path) -> None:
+    """The receipt's ``trashed_to`` is actionable: move_directory restores it."""
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+
+    trashed = json.loads(b.delete_directory("tree", recursive=True))
+
+    restored = json.loads(b.move_directory(trashed["trashed_to"], "tree", create_parents=True))
+
+    assert restored["ok"] is True
+    assert b.read_file("tree/a.txt") == "a\n"
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
+def test_delete_directory_trash_purge_is_hard_delete(tmp_path: Path) -> None:
+    """Deleting a ``.trash/...`` subtree is the sanctioned purge: hard delete."""
+    b = _backend(tmp_path)
+    b.write_file("tree/a.txt", "a")
+    trashed = json.loads(b.delete_directory("tree", recursive=True))
+
+    purged = json.loads(b.delete_directory(trashed["trashed_to"], recursive=True))
+
+    assert purged["ok"] is True
+    assert purged["removed_files"] == 1
+    assert purged["removed_dirs"] == 1
+    # The trashed content is gone; the (now empty) session dir may remain.
+    assert not (b.files_root() / trashed["trashed_to"]).exists()
+
+
+def test_delete_directory_missing(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.delete_directory("nope"))
+    assert "not found" in receipt["error"]
+
+
+def test_delete_directory_refuses_file_target(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("plain.txt", "x")
+
+    receipt = json.loads(b.delete_directory("plain.txt"))
+
+    assert "targets a file" in receipt["error"]
+    assert b.read_file("plain.txt") == "x\n"
+
+
+def test_delete_directory_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.delete_directory("a"))["error"] == "server is read-only"
+
+
+def test_delete_directory_os_errors_are_path_sanitized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("empty")
+
+    def _raise_permission_error(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted", "/tmp/secret/path")
+
+    monkeypatch.setattr("sdk.storage._backend.os.rmdir", _raise_permission_error)
+    receipt = json.loads(b.delete_directory("empty"))
+
+    assert receipt["error"] == "delete failed: Operation not permitted"
+    assert "/tmp/secret/path" not in receipt["error"]
+
+
+# ── purge_trash ─────────────────────────────────────────────────────────────
+
+
+def _make_trash_session(b: StorageBackend, stamp: str, content: str = "x") -> None:
+    """Create a trash session directory with the given timestamp name."""
+    session = b.files_root() / ".trash" / stamp
+    session.mkdir(parents=True, exist_ok=True)
+    (session / "tree").mkdir()
+    (session / "tree" / "a.txt").write_text(content, encoding="utf-8")
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
+def test_purge_trash_removes_oldest_sessions_in_bounded_slices(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-02T00-00-00.000001")
+    _make_trash_session(b, "2026-01-03T00-00-00.000001")
+
+    first = json.loads(b.purge_trash(limit=2))
+
+    assert first["ok"] is True
+    assert first["purged"] == 2
+    assert first["has_more"] is True
+    assert not (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+    assert not (b.files_root() / ".trash" / "2026-01-02T00-00-00.000001").exists()
+    assert (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
+
+    second = json.loads(b.purge_trash(limit=2))
+
+    assert second["ok"] is True
+    assert second["purged"] == 1
+    assert second["has_more"] is False
+    assert not (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
+def test_purge_trash_older_than_honors_cutoff(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-03T00-00-00.000001")
+
+    receipt = json.loads(b.purge_trash(older_than="2026-01-02T00:00:00Z"))
+
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 1
+    assert receipt["has_more"] is False
+    assert not (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+    assert (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
+def test_purge_trash_older_than_naive_treated_as_utc(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-03T00-00-00.000001")
+
+    receipt = json.loads(b.purge_trash(older_than="2026-01-02T00:00:00"))
+
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 1
+    assert not (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+    assert (b.files_root() / ".trash" / "2026-01-03T00-00-00.000001").exists()
+
+
+def test_purge_trash_older_than_rejects_garbage(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.purge_trash(older_than="not-a-timestamp"))
+    assert "RFC 3339" in receipt["error"]
+
+
+def test_purge_trash_empty_trash_is_ok(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    receipt = json.loads(b.purge_trash())
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 0
+    assert receipt["has_more"] is False
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
+def test_purge_trash_leaves_foreign_entries_alone(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    foreign = b.files_root() / ".trash" / "not-a-stamp"
+    foreign.mkdir(parents=True)
+    (foreign / "keep.txt").write_text("keep", encoding="utf-8")
+
+    receipt = json.loads(b.purge_trash())
+
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 1
+    assert (foreign / "keep.txt").is_file()
+
+
+def test_purge_trash_ignores_timestamped_symlink_sessions(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    linked_session = b.files_root() / ".trash" / "2026-01-01T00-00-00.000001"
+    linked_session.parent.mkdir(parents=True, exist_ok=True)
+    linked_session.symlink_to(outside, target_is_directory=True)
+
+    receipt = json.loads(b.purge_trash())
+
+    assert receipt["ok"] is True
+    assert receipt["purged"] == 0
+    assert receipt["has_more"] is False
+    assert linked_session.is_symlink()
+    assert (outside / "keep.txt").is_file()
+
+
+def test_purge_trash_error_reports_remaining_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-02T00-00-00.000001")
+
+    def _fail_delete(_target: Path) -> tuple[int, int, str | None]:
+        return 0, 0, "delete failed: injected"
+
+    monkeypatch.setattr(b, "_hard_delete_tree", _fail_delete)
+    receipt = json.loads(b.purge_trash(limit=2))
+
+    assert receipt["purged"] == 0
+    assert receipt["has_more"] is True
+    assert "injected" in receipt["error"]
+
+
+def test_purge_trash_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.purge_trash())["error"] == "server is read-only"
+
+
+def test_purge_trash_limit_must_be_positive(tmp_path: Path):
+    b = _backend(tmp_path)
+    receipt = json.loads(b.purge_trash(limit=0))
+    assert "positive" in receipt["error"]
+
+
+def test_purge_trash_requires_dirfd_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: False)
+
+    receipt = json.loads(b.purge_trash())
+
+    assert receipt["purged"] == 0
+    assert receipt["has_more"] is True
+    assert "requires dir_fd support" in receipt["error"]
+
+
+# ── Batch operations ─────────────────────────────────────────────────────────
+
+
+def test_delete_files_deletes_in_order_with_per_item_receipts(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    b.write_file("b.txt", "b")
+
+    receipt = json.loads(b.delete_files(["a.txt", "b.txt"]))
+
+    assert receipt["ok"] is True
+    assert receipt["count"] == 2
+    assert receipt["succeeded"] == 2
+    assert receipt["failed"] == 0
+    assert receipt["results"] == [
+        {"path": "a.txt", "ok": True},
+        {"path": "b.txt", "ok": True},
+    ]
+    assert "not found" in json.loads(b.stat_file("a.txt"))["error"]
+
+
+def test_delete_files_mid_batch_failure_does_not_abort(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    b.write_file("c.txt", "c")
+
+    receipt = json.loads(b.delete_files(["a.txt", "missing.txt", "c.txt"]))
+
+    assert receipt["ok"] is False
+    assert receipt["count"] == 3
+    assert receipt["succeeded"] == 2
+    assert receipt["failed"] == 1
+    assert receipt["results"][1] == {
+        "path": "missing.txt",
+        "ok": False,
+        "error": "file not found: missing.txt",
+    }
+    # Later items still executed after the failure.
+    assert "not found" in json.loads(b.stat_file("c.txt"))["error"]
+
+
+def test_delete_files_refuses_directory_items(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("dir")
+
+    receipt = json.loads(b.delete_files(["dir"]))
+
+    assert receipt["ok"] is False
+    assert "targets a directory" in receipt["results"][0]["error"]
+
+
+def test_delete_files_batch_level_refusals(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    assert "empty" in json.loads(b.delete_files([]))["error"]
+    assert "cap" in json.loads(b.delete_files([f"p{i}" for i in range(101)]))["error"]
+
+
+def test_delete_files_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.delete_files(["a"]))["error"] == "server is read-only"
+
+
+def test_make_dirs_creates_parents_per_item(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+
+    receipt = json.loads(b.make_dirs(["x/one", "y/two"]))
+
+    assert receipt["ok"] is True
+    assert receipt["count"] == 2
+    assert receipt["failed"] == 0
+    assert (b.files_root() / "x" / "one").is_dir()
+    assert (b.files_root() / "y" / "two").is_dir()
+
+
+def test_make_dirs_mid_batch_failure_does_not_abort(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("blocker", "in the way")
+
+    receipt = json.loads(b.make_dirs(["a", "blocker", "b"]))
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 2
+    assert receipt["failed"] == 1
+    assert "make_dir failed" in receipt["results"][1]["error"]
+    # Later items still executed after the failure.
+    assert (b.files_root() / "b").is_dir()
+
+
+def test_make_dir_error_text_has_no_absolute_path(tmp_path: Path) -> None:
+    """make_dir failures report a sanitized errno message, not the sandbox path.
+
+    A raw OSError interpolation embeds the absolute filesystem path of
+    the sandbox (``/tmp/.../data/files/...``) in the receipt; the
+    ``_os_error_text`` helper exists to prevent exactly that leak.
+    """
+    b = _backend(tmp_path)
+    b.write_file("blocker", "in the way")
+
+    receipt = json.loads(b.make_dir("blocker"))
+
+    assert "make_dir failed" in receipt["error"]
+    assert str(tmp_path) not in receipt["error"]
+    assert str(b.files_root()) not in receipt["error"]
+
+
+def test_read_error_text_is_sanitized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An injected OSError reports the errno description, never the path.
+
+    OSError's str() embeds the absolute sandbox path (its third
+    constructor argument); the receipt must carry only the errno
+    description, exactly as ``_os_error_text`` builds it.
+    """
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "x")
+
+    def _raise(self: Path, encoding: str = "utf-8") -> str:
+        raise OSError(errno.EIO, "boom", str(self))
+
+    monkeypatch.setattr(Path, "read_text", _raise)
+    receipt = json.loads(b.read_file("doc.txt"))
+
+    assert receipt["error"] == "read failed: Input/output error"
+    assert str(tmp_path) not in receipt["error"]
+
+
+def test_no_raw_exception_interpolation_in_error_text() -> None:
+    """Source lock: no op error message interpolates a raw exception.
+
+    A raw ``{exc}`` in an error f-string embeds the absolute sandbox
+    path on OSError. Every op routes through ``_os_error_text``
+    instead; this pins that no ``failed: {exc}`` pattern returns.
+    """
+    source = (Path(__file__).resolve().parent.parent / "_backend.py").read_text(encoding="utf-8")
+    assert "failed: {exc}" not in source
+
+
+def test_make_dirs_batch_level_refusals(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    assert "empty" in json.loads(b.make_dirs([]))["error"]
+    assert "cap" in json.loads(b.make_dirs([f"d{i}" for i in range(101)]))["error"]
+
+
+def test_make_dirs_non_str_item_is_per_item_error(tmp_path: Path) -> None:
+    """A malformed element must not abort the batch (never a mid-batch abort)."""
+    b = _backend(tmp_path)
+    paths: list[Any] = [f"d{i}" for i in range(100)]
+    paths[50] = 12345
+
+    receipt = json.loads(b.make_dirs(paths))
+
+    assert receipt["ok"] is False
+    assert receipt["count"] == 100
+    assert receipt["succeeded"] == 99
+    assert receipt["failed"] == 1
+    assert receipt["results"][50]["ok"] is False
+    assert "malformed path" in receipt["results"][50]["error"]
+    # Items after the malformed one still executed.
+    assert (b.files_root() / "d99").is_dir()
+
+
+def test_delete_files_non_str_item_is_per_item_error(tmp_path: Path) -> None:
+    """A non-str path is a per-item error, not a batch-killing exception."""
+    b = _backend(tmp_path)
+    b.write_file("keep.txt", "x")
+    b.write_file("gone.txt", "x")
+    paths: list[Any] = ["gone.txt", None]
+
+    receipt = json.loads(b.delete_files(paths))
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 1
+    assert receipt["failed"] == 1
+    assert receipt["results"][1]["ok"] is False
+    assert "malformed path" in receipt["results"][1]["error"]
+    assert (b.files_root() / "gone.txt").exists() is False
+    assert (b.files_root() / "keep.txt").exists() is True
+
+
+def test_make_dirs_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    assert json.loads(readonly.make_dirs(["a"]))["error"] == "server is read-only"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_files_moves_in_order_with_per_pair_receipts(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    b.write_file("b.txt", "b")
+
+    receipt = json.loads(
+        b.move_files(
+            [
+                {"source": "a.txt", "destination": "moved/a.txt"},
+                {"source": "b.txt", "destination": "moved/b.txt"},
+            ],
+            create_parents=True,
+        )
+    )
+
+    assert receipt["ok"] is True
+    assert receipt["count"] == 2
+    assert receipt["failed"] == 0
+    assert receipt["results"] == [
+        {"source": "a.txt", "destination": "moved/a.txt", "ok": True},
+        {"source": "b.txt", "destination": "moved/b.txt", "ok": True},
+    ]
+    assert b.read_file("moved/a.txt") == "a\n"
+    assert not (b.files_root() / "a.txt").exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_files_mid_batch_failure_does_not_abort(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    b.write_file("blocker.txt", "old")
+    b.write_file("c.txt", "c")
+
+    receipt = json.loads(
+        b.move_files(
+            [
+                {"source": "a.txt", "destination": "a2.txt"},
+                {"source": "blocker.txt", "destination": "a2.txt"},
+                {"source": "c.txt", "destination": "c2.txt"},
+            ]
+        )
+    )
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 2
+    assert receipt["failed"] == 1
+    # Pair 2 fails because pair 1 already created its destination.
+    assert "already exists" in receipt["results"][1]["error"]
+    # Later items still executed after the failure.
+    assert not (b.files_root() / "c.txt").exists()
+    assert b.read_file("blocker.txt") == "old\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_files_per_pair_hash_guard(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+
+    receipt = json.loads(
+        b.move_files([{"source": "a.txt", "destination": "a2.txt", "expected_sha256": "0" * 64}])
+    )
+
+    assert receipt["ok"] is False
+    assert "sha256 mismatch" in receipt["results"][0]["error"]
+    # The guarded source is untouched.
+    assert b.read_file("a.txt") == "a\n"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_files_malformed_pair_is_per_pair_error(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+
+    receipt = json.loads(
+        b.move_files([{"source": "a.txt", "destination": "a2.txt"}, {"destination": "x"}])
+    )
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 1
+    assert receipt["failed"] == 1
+    assert "requires non-empty source" in receipt["results"][1]["error"]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_move_files_non_dict_pair_is_per_pair_error(tmp_path: Path) -> None:
+    """A non-dict element must not kill the batch with an AttributeError."""
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    pairs: list[Any] = [{"source": "a.txt", "destination": "a2.txt"}, "not-a-dict"]
+
+    receipt = json.loads(b.move_files(pairs))
+
+    assert receipt["ok"] is False
+    assert receipt["succeeded"] == 1
+    assert receipt["failed"] == 1
+    assert receipt["results"][1]["ok"] is False
+    assert "malformed pair" in receipt["results"][1]["error"]
+    assert (b.files_root() / "a2.txt").exists()
+
+
+def test_move_files_non_str_source_is_per_pair_error(tmp_path: Path) -> None:
+    """A non-str source is a per-pair error, not a batch-killing exception."""
+    b = _backend(tmp_path)
+    b.write_file("a.txt", "a")
+    pairs: list[Any] = [{"source": 42, "destination": "a2.txt"}]
+
+    receipt = json.loads(b.move_files(pairs))
+
+    assert receipt["ok"] is False
+    assert receipt["failed"] == 1
+    assert receipt["results"][0]["ok"] is False
+    assert "requires non-empty string source and destination" in receipt["results"][0]["error"]
+    # The source was untouched.
+    assert (b.files_root() / "a.txt").exists()
+
+
+def test_move_files_batch_level_refusals(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    assert "empty" in json.loads(b.move_files([]))["error"]
+    assert (
+        "cap"
+        in json.loads(
+            b.move_files([{"source": f"s{i}", "destination": f"d{i}"} for i in range(101)])
+        )["error"]
+    )
+
+
+def test_move_files_readonly_fails_closed(tmp_path: Path) -> None:
+    readonly = _readonly_backend(tmp_path)
+    pairs = [{"source": "a", "destination": "b"}]
+    assert json.loads(readonly.move_files(pairs))["error"] == "server is read-only"
 
 
 def test_stat_file(tmp_path: Path) -> None:
@@ -694,6 +1716,71 @@ def test_denied_by_policy_case_insensitive(tmp_path: Path) -> None:
     assert b.denied_by_policy("evil.DB") is True
 
 
+def test_trash_hidden_from_list_files(tmp_path: Path) -> None:
+    """The default deny-glob hides the trash subtree from routine listing."""
+    b = _backend(tmp_path)
+    b.write_file("keep.txt", "ok")
+    trash_entry = b.files_root() / ".trash" / "2026-11-18T00-00-00.000000"
+    trash_entry.mkdir(parents=True)
+    (trash_entry / "buried.txt").write_text("x", encoding="utf-8")
+
+    files = json.loads(b.list_files(""))
+
+    assert files == ["keep.txt"]
+
+
+def test_trash_denied_for_routine_ops(tmp_path: Path) -> None:
+    """Read/stat/write/delete refuse trash paths even with no caller deny-globs."""
+    b = _backend(tmp_path)
+    assert json.loads(b.read_file(".trash/buried.txt"))["error"] == "path denied by policy"
+    assert json.loads(b.stat_file(".trash/buried.txt"))["error"] == "path denied by policy"
+    assert json.loads(b.write_file(".trash/new.txt", "x"))["error"] == "path denied by policy"
+    assert json.loads(b.delete_file(".trash/buried.txt"))["error"] == "path denied by policy"
+
+
+def test_trash_root_hidden_from_list_files(tmp_path: Path) -> None:
+    """The deny-glob covers the bare ``.trash`` root, not only its contents."""
+    b = _backend(tmp_path)
+    session = b.files_root() / ".trash" / "2026-11-18T00-00-00.000000"
+    session.mkdir(parents=True)
+    (session / "buried.txt").write_text("x", encoding="utf-8")
+
+    assert json.loads(b.list_files(".trash"))["error"] == "prefix denied by policy"
+    assert b.denied_by_policy(".trash") is True
+
+
+def test_delete_directory_refuses_bare_trash_root(tmp_path: Path) -> None:
+    """One unbounded call must not drain the whole trash root.
+
+    ``purge_trash`` (bounded slices, oldest-first) is the sanctioned
+    drain; deleting ``.trash/<ts>/...`` session subtrees stays allowed.
+    """
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+    _make_trash_session(b, "2026-01-02T00-00-00.000001")
+
+    receipt = json.loads(b.delete_directory(".trash", recursive=True))
+
+    assert "refusing to delete the entire .trash root" in receipt["error"]
+    assert (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+    assert (b.files_root() / ".trash" / "2026-01-02T00-00-00.000001").exists()
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="recursive hard delete requires dir_fd support",
+)
+def test_delete_directory_still_allows_trash_session_subtrees(tmp_path: Path) -> None:
+    """The root refusal must not block the sanctioned session purge path."""
+    b = _backend(tmp_path)
+    _make_trash_session(b, "2026-01-01T00-00-00.000001")
+
+    receipt = json.loads(b.delete_directory(".trash/2026-01-01T00-00-00.000001", recursive=True))
+
+    assert receipt["ok"] is True
+    assert not (b.files_root() / ".trash" / "2026-01-01T00-00-00.000001").exists()
+
+
 # ── Model manifests ──────────────────────────────────────────────────────────
 
 
@@ -721,3 +1808,527 @@ def test_write_manifest_rejects_unknown_kind(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     data = json.loads(b.write_model_manifest("x", "bogus"))
     assert "error" in data
+
+
+def test_batch_guards_convert_unexpected_entry_exceptions(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+
+    def _raise_path(_path: str) -> dict[str, Any]:
+        raise RuntimeError("injected path failure")
+
+    def _raise_pair(_pair: dict[str, str], **_kwargs: object) -> dict[str, Any]:
+        raise RuntimeError("injected pair failure")
+
+    path_receipt = b._guarded_path_item("a.txt", _raise_path)
+    pair_receipt = b._guarded_pair_item(
+        {"source": "a.txt", "destination": "b.txt"},
+        _raise_pair,
+    )
+
+    assert "RuntimeError" in path_receipt["error"]
+    assert "injected path failure" in path_receipt["error"]
+    assert "RuntimeError" in pair_receipt["error"]
+    assert "injected pair failure" in pair_receipt["error"]
+
+
+def test_delete_file_rejects_symlink_parent_and_lstat_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (b.files_root() / "linked").symlink_to(outside, target_is_directory=True)
+
+    symlinked = json.loads(b.delete_file("linked/victim.txt"))
+    assert "escapes sandbox" in symlinked["error"]
+
+    b.write_file("victim.txt", "x")
+    original_lstat = Path.lstat
+
+    def _lstat_error(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == b.files_root() / "victim.txt":
+            raise OSError(errno.EIO, "lstat failed")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", _lstat_error)
+    lstat_error = json.loads(b.delete_file("victim.txt"))
+    assert "Input/output error" in lstat_error["error"]
+
+
+def test_delete_directory_covers_lstat_and_scandir_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("tree")
+
+    original_lstat = Path.lstat
+
+    def _lstat_error(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == b.files_root() / "tree":
+            raise OSError(errno.EIO, "lstat failed")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", _lstat_error)
+    lstat_error = json.loads(b.delete_directory("tree"))
+    assert "Input/output error" in lstat_error["error"]
+
+    monkeypatch.setattr(Path, "lstat", original_lstat)
+
+    def _scandir_error(*_args: object, **_kwargs: object) -> object:
+        raise OSError(errno.EIO, "scandir failed")
+
+    monkeypatch.setattr("sdk.storage._backend.os.scandir", _scandir_error)
+    scandir_error = json.loads(b.delete_directory("tree"))
+    assert "Input/output error" in scandir_error["error"]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_secure_move_covers_sync_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sdk.storage._move as secure_move
+
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "content")
+
+    def _fsync_error(_fd: int) -> None:
+        raise OSError(errno.EIO, "fsync failed")
+
+    monkeypatch.setattr(secure_move.os, "fsync", _fsync_error)
+    receipt = json.loads(b.move_file("source.txt", "moved.txt"))
+
+    assert receipt["ok"] is True
+    assert receipt["durable"] is False
+    assert "durability" in receipt["warning"]
+    assert receipt["durability_errors"]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_secure_move_directory_covers_missing_source_and_sync_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    b = _backend(tmp_path)
+    missing = json.loads(b.move_directory("missing", "destination"))
+    assert "source directory not found" in missing["error"]
+
+    b.write_file("tree/a.txt", "a")
+
+    def _fsync_error(_fd: int) -> None:
+        raise OSError(errno.EIO, "fsync failed")
+
+    monkeypatch.setattr(secure_move.os, "fsync", _fsync_error)
+    receipt = json.loads(b.move_directory("tree", "moved"))
+
+    assert receipt["ok"] is True
+    assert receipt["durable"] is False
+    assert "durability" in receipt["warning"]
+
+
+def test_secure_move_covers_rename_errno_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sdk.storage._move as secure_move
+
+    class _Rename:
+        argtypes: object = None
+        restype: object = None
+
+        def __init__(self, result: int) -> None:
+            self.result = result
+
+        def __call__(self, *_args: object, **_kwargs: object) -> int:
+            return self.result
+
+    monkeypatch.setattr(secure_move, "_libc_renameat2", lambda: _Rename(-1))
+    monkeypatch.setattr(secure_move.ctypes, "get_errno", lambda: errno.EXDEV)
+    with pytest.raises(secure_move.SecureMoveError, match="crosses filesystems"):
+        secure_move._rename_noreplace(1, "source", 2, "destination")
+
+    monkeypatch.setattr(secure_move.ctypes, "get_errno", lambda: errno.ENOSYS)
+    with pytest.raises(secure_move.SecureMoveError, match="unsupported"):
+        secure_move._rename_noreplace(1, "source", 2, "destination")
+
+
+def test_secure_move_covers_missing_renameat2(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sdk.storage._move as secure_move
+
+    secure_move._libc_renameat2.cache_clear()
+    monkeypatch.setattr(
+        secure_move.ctypes,
+        "CDLL",
+        lambda _name, *_args, **_kwargs: object(),
+    )
+
+    with pytest.raises(secure_move.SecureMoveError, match="renameat2 is unavailable"):
+        secure_move._libc_renameat2()
+    secure_move._libc_renameat2.cache_clear()
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative move fallback requires dir_fd support",
+)
+def test_secure_move_covers_hash_and_stat_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    root = tmp_path / "root"
+    root.mkdir()
+    root_fd = os.open(root, secure_move._DIRECTORY_FLAGS)
+    try:
+        with pytest.raises(secure_move.SecureMoveError, match="source file not found"):
+            secure_move._hash_open_file(root_fd, "missing.txt", label="source")
+
+        (root / "file.txt").write_bytes(b"x")
+
+        original_stat = secure_move.os.stat
+
+        def _stat_error(*_args: object, **_kwargs: object) -> os.stat_result:
+            raise PermissionError(errno.EACCES, "inspect denied")
+
+        monkeypatch.setattr(secure_move.os, "stat", _stat_error)
+        with pytest.raises(secure_move.SecureMoveError, match="inspect source file"):
+            secure_move._hash_open_file(root_fd, "file.txt", label="source")
+
+        monkeypatch.setattr(secure_move.os, "stat", original_stat)
+
+        def _open_error(*_args: object, **_kwargs: object) -> int:
+            raise PermissionError(errno.EACCES, "open denied")
+
+        monkeypatch.setattr(secure_move.os, "open", _open_error)
+        with pytest.raises(secure_move.SecureMoveError, match="open source file"):
+            secure_move._hash_open_file(root_fd, "file.txt", label="source")
+    finally:
+        os.close(root_fd)
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative move fallback requires dir_fd support",
+)
+def test_secure_move_directory_root_open_and_source_stat_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    monkeypatch.setattr(secure_move, "_platform_supported", lambda: True)
+
+    def _open_error(*_args: object, **_kwargs: object) -> int:
+        raise OSError(errno.EIO, "directory root open failed")
+
+    monkeypatch.setattr(secure_move.os, "open", _open_error)
+    with pytest.raises(secure_move.SecureMoveError, match="open the files sandbox"):
+        secure_move.move_directory(
+            tmp_path,
+            source_parts=("source",),
+            destination_parts=("dest",),
+        )
+
+    monkeypatch.undo()
+    monkeypatch.setattr(secure_move, "_platform_supported", lambda: True)
+    b = _backend(tmp_path)
+    b.make_dir("source")
+    original_stat = secure_move.os.stat
+
+    def _stat_error(*_args: object, **_kwargs: object) -> os.stat_result:
+        raise PermissionError(errno.EACCES, "inspect denied")
+
+    monkeypatch.setattr(secure_move.os, "stat", _stat_error)
+    receipt = json.loads(b.move_directory("source", "dest"))
+    assert "inspect source directory" in receipt["error"]
+
+    monkeypatch.setattr(secure_move.os, "stat", original_stat)
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative move fallback requires dir_fd support",
+)
+def test_secure_move_stat_sync_and_directory_verification_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    root = tmp_path / "root"
+    root.mkdir()
+    root_fd = os.open(root, secure_move._DIRECTORY_FLAGS)
+    try:
+        assert secure_move._stat_relative(root_fd, "missing") is None
+
+        def _fsync_error(_fd: int) -> None:
+            raise OSError(errno.EIO, "sync failed")
+
+        monkeypatch.setattr(secure_move.os, "fsync", _fsync_error)
+        errors = secure_move._sync_directories((root_fd, root_fd))
+        assert errors
+
+        source_stat = os.stat(root)
+        monkeypatch.setattr(secure_move, "_stat_relative", lambda *_args: None)
+
+        def _rollback_error(*_args: object, **_kwargs: object) -> None:
+            raise secure_move.SecureMoveError("rollback unavailable")
+
+        monkeypatch.setattr(secure_move, "_rename_noreplace", _rollback_error)
+        with pytest.raises(secure_move.SecureMoveError, match="rollback failed"):
+            secure_move._verify_moved_directory(source_stat, root_fd, "dest", root_fd, "source")
+    finally:
+        os.close(root_fd)
+
+
+def test_secure_move_covers_root_open_and_directory_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    def _open_error(*_args: object, **_kwargs: object) -> int:
+        raise OSError(errno.EIO, "root open failed")
+
+    monkeypatch.setattr(secure_move.os, "open", _open_error)
+    monkeypatch.setattr(secure_move, "_platform_supported", lambda: True)
+    with pytest.raises(secure_move.SecureMoveError, match="open the files sandbox"):
+        secure_move.move_regular_file(
+            tmp_path,
+            source_parts=("source.txt",),
+            destination_parts=("dest.txt",),
+        )
+
+    monkeypatch.setattr(secure_move, "_platform_supported", lambda: False)
+    with pytest.raises(secure_move.SecureMoveError, match="unsupported"):
+        secure_move.move_directory(
+            tmp_path,
+            source_parts=("source",),
+            destination_parts=("dest",),
+        )
+
+
+def test_manifest_oserrors_are_sanitized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    b = _backend(tmp_path)
+    b.write_model_manifest("proposal: true\n", "proposal")
+
+    def _read_error(*_args: object, **_kwargs: object) -> str:
+        raise OSError(errno.EIO, "manifest read failed")
+
+    monkeypatch.setattr(Path, "read_text", _read_error)
+    read_receipt = json.loads(b.read_model_manifest("proposal"))
+    assert "Input/output error" in read_receipt["error"]
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+
+    def _open_error(*_args: object, **_kwargs: object) -> object:
+        raise OSError(errno.EIO, "manifest write failed")
+
+    monkeypatch.setattr(Path, "open", _open_error)
+    write_receipt = json.loads(b.write_model_manifest("x", "proposal"))
+    assert "Input/output error" in write_receipt["error"]
+
+
+def test_trash_and_hard_delete_oserrors_are_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._backend as backend
+
+    b = _backend(tmp_path)
+    b.make_dir("tree")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: True)
+
+    def _open_error(*_args: object, **_kwargs: object) -> int:
+        raise OSError(errno.EIO, "root open failed")
+
+    monkeypatch.setattr(backend.os, "open", _open_error)
+    removed_files, removed_dirs, error = b._hard_delete_tree(b.files_root() / "tree")
+    assert removed_files == 0
+    assert removed_dirs == 0
+    assert "root open failed" not in (error or "")
+    assert "Input/output error" in (error or "")
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+    b.make_dir("trash-session")
+    (b.files_root() / ".trash").mkdir(exist_ok=True)
+
+    def _scandir_error(*_args: object, **_kwargs: object) -> object:
+        raise OSError(errno.EIO, "trash scan failed")
+
+    monkeypatch.setattr(backend.os, "scandir", _scandir_error)
+    receipt = json.loads(b.purge_trash())
+    assert "purge failed" in receipt["error"]
+
+
+def test_storage_write_edit_read_append_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "hello")
+
+    def _replace_error(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "replace failed")
+
+    monkeypatch.setattr("sdk.storage._backend.os.replace", _replace_error)
+    edit_receipt = json.loads(b.edit_file("doc.txt", "hello", "world"))
+    assert "Input/output error" in edit_receipt["error"]
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+
+    def _write_open_error(*_args: object, **_kwargs: object) -> object:
+        raise OSError(errno.EIO, "write failed")
+
+    monkeypatch.setattr(Path, "open", _write_open_error)
+    write_receipt = json.loads(b.write_file("write.txt", "x"))
+    assert "Input/output error" in write_receipt["error"]
+    append_receipt = json.loads(b.append_file("append.txt", "x"))
+    assert "Input/output error" in append_receipt["error"]
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "hello")
+
+    def _read_bytes_error(*_args: object, **_kwargs: object) -> bytes:
+        raise OSError(errno.EIO, "read failed")
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes_error)
+    stat_receipt = json.loads(b.stat_file("doc.txt"))
+    assert "Input/output error" in stat_receipt["error"]
+    edit_receipt = json.loads(b.edit_file("doc.txt", "hello", "world"))
+    assert "Input/output error" in edit_receipt["error"]
+
+
+def test_storage_read_slice_unlink_and_nofollow_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "hello")
+
+    def _read_text_error(*_args: object, **_kwargs: object) -> str:
+        raise OSError(errno.EIO, "slice read failed")
+
+    monkeypatch.setattr(Path, "read_text", _read_text_error)
+    range_receipt = json.loads(b.read_file_range("doc.txt"))
+    assert "Input/output error" in range_receipt["error"]
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "hello")
+
+    def _unlink_error(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "unlink failed")
+
+    monkeypatch.setattr(Path, "unlink", _unlink_error)
+    unlink_receipt = json.loads(b.delete_file("doc.txt"))
+    assert "Input/output error" in unlink_receipt["error"]
+
+
+def test_move_prepare_covers_same_path_hash_and_malformed_path(
+    tmp_path: Path,
+) -> None:
+    b = _backend(tmp_path)
+
+    same = json.loads(b.move_file("a.txt", "a.txt"))
+    assert "same path" in same["error"]
+
+    bad_hash = json.loads(b.move_file("a.txt", "b.txt", expected_sha256="not-a-sha"))
+    assert "64 hexadecimal" in bad_hash["error"]
+
+    unsafe = json.loads(b.move_file("../a.txt", "b.txt"))
+    assert "unsafe or escapes sandbox" in unsafe["error"]
+
+    b.write_file("pair.txt", "x")
+    pair_receipt = json.loads(b.move_files([None]))
+    assert pair_receipt["count"] == 1
+    assert "malformed pair" in pair_receipt["results"][0]["error"]
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative hard delete requires dir_fd support",
+)
+def test_hard_delete_relative_and_parent_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._backend as backend
+
+    b = _backend(tmp_path)
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    assert (
+        b._relative_parts_for_delete(outside)[1]
+        == "delete failed: path is outside the files sandbox"
+    )
+    assert (
+        b._relative_parts_for_delete(b.files_root())[1]
+        == "delete failed: cannot remove the files sandbox root"
+    )
+
+    root_fd = os.open(b.files_root(), backend._DIRECTORY_OPEN_FLAGS)
+    try:
+
+        def _missing_component(*_args: object, **_kwargs: object) -> int:
+            raise FileNotFoundError
+
+        monkeypatch.setattr(backend.os, "open", _missing_component)
+        opened = b._open_parent_directory_fd(root_fd, ("missing",))
+        assert "No such file or directory" in opened
+    finally:
+        os.close(root_fd)
+
+
+def test_nofollow_and_directory_validation_cover_malformed_paths(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("plain", "plain")
+
+    resolved = b._resolve_nofollow("../evil.txt")
+    assert isinstance(resolved, dict)
+    assert "unsafe or escapes sandbox" in resolved["error"]
+    resolved = b._resolve_nofollow("evil\0.txt")
+    assert isinstance(resolved, dict)
+    assert "unsafe or escapes sandbox" in resolved["error"]
+
+    prepared = b._resolve_delete_directory("plain")
+    assert isinstance(prepared, str)
+    assert "targets a file" in prepared
+
+
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative hard delete requires dir_fd support",
+)
+def test_delete_directory_hard_delete_descriptor_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._backend as backend
+
+    b = _backend(tmp_path)
+    b.make_dir("tree")
+    b.write_file("tree/a.txt", "a")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: True)
+
+    root = b.files_root()
+    root_fd = os.open(root, backend._DIRECTORY_OPEN_FLAGS)
+    try:
+        opened_parent = b._open_parent_directory_fd(root_fd, ("missing",))
+        if isinstance(opened_parent, str):
+            assert opened_parent.startswith("delete failed:")
+
+        def _open_directory_error(*_args: object, **_kwargs: object) -> int:
+            raise OSError(errno.EIO, "descriptor open failed")
+
+        monkeypatch.setattr(backend.os, "open", _open_directory_error)
+        opened = b._open_root_directory_fd()
+        assert "Input/output error" in opened
+    finally:
+        os.close(root_fd)
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+    b.make_dir("tree")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: True)
+    monkeypatch.setattr(
+        b,
+        "_open_root_directory_fd",
+        lambda: "delete failed: root descriptor unavailable",
+    )
+    removed_files, removed_dirs, error = b._hard_delete_tree(b.files_root() / "tree")
+    assert removed_files == 0
+    assert removed_dirs == 0
+    assert "root descriptor" in error

@@ -74,16 +74,29 @@ fixture ships a minimal manifest plus the `web_search` overlay:
 uv run --frozen lisa-e2e run e2etest/tests/e2e/harness_smoke.scenario.yml
 ```
 
+Two additional scripted offline scenarios validate compaction spill behavior:
+
+- [`compaction_spill_low_pressure.scenario.yml`](tests/e2e/compaction_spill_low_pressure.scenario.yml)
+  asserts a large `thread_read_recent` result stays inline when the turn is
+  below soft-trigger pressure.
+- [`compaction_spill_high_pressure.scenario.yml`](tests/e2e/compaction_spill_high_pressure.scenario.yml)
+  repeatedly requests large `thread_read_recent` payloads in one turn and
+  asserts spill previewing engages under pressure.
+
 Scripted scenarios resolve their base data dir as follows:
 `LISA_E2E_BASE_DATA_DIR` wins when set; otherwise a scripted scenario uses
 the bundled fixture ([`base_data/`](base_data/README.md)); a live scenario
-uses the operator's `~/.lisa`. CI runs the smoke scenario as the
-`e2e-smoke` merge-gate job — zero credentials, no operator state.
+uses the operator's `~/.lisa`. CI runs the smoke, memory, and compaction
+spill scripted scenarios as the `e2e-smoke` merge-gate job — zero
+credentials, no operator state.
 
 Options:
 
 - `--rebuild-venv` — force a packs-venv rebuild (after editing `packs.yml` or a
   pack's dependencies; source edits do not need it).
+- `--model MODEL_ID` — pin every manifest mode to one concrete model and clear
+  router rules for an isolated model comparison. The ID must already exist in
+  the base `models.yaml`.
 - `--runs-dir DIR` — write bundles elsewhere.
 
 Repeat runs (live-scenario reliability):
@@ -113,6 +126,37 @@ Live scenarios and their workflow shape:
 A run takes minutes and costs real tokens. Confirm a fix with more than one
 passing run before calling it done — `lisa-e2e repeat` automates exactly
 that.
+
+## Low-cost live canaries
+
+The three canaries under [`tests/e2e/`](tests/e2e) are intentionally narrow:
+
+| Scenario | Proves |
+| --- | --- |
+| `live_direct_answer.scenario.yml` | One-turn completion without an unnecessary tool call |
+| `live_web_research.scenario.yml` | Real provider dispatch, grounded direct answer, no artifact |
+| `live_web_research_artifact.scenario.yml` | Real search plus a durable sourced write |
+
+They require a base `models.yaml`, provider credentials,
+`SERPER_SEARCH_API_KEY`, and the `personas`, `markdown`, `memory`, and
+`serper` pack sources registered in `packs.yml`. Run one named model and
+repeat the research case without editing the operator manifest:
+
+```bash
+MODEL=openai/gpt-5.4-mini
+uv run --frozen lisa-e2e run \
+  e2etest/tests/e2e/live_direct_answer.scenario.yml --model "$MODEL"
+uv run --frozen lisa-e2e repeat \
+  e2etest/tests/e2e/live_web_research.scenario.yml \
+  --model "$MODEL" --runs 2 --min-pass 2
+uv run --frozen lisa-e2e run \
+  e2etest/tests/e2e/live_web_research_artifact.scenario.yml --model "$MODEL"
+```
+
+Each canary has a strict `usage_within` oracle. The current measured envelope
+is 1-4 billed model calls and roughly 6k-33k processed tokens. Run the
+web-research canary first; inspect its bundle instead of raising stage caps
+when it fails.
 
 ## Debugging a failed run
 
@@ -167,6 +211,7 @@ fixture:
   data_files: fixtures/<tree>    # optional; copied into <data_dir>/data/files
 packs: [lisa-pack-...]           # keys of e2etest/packs.yml installed into the venv
 model:
+  id: concrete-model-id          # optional live-model pin; CLI --model overrides it
   script: model/<name>.py        # optional; scripted model instead of the live LLM
 policy: policy.yaml              # optional; default is empty `mode: ask`
 env: {NAME: value}               # optional extra process env
@@ -206,8 +251,10 @@ surfaced, not to judge model behavior. The driver binds the script through
 the runtime's supported gateway-override seam
 (``session.provider_gateways_override``) and clears it when the run ends.
 
-The module defines `respond(turn: ScriptTurn) -> Reply` and, optionally,
-`auxiliary(turn)` for tool-less requests (distillers, classifiers, titles).
+The module imports the `ScriptTurn`/`Reply` contract from
+`runtime.testing.scripted` and defines `respond(turn: ScriptTurn) -> Reply`
+and, optionally, `auxiliary(turn)` for tool-less requests (distillers,
+classifiers, titles).
 Those otherwise receive `{}` or empty text, which some operations log as
 errors. `ScriptTurn` exposes `tool_names`, `user_text`, `count(name)`, and
 `last(name)`. `last(name).data` is the JSON object inside that tool's
@@ -229,12 +276,14 @@ Conversation hygiene:
 | `no_unanswered_yield` | — | the conversation did not end on a question |
 | `no_runtime_errors` | `ignore: [regex]` | no error-level record in `runtime.jsonl` |
 | `max_exchanges` | `n` | at most `n` messages were sent |
+| `usage_within` | `min_calls`, `max_calls`, `max_prompt_tokens`, `max_completion_tokens`, `max_total_tokens`, `max_cost_usd` | durable token/cost log stays within declared limits |
 
 Capability and knowledge:
 
 | Oracle | Args | Passes when |
 | --- | --- | --- |
 | `receipt` | `capability` (id or list), `min` | ≥ `min` effect receipts for those capabilities |
+| `history_folded` | `tool` (id or list), `min`, `snapshot` (owner, optional) | ≥ `min` pack-history records for those tools, each with a ref; the snapshot owner is present when given |
 | `memory_recorded` | `mentions_any`, `min` | ≥ `min` stored memories mention any term |
 | `memory_scope` | `surface_id`, `scope` | every stored memory carries the scenario's declared surface id (and memory scope when given) |
 

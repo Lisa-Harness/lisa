@@ -12,11 +12,12 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import yaml
 from kernel.config import settings as _kernel_settings
+from kernel.history import HistoryPolicy
 from sdk.content._front_matter import FrontMatterError, parse_front_matter
 
 # Config-backed completion defaults for declarative operations. The kernel
@@ -411,6 +412,7 @@ def _load_one_mode(
         ),
         "task_completion": str(front_matter.get("task_completion", "none") or "none"),
         "task_artifact_tool_id": str(front_matter.get("task_artifact_tool_id", "") or ""),
+        "working_set_tokens": int(front_matter.get("working_set_tokens", 0) or 0),
         "workshop_panels": workshop_panels,
         "workshop_budget": front_matter.get("workshop_budget") or {},
         "workshop_planner_prompt_file": workshop_planner_prompt_file,
@@ -1577,4 +1579,53 @@ def _load_runtime_tool(
         "abbreviation_template": str(metadata.get("abbreviation_template", "") or ""),
         "display_template": str(metadata.get("display_template", "") or ""),
         "stream_output": bool(metadata.get("stream_output", False)),
+        "history": _history_block(yml_path, metadata.get("history")),
+        "validation_recovery": _validation_recovery_block(
+            root.parent, metadata.get("validation_recovery")
+        ),
     }
+
+
+def _validation_recovery_block(content_root: Path, raw: Any) -> dict[str, Any] | None:
+    """Translate a ``validation_recovery:`` block, verifying the resource.
+
+    The declaration names packaged authored content only (the
+    coding-edit-schema-recovery contract): ``content_path`` is relative to
+    the pack's content root — the scan root here is its ``tools/``
+    subdirectory, so the check resolves against the parent — and the
+    catalog build fails when the resource is absent so a broken pack
+    install surfaces at load time rather than as a missing recovery
+    section at dispatch time.
+    """
+
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("content_path"), str):
+        raise ValueError("validation_recovery must declare content_path")
+    content_path = raw["content_path"]
+    if not content_path:
+        raise ValueError("validation_recovery.content_path must not be empty")
+    posix_path = PurePosixPath(content_path)
+    windows_path = PureWindowsPath(content_path)
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or windows_path.root
+        or ".." in posix_path.parts
+        or ".." in windows_path.parts
+    ):
+        raise ValueError(f"validation_recovery.content_path must be pack-relative: {content_path}")
+    if not (content_root / content_path).is_file():
+        raise ValueError(f"validation_recovery content not found in pack: {content_path}")
+    return {"content_path": content_path}
+
+
+def _history_block(yml_path: Path, raw: Any) -> dict[str, Any] | None:
+    """Validate a ``history:`` block's shape; parameter names are checked on import."""
+    if raw is None:
+        return None
+    try:
+        return HistoryPolicy.model_validate(raw).model_dump(mode="json")
+    except ValueError as exc:
+        raise ValueError(f"{yml_path}: invalid history block: {exc}") from exc

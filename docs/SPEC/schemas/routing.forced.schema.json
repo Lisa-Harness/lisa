@@ -1,0 +1,233 @@
+{
+  "$comment": "Write-time contract only: additionalProperties=false governs newly written rows. Readers MUST NOT validate historical rows against this document; unknown keys in older rows are expected and must be tolerated.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "emitted_at": {
+      "type": "string"
+    },
+    "expected_tool": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expected Tool"
+    },
+    "iteration": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Iteration"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Kind"
+    },
+    "ledger_instance": {
+      "type": "string"
+    },
+    "logged_at": {
+      "type": [
+        "number",
+        "string"
+      ]
+    },
+    "mode_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mode Id"
+    },
+    "model_cost_tier": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Cost Tier"
+    },
+    "model_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Id"
+    },
+    "model_reasoning": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Reasoning"
+    },
+    "model_structured_reliability": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Structured Reliability"
+    },
+    "non_compliant_dispatches": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Non Compliant Dispatches"
+    },
+    "parent_dispatch_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parent_turn_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "run_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema_version": {
+      "type": "integer"
+    },
+    "sequence": {
+      "type": "integer"
+    },
+    "span_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "targets": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Targets"
+    },
+    "thread_store_slug": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "topic": {
+      "const": "routing.forced"
+    },
+    "trace_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "trigger": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trigger"
+    },
+    "turn_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "turn_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "user_slug": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "emitted_at",
+    "ledger_instance",
+    "logged_at",
+    "parent_dispatch_id",
+    "parent_turn_id",
+    "run_ref",
+    "schema_version",
+    "sequence",
+    "span_id",
+    "topic",
+    "trace_id",
+    "turn_id"
+  ],
+  "title": "routing.forced",
+  "type": "object"
+}

@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from runtime.testing import build_test_runtime
+from runtime.turn_context_identity import NO_TURN_IDENTITY
 from runtime.turn_hooks_builder import build_turn_hooks
 
 
@@ -62,7 +63,7 @@ async def test_on_delta_forwards_to_transport_text_chunk(tmp_path: Any) -> None:
         async def on_error(self, message: str, exc: Any = None) -> None: ...
 
     transport = _RecordingTransport()
-    hooks = build_turn_hooks(runtime, context=None, transport=transport)
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY, transport=transport)
     assert hooks.models.on_delta is not None
     await hooks.models.on_delta("answer text", "hidden thinking")
     assert transport.chunks == [("answer text", "hidden thinking")]
@@ -85,7 +86,7 @@ async def test_on_delta_swallows_transport_errors(tmp_path: Any) -> None:
 
         async def on_error(self, message: str, exc: Any = None) -> None: ...
 
-    hooks = build_turn_hooks(runtime, context=None, transport=_BrokenTransport())
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY, transport=_BrokenTransport())
     assert hooks.models.on_delta is not None
     await hooks.models.on_delta("text", "")  # must not raise
     await runtime.aclose()

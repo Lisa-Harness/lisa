@@ -1,12 +1,20 @@
-"""Scripted model: drive a real runtime with a deterministic, token-free "model".
+"""Scripted model gateway: answer a real runtime with a deterministic "model".
 
-A scenario that declares ``model: {script: <file>.py}`` replaces every provider
-gateway with :class:`ScriptedGatewayProvider`. The script module defines
-``respond(turn: ScriptTurn) -> Reply``; it sees the real request the kernel
-built (messages, tool list, prior tool results) and answers with text or tool
-calls, so values such as artifact ids and file digests flow from real tool
-output exactly as they would for a live model. Everything below the model —
-routing, policy, approvals, packs, sandbox, persistence — is production code.
+One implementation serves every consumer that needs the model answered from
+a script instead of a provider (Spec: docs/SPEC/TURN-REPLAY.md,
+"Foundation"). The e2e scenario harness binds it through the runtime's
+gateway-override seam, so a scenario that declares ``model: {script:
+<file>.py}`` replaces every provider gateway with
+:class:`ScriptedGatewayProvider`; turn replay will bind the same core with a
+script derived from the model-call archive rather than a hand-written
+module.
+
+The script module defines ``respond(turn: ScriptTurn) -> Reply``; it sees the
+real request the kernel built (messages, tool list, prior tool results) and
+answers with text or tool calls, so values such as artifact ids and file
+digests flow from real tool output exactly as they would for a live model.
+Everything below the model — routing, policy, approvals, packs, sandbox,
+persistence — is production code.
 
 Requests that carry no tools (classifiers, distillers, titles) are auxiliary;
 the script may answer them with ``auxiliary(turn)``, otherwise they receive an
@@ -159,7 +167,7 @@ class ScriptTurn:
 
 @dataclass
 class ScriptedGateway:
-    """A ``ProviderGateway`` that answers from the scenario's model script."""
+    """A ``ProviderGateway`` that answers from the bound model script."""
 
     owner: ScriptedGatewayProvider
 
@@ -222,7 +230,7 @@ class ScriptedGatewayProvider:
 
 def load_script(path: Path) -> ScriptedGatewayProvider:
     """Import a model script and wrap its ``respond``/``auxiliary`` hooks."""
-    spec = importlib.util.spec_from_file_location(f"e2e_model_script_{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(f"model_script_{path.stem}", path)
     if spec is None or spec.loader is None:
         raise ScriptError(f"cannot import model script: {path}")
     module: ModuleType = importlib.util.module_from_spec(spec)

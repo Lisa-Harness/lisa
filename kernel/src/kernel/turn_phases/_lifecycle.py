@@ -765,6 +765,17 @@ def _write_rescue_action(
     )
 
 
+def _productive_action_in_progress(state: _TurnStateView) -> bool:
+    """Return whether an action mode has already made verified progress.
+
+    Action modes such as coding execution normally finish in place rather than
+    calling ``transition_stage``. Once their declared action tool has produced
+    a verified write receipt, the same-stage cap would mistake productive work
+    for a routing loop; the outer whole-turn budgets remain the hard ceiling.
+    """
+    return bool(state.action_tool_ids and state.has_write_receipt)
+
+
 def _cap_pause_or_terminate(
     *,
     mode_yield_policy: YieldPolicy,
@@ -999,14 +1010,14 @@ def resolve_lifecycle_action(
        action modes).
     5. **Stuck-in-stage cap** — ``stage_nudge_cap`` iterations in the same
        stage/mode without a transition. Forces a yield (or finish for action
-       modes). Applies uniformly to every mode kind: the loop feeds
-       ``turns_in_stage`` from this turn's per-step iteration counter,
-       reset on every ``transition_stage`` and at the start of a new turn.
+       modes). A productive action mode that already has a verified write
+       receipt is exempt: it normally finishes in place, so the outer
+       whole-turn budgets remain its ceiling. Other modes use
+       ``turns_in_stage`` from this turn's per-step iteration counter, reset
+       on every ``transition_stage`` and at the start of a new turn.
        Historical workflow turns do not consume this budget. This is the
        2026-07-30 "loop max guard 6" fix (yield, don't truncate) unified
-       with the 2026-08-05 stuck-in-chat-mode guard — the split into
-       workflow-only and chat-only guards was the drift the unification
-       removes.
+       with the 2026-08-05 stuck-in-chat-mode guard.
     6. **Stuck-in-stage threshold** — ``stage_nudge_threshold`` iterations.
        Soft ``ContinueAction`` with a nudge ("consider yielding if blocked").
        The model keeps working; no force.
@@ -1047,7 +1058,9 @@ def resolve_lifecycle_action(
     if cap_action is not None:
         return cap_action
 
-    if state.turns_in_stage >= settings.stage_nudge_cap:
+    if state.turns_in_stage >= settings.stage_nudge_cap and not _productive_action_in_progress(
+        state
+    ):
         return _cap_pause_or_terminate(
             mode_yield_policy=mode_yield_policy,
             pause_reason=(f"stuck in {mode_id} for {state.turns_in_stage} iterations (cap)"),
@@ -1058,7 +1071,10 @@ def resolve_lifecycle_action(
         )
 
     # ── 6. Stuck-in-stage threshold (soft nudge) ────────────────────────
-    if state.turns_in_stage >= settings.stage_nudge_threshold:
+    if (
+        state.turns_in_stage >= settings.stage_nudge_threshold
+        and not _productive_action_in_progress(state)
+    ):
         return _stuck_in_stage_nudge(mode_id=mode_id, state=state)
 
     # ── 7. Default: keep working ───────────────────────────────────────

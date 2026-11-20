@@ -10,6 +10,7 @@ builder used by both the fork path and the main turn loop.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -29,6 +30,8 @@ from kernel.models import (
 )
 from kernel.seams.host_adapter import build_callable_host
 from kernel.tools.mcp_client import MCPToolPool
+from kernel.turn_lineage import child_identity
+from kernel.turn_phases._wall_budget import child_wall_ms, remaining_wall_ms
 
 _log = logging.getLogger(__name__)
 
@@ -231,12 +234,30 @@ def _fork_child_budget(turn_budget: TurnBudget | None, n: int) -> TurnBudget | N
 
     A field set to ``0`` means unlimited and is passed through as ``0``.
     Returns ``None`` when the parent has no budget.
+
+    Finite fields are divided, then raised to the kernel's fork-child
+    floors (``fork_child_min_tool_calls`` / ``fork_child_min_total_tokens``)
+    when a large fan-out divides a share below one honest attempt's
+    envelope — the 2026-11-13 turn 1258 incident: 150/5 = 30 tool calls
+    starved a test-slice worker into "turn budget exhausted" at 31 calls.
+    Floors never apply to an unlimited (0) parent field and never loosen a
+    share that already exceeds them; each child stays individually bounded.
     """
     if turn_budget is None:
         return None
+
+    def _split(total: int, floor: int) -> int:
+        if total <= 0:
+            return 0
+        return max(total // n, floor)
+
     return TurnBudget(
-        max_tool_calls=(turn_budget.max_tool_calls // n if turn_budget.max_tool_calls else 0),
-        max_total_tokens=(turn_budget.max_total_tokens // n if turn_budget.max_total_tokens else 0),
+        max_tool_calls=_split(
+            turn_budget.max_tool_calls, _kernel_settings.fork_child_min_tool_calls
+        ),
+        max_total_tokens=_split(
+            turn_budget.max_total_tokens, _kernel_settings.fork_child_min_total_tokens
+        ),
         max_completion_tokens=(
             turn_budget.max_completion_tokens // n if turn_budget.max_completion_tokens else 0
         ),
@@ -281,7 +302,9 @@ async def _run_fork_child(
     logger_override: logging.Logger | None,
     max_tool_iterations: int = 0,
     wall_deadline_ms: int = 0,
+    turn_start_mono: float,
     preferred_model_id: str | None = None,
+    parent_dispatch_id: str = "",
 ) -> None:
     """Run one fork child: emit start, run the child turn, store result, emit complete.
 
@@ -291,11 +314,42 @@ async def _run_fork_child(
     _flog = logger_override or logging.getLogger(__name__)
     started = time.monotonic()
     child_budget = _fork_child_budget(turn_budget, n)
+    # Lineage (Evidence Envelope §4): each child mints its own ``turn_id`` and
+    # records the fan-out dispatch that spawned it. ``turn_index`` is inherited
+    # deliberately — a child belongs to the parent's thread turn, so it renders
+    # as a child under that turn rather than as a thread turn of its own.
+    # ``child_identity`` is the one place that shape is built; the delegate site
+    # calls the same helper so the two can never drift.
+    child_hooks = dataclasses.replace(
+        hooks,
+        identity=child_identity(hooks.identity, parent_dispatch_id),
+    )
     # Children run in parallel: the operation deadline applies to each
     # child individually (tighten-only against the divided share), so a
     # child force-completes gracefully before the registry's hard cancel.
-    if wall_deadline_ms > 0:
-        child_budget = _arm_fork_child_wall(child_budget, wall_deadline_ms)
+    # The parent's remaining wall (recomputed at actual child launch so
+    # scheduling delay cannot restore time) tightens the same ceiling —
+    # parity with the delegate path (the 2026-11-18 review finding).
+    grace_ms = int(_kernel_settings.delegation_grace_seconds * 1000)
+    launch_remaining_wall_ms = remaining_wall_ms(
+        turn_budget=turn_budget,
+        turn_start_mono=turn_start_mono,
+    )
+    if launch_remaining_wall_ms is not None and launch_remaining_wall_ms <= grace_ms:
+        results[idx] = ForkChildResult(
+            target=target,
+            status="timeout",
+            error_message="Fork child skipped: parent wall budget is spent.",
+            duration_ms=0,
+        )
+        return
+    effective_deadline_ms = child_wall_ms(
+        armed_deadline_ms=wall_deadline_ms,
+        parent_remaining_ms=launch_remaining_wall_ms,
+        grace_ms=grace_ms,
+    )
+    if effective_deadline_ms > 0:
+        child_budget = _arm_fork_child_wall(child_budget, effective_deadline_ms)
     if emit_stage is not None:
         await emit_stage(
             "fork_child_start",
@@ -307,7 +361,7 @@ async def _run_fork_child(
         )
     result, status, elapsed_ms = await _run_fork_child_turn(
         target=target,
-        hooks=hooks,
+        hooks=child_hooks,
         child_budget=child_budget,
         execution_policy=execution_policy,
         started=started,
@@ -344,6 +398,7 @@ async def _execute_fork_fanout(
     max_tool_iterations: int = 0,
     wall_deadline_ms: int = 0,
     preferred_model_id: str | None = None,
+    parent_dispatch_id: str = "",
 ) -> list[ForkChildResult]:
     """Execute a parallel fork fan-out to heterogeneous modes.
 
@@ -365,6 +420,12 @@ async def _execute_fork_fanout(
     it force-completes gracefully before the operation registry's hard
     ``asyncio.wait_for`` cancel discards the whole fan-out. 0 disables
     the ceiling (legacy behavior).
+
+    Each child recomputes the parent's remaining wall from
+    ``turn_start_mono`` immediately before launch. The remaining wall minus
+    the grace further tightens the child ceiling — parity with the delegate
+    path — and a child launched after the parent is spent returns an honest
+    ``timeout`` without running.
 
     ``emit_stage`` is the parent turn's ``_emit_stage`` helper. When set,
     the fan-out emits ``fork_start`` / ``fork_child_start`` (one per
@@ -408,7 +469,9 @@ async def _execute_fork_fanout(
             logger_override=_flog,
             max_tool_iterations=max_tool_iterations,
             wall_deadline_ms=wall_deadline_ms,
+            turn_start_mono=turn_start_mono,
             preferred_model_id=preferred_model_id,
+            parent_dispatch_id=parent_dispatch_id,
         )
 
     try:
@@ -461,6 +524,7 @@ def _build_minimal_context(
     capability_binding_provider: Any = None,
     approval_service: Any = None,
     code_change_artifact_store: Any = None,
+    sandbox_runner: Any = None,
     workspace_id: str | None = None,
     user_id: str | None = None,
     user_slug: str | None = None,
@@ -484,6 +548,7 @@ def _build_minimal_context(
     model_router: Any = None,
     event_bus: Any = None,
     request_recorder: Any = None,
+    response_recorder: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner.
 
@@ -495,7 +560,10 @@ def _build_minimal_context(
     ``request_recorder`` is the durable model-request recorder
     (``persist_request`` shape). When supplied, operations dispatched from
     this context archive their off-turn completions; when omitted the
-    dispatches stay unrecorded (tests, bare hosts).
+    dispatches stay unrecorded (tests, bare hosts). ``response_recorder``
+    is its sibling (Spec: MODEL-CALL-ARCHIVE §1): the same persist shape,
+    recording the response snapshot of each recorded request so the pair
+    is addressable from both ends.
     """
     host = build_callable_host(
         complete_fn=complete_fn,
@@ -542,6 +610,7 @@ def _build_minimal_context(
         task_id=task_id,
         session_plan_digest=session_plan_digest,
         code_change_artifact_store=code_change_artifact_store,
+        sandbox_runner=sandbox_runner,
         data_dir=data_dir,
         thread_dir=thread_dir,
         turn_index=turn_index,
@@ -549,4 +618,5 @@ def _build_minimal_context(
         model_router=model_router,
         event_bus=event_bus,
         request_recorder=request_recorder,
+        response_recorder=response_recorder,
     )

@@ -72,6 +72,7 @@ from kernel.tools.parameter_normalization import (
     describe_validation_failure,
     normalize_payload,
 )
+from kernel.tools.validation_recovery import render_validation_recovery
 
 logger = logging.getLogger(__name__)
 
@@ -403,9 +404,21 @@ def _publish_tool_telemetry(
         duration_ms=duration_ms,
         error_message=err_msg,
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        # Execution identity and lineage (Evidence Envelope §4), stamped the
+        # same way as the rejection publish below.
+        turn_id=getattr(ctx, "turn_id", "") or None,
+        parent_turn_id=getattr(ctx, "parent_turn_id", "") or None,
+        parent_dispatch_id=getattr(ctx, "parent_dispatch_id", "") or None,
         user_slug=ctx.user_slug,
         thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
         normalized_fields=list(ctx.normalized_fields) if ctx.normalized_fields else None,
+        # Dispatch-level join keys (Evidence Envelope §2). The dispatch id
+        # exists for rejected dispatches too, which is what lets a rejection
+        # row and its transcript tool result address each other.
+        dispatch_id=getattr(ctx, "dispatch_id", "") or None,
+        tool_call_id=getattr(ctx, "tool_call_id", "") or None,
+        call_id=getattr(ctx, "call_id", "") or None,
+        iteration=getattr(ctx, "iteration", None),
     )
     event_bus = ctx.event_bus
     if event_bus is None:
@@ -470,6 +483,11 @@ async def execute_tool(
                     "pack_config": EMPTY_PACK_CONFIGURATION,
                     "capability_binding_provider": provider,
                     "approval_request_id": "",
+                    # Carry the session's sandbox runner: a composed child
+                    # (e.g. a sandbox pack's run tool under a coding check)
+                    # resolves its own floor through the same provider, and a
+                    # consumer that dispatches further keeps the runner.
+                    "sandbox_runner": ctx.sandbox_runner,
                     # Carry the enclosing frame's idle-progress relay so a
                     # streaming child's publishes reset the PARENT's idle
                     # deadline too (see ToolExecutionContext.idle_progress_relay).
@@ -494,6 +512,36 @@ async def execute_tool(
 
     result = await _execute_under_tracer(tool_id, definition, execute_fn, ctx)
     return _coerce_tool_result(tool_id, result)
+
+
+_HISTORY_HOOKS = frozenset({"history_snapshot", "resolve_history_anchor"})
+
+
+async def invoke_history_hook(
+    tool_id: str,
+    hook_name: str,
+    ctx: ToolExecutionContext,
+    argument: Any,
+    *,
+    timeout_seconds: float = 10.0,
+) -> Any:
+    """Call one pack history hook under its tool's own configuration binding.
+
+    History hooks (``kernel.history``) read the same pack state the tool
+    does, so they get the tool's resolved ``pack_config`` and never the
+    capability-binding provider itself. Returns ``None`` when the tool or
+    hook is absent.
+    """
+    if hook_name not in _HISTORY_HOOKS:
+        raise ValueError(f"unknown history hook {hook_name!r}")
+    definition = _TOOL_CATALOG.get(tool_id)
+    hook = getattr(definition.implementation_module, hook_name, None) if definition else None
+    if definition is None or hook is None:
+        return None
+    hook_ctx = ctx.model_copy(update={"tool_id": tool_id, "parameters": {}})
+    _resolve_execution_configuration(definition, hook_ctx)
+    hook_ctx.capability_binding_provider = None
+    return await asyncio.wait_for(hook(hook_ctx, argument), timeout=timeout_seconds)
 
 
 def project_execution_floor(provider: Any, tool_id: str) -> ExecutionFloorView | None:
@@ -565,6 +613,9 @@ def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) 
         parsed = definition.parameters_schema.model_validate(result.payload)
     except ValidationError as exc:
         message = describe_validation_failure(exc)
+        message = _with_validation_recovery(
+            definition, exc, message=message, field_paths=_field_paths(exc)
+        )
         _publish_rejection_telemetry(
             ctx,
             definition.tool_id,
@@ -585,6 +636,50 @@ def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) 
         ) from exc
     ctx.parameters = parsed.model_dump(mode="json")
     ctx.normalized_fields = list(result.normalized_fields) or None
+
+
+def _with_validation_recovery(
+    definition: ToolDefinition,
+    exc: ValidationError,
+    *,
+    message: str,
+    field_paths: list[str],
+) -> str:
+    """Append the tool's authored recovery text to the validation summary.
+
+    A tool that declares no ``validation_recovery`` keeps its message
+    unchanged. The hook itself must not mask the rejection: when rendering
+    raises (a pack installation error — missing content, unknown key) the
+    original message is kept and the failure is logged, because the
+    dispatch must still reject and the error text must still name the real
+    validation failure.
+    """
+
+    if definition.validation_recovery is None:
+        return message
+    try:
+        recovery = render_validation_recovery(
+            definition,
+            exc,
+            field_paths=field_paths,
+            validation_detail=message,
+        )
+    except Exception as hook_exc:  # pylint: disable=broad-except
+        logger.warning(
+            "validation recovery rendering failed for %s: %s",
+            definition.tool_id,
+            hook_exc,
+        )
+        return message
+    if not recovery:
+        return message
+    return f"{message}\n{recovery}"
+
+
+def _field_paths(exc: ValidationError) -> list[str]:
+    """Return the failing field paths, earliest-first, for recovery text."""
+
+    return [".".join(str(part) for part in error.get("loc", ())) for error in exc.errors()]
 
 
 def _publish_rejection_telemetry(
@@ -613,9 +708,21 @@ def _publish_rejection_telemetry(
         duration_ms=0,
         error_message=error_message,
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        turn_id=getattr(ctx, "turn_id", "") or None,
+        parent_turn_id=getattr(ctx, "parent_turn_id", "") or None,
+        parent_dispatch_id=getattr(ctx, "parent_dispatch_id", "") or None,
         user_slug=ctx.user_slug,
         thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
         normalized_fields=normalized_fields,
+        # Dispatch-level join keys (Evidence Envelope §2). A rejected dispatch
+        # is a dispatch: it carries the same identity the post-execution
+        # publish stamps, so the rejection row and the transcript's tool result
+        # address each other by tool_call_id. Without them a rejection named
+        # no call at all and could not be joined to anything.
+        dispatch_id=getattr(ctx, "dispatch_id", "") or None,
+        tool_call_id=getattr(ctx, "tool_call_id", "") or None,
+        call_id=getattr(ctx, "call_id", "") or None,
+        iteration=getattr(ctx, "iteration", None),
     )
     schedule_telemetry_publish(
         ctx.event_bus,
@@ -686,6 +793,18 @@ async def _require_approval(
         update={
             "turn_index": resolve_turn_index(ctx.turn_index),
             "thread_store_slug": getattr(ctx, "thread_store_slug", "") or "",
+            # Dispatch-level join keys (Evidence Envelope §2), stamped the same
+            # way and for the same reason as ``turn_index``: the approval row
+            # must join to the dispatch that requested it. Both are excluded
+            # from ``action_digest``, so they ride on the copy rather than the
+            # canonical action identity.
+            "tool_call_id": getattr(ctx, "tool_call_id", "") or "",
+            "dispatch_id": getattr(ctx, "dispatch_id", "") or "",
+            # Execution identity (Evidence Envelope §4), stamped the same way
+            # as the sibling attribution keys and likewise excluded from
+            # ``action_digest``: which execution asked is not part of the
+            # action's identity.
+            "turn_id": getattr(ctx, "turn_id", "") or "",
         }
     )
     if ctx.approval_request_id:

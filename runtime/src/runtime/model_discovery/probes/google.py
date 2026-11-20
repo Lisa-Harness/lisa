@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from ..classify import apply_known_override, env_any
+from ..classify import env_any
 from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -223,17 +223,22 @@ def _enrich_google_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
     # ``400 INVALID_ARGUMENT: Function call is missing a thought_signature``.
     lowered_id = model_id.lower()
     thinking_model = (
-        "thinking" in methods_list
+        row.get("thinking") is True
+        or "thinking" in methods_list
         or "thinking" in lowered_id
         or _is_gemini_thinking_model_id(lowered_id)
     )
 
-    # Context window is the input token limit (Google also reports output).
+    # Context window is the input token limit; the output limit becomes the
+    # manifest's per-request completion ceiling.
     context_window = 0
     input_limit = row.get("inputTokenLimit")
     if isinstance(input_limit, int) and input_limit > 0:
         context_window = input_limit
-
+    output_limit = row.get("outputTokenLimit")
+    max_completion_tokens = (
+        output_limit if isinstance(output_limit, int) and output_limit > 0 else 0
+    )
     # Cost/latency inference from the model id — Gemini Flash = budget/low,
     # Gemini Pro = premium/medium, everything else standard/medium.
     lowered = model_id.lower()
@@ -246,28 +251,16 @@ def _enrich_google_model(model_id: str, row: dict[str, Any]) -> DiscoveredModel:
         cost_tier = "premium"
         latency_tier = "medium"
 
-    enrichment = apply_known_override(
-        "google",
-        model_id,
-        {
-            "thinking_model": thinking_model,
-            "display_name": display_name,
-            "capabilities": capabilities,
-            "cost_tier": cost_tier,
-            "latency_tier": latency_tier,
-            "context_window": context_window,
-            "description": description,
-        },
-    )
     return _model(
         model_id,
         "google",
-        thinking_model=bool(enrichment.get("thinking_model", thinking_model)),
-        display_name=str(enrichment.get("display_name", display_name)),
-        capabilities=tuple(enrichment.get("capabilities", capabilities)),
-        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
-        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
-        context_window=int(enrichment.get("context_window", context_window)),
-        description=str(enrichment.get("description", description)),
+        thinking_model=thinking_model,
+        display_name=display_name,
+        capabilities=capabilities,
+        cost_tier=cost_tier,
+        latency_tier=latency_tier,
+        context_window=context_window,
+        max_completion_tokens=max_completion_tokens,
+        description=description,
         structured_reliability=1.0,
     )

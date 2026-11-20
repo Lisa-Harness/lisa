@@ -111,6 +111,13 @@ servers:
       - delete_file
       - stat_file
       - make_dir
+      - move_file
+      - move_directory
+      - delete_directory
+      - purge_trash
+      - delete_files
+      - make_dirs
+      - move_files
       - read_model_manifest
       - write_model_manifest
     runtime_kind: venv_bin
@@ -120,9 +127,11 @@ servers:
     # Ambient MCP-native tools: published as ``storage.read_file`` etc.
     # and merged into every mode's allowed_tool_ids by the SDK catalog
     # loader (same ambient contract as ``recall_memory`` /
-    # ``fetch_page``), so modes can read persisted artifacts without
-    # re-listing the tool. List bare published names here only; modes opt
-    # out via ``excluded_tool_ids`` or ``accept_default_capabilities: false``.
+    # ``fetch_page``), so modes can use the standard storage tools without
+    # re-listing them. Destructive directory/delete/trash/batch operations
+    # remain capability-only until a mode opts into their ``storage.*`` ids.
+    # List bare published names here only; modes opt out via
+    # ``excluded_tool_ids`` or ``accept_default_capabilities: false``.
     default_available_tools:
       - read_file
       - read_file_range
@@ -131,6 +140,7 @@ servers:
       - write_file
       - append_file
       - edit_file
+      - move_file
 
   # ── Fetch server (cold — lazily connected on first use) ──
   # ``capability: fetch`` makes this the built-in implementation of the

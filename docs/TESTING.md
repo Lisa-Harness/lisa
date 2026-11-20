@@ -4,6 +4,8 @@ Run commands from the framework workspace root after
 `uv sync --frozen --extra dev`. The root [pyproject.toml](../pyproject.toml)
 defines pytest paths, markers, Ruff, mypy, and coverage settings;
 [CI](../.github/workflows/ci.yml) is authoritative for required jobs.
+For a copy-paste command sequence and failure triage, use the
+[testing runbook](TESTING_RUNBOOK.md).
 
 Documentation-only changes — paths matching the
 [CI](../.github/workflows/ci.yml) `paths-ignore` filter (`docs/**`, `*.md`,
@@ -25,14 +27,23 @@ previous scope of knowledge, and the full suite remains the pre-push gate.
 | --- | --- | --- |
 | Unit | `uv run pytest <test module(s)> -m "not live" -q` | After each edit; the test module(s) mirroring the changed source file |
 | Package | `uv run python scripts/check_tests.py` | Before commit; selects the owning package testpaths from the worktree's changed paths |
+| Feedback | `uv run python scripts/check_tests.py --max-tier package` | While iterating on the changed package; kernel and cross-cutting escalations stop at their owning package instead of closing over consumers |
 | Full | `uv run pytest -m "not live" -q` | Before push/PR; the required CI scope |
+
+The feedback tier is evidence-scoping, not gate-scoping: a capped run omits
+the kernel-consumer closure, so it can never stand in for the package tier
+before a commit.
 
 [check_tests.py](../scripts/check_tests.py) computes the package tier from
 Git state, so selection cannot be narrowed by declaring less work. It runs
 the testpaths of every package the changed paths reach and escalates to the
 full suite for `kernel` (the shared contract layer every package imports),
-`pyproject.toml`, `uv.lock`, `scripts/`, `.github/`, `typings/`, any
-`conftest.py`, and any path outside a known package. `--dry-run` prints the
+`pyproject.toml`, `uv.lock`, `scripts/`, any `conftest.py`, and any path
+outside a known package. Stub (`typings/`), CI/agent config (`.github/`), and
+documentation paths are inert to a test run and are skipped rather than
+escalating — the types check owns stubs and the docs gate owns CI config.
+Worktree feature branches anchor their delta against `dev` when it exists
+(the worktrees branch from it), falling back to `main`. `--dry-run` prints the
 command without running it; `--paths` selects explicitly. Its package table
 is asserted against the configured `testpaths` by
 `packstest/tests/test_check_tests.py`, so a new suite cannot silently fall
@@ -83,7 +94,9 @@ state when the gate runs.
 
 The base is `--base` when given — an explicit ref that does not resolve is an
 error rather than a silent fallback — otherwise the merge-base of `HEAD` with
-`origin/main`, then `main`, taking the most recent of those. A stale candidate
+`origin/dev`, `dev`, `origin/main`, and `main`, taking the most recent of
+those. Worktree feature branches branch from `dev`, so an advanced `dev` must
+anchor the branch point instead of the older main merge-base. A stale candidate
 yields a merge-base older than the branch point, which would widen the delta to
 include other people's commits; merge-bases of one `HEAD` are totally ordered by
 ancestry, so the maximal one is the branch point.

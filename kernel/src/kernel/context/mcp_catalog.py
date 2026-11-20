@@ -20,10 +20,12 @@ from pydantic import BaseModel
 
 from kernel.context._catalog_sources import CatalogSource
 from kernel.context._shared_stdio import SharedSessionLease, SharedStdioSession
+from kernel.history import HistoryPolicy, HistoryTemplateError
 from kernel.models import (
     DefaultIntentBridge,
     OperationDefinition,
     ToolDefinition,
+    ValidationRecoveryDeclaration,
     WorkflowModeConfig,
 )
 from kernel.operations.declarative import (
@@ -109,15 +111,21 @@ class MCPModeCatalog:
         lease: SharedSessionLease | None = None,
         source: CatalogSource | None = None,
     ) -> None:
-        self._session = _shared_session(config, lease)
+        # An in-process source never spawns the stdio session (see
+        # ``MCPToolCatalog.__init__``).
+        self._session = None if source is not None else _shared_session(config, lease)
         self._source: CatalogSource | None = source
         self._catalog: dict[str, WorkflowModeConfig] | None = None
 
     def prewarm(self) -> None:
         """Start the shared ``lisa-catalog`` session in the background."""
+        if self._session is None:
+            return
         self._session.prewarm()
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
+        if self._session is None:  # source-backed catalogs never reach _call
+            raise RuntimeError("shared catalog session is unavailable")
         return _extract_text(self._session.call(tool, arguments))
 
     def get_workflow_catalog(self) -> dict[str, WorkflowModeConfig]:
@@ -189,6 +197,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         approval_continuation=data.get("approval_continuation", "report"),
         task_completion=data.get("task_completion", "none"),
         task_artifact_tool_id=data.get("task_artifact_tool_id", ""),
+        working_set_tokens=int(data.get("working_set_tokens", 0) or 0),
         default_intent_bridges=intent_bridges,
         mode_provider_id=str(data.get("mode_provider_id", "") or ""),
         context_item_packs=[str(p) for p in (data.get("context_item_packs") or [])],
@@ -213,15 +222,21 @@ class MCPOperationCatalog:
         lease: SharedSessionLease | None = None,
         source: CatalogSource | None = None,
     ) -> None:
-        self._session = _shared_session(config, lease)
+        # An in-process source never spawns the stdio session (see
+        # ``MCPToolCatalog.__init__``).
+        self._session = None if source is not None else _shared_session(config, lease)
         self._source: CatalogSource | None = source
         self._catalog: dict[str, OperationDefinition] | None = None
 
     def prewarm(self) -> None:
         """Start the shared ``lisa-catalog`` session in the background."""
+        if self._session is None:
+            return
         self._session.prewarm()
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
+        if self._session is None:  # source-backed catalogs never reach _call
+            raise RuntimeError("shared catalog session is unavailable")
         return _extract_text(self._session.call(tool, arguments))
 
     def get_operation_catalog(self) -> dict[str, OperationDefinition]:
@@ -365,15 +380,23 @@ class MCPToolCatalog:
         lease: SharedSessionLease | None = None,
         source: CatalogSource | None = None,
     ) -> None:
-        self._session = _shared_session(config, lease)
+        # An in-process source never spawns the stdio session; building it
+        # eagerly would demand a config (and a subprocess command) the
+        # in-process transport cannot have. ``_call`` stays available for
+        # the no-source path only.
+        self._session = None if source is not None else _shared_session(config, lease)
         self._source: CatalogSource | None = source
         self._catalog: dict[str, ToolDefinition] | None = None
 
     def prewarm(self) -> None:
         """Start the shared ``lisa-catalog`` session in the background."""
+        if self._session is None:
+            return
         self._session.prewarm()
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
+        if self._session is None:  # source-backed catalogs never reach _call
+            raise RuntimeError("shared catalog session is unavailable")
         return _extract_text(self._session.call(tool, arguments))
 
     def get_tool_catalog(self) -> dict[str, ToolDefinition]:
@@ -438,7 +461,44 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
         abbreviation_template=str(data.get("abbreviation_template", "") or ""),
         display_template=str(data.get("display_template", "") or ""),
         stream_output=bool(data.get("stream_output", False)),
+        history=_history_policy(data["tool_id"], data.get("history"), implementation_module),
+        validation_recovery=_validation_recovery_declaration(data.get("validation_recovery")),
     )
+
+
+def _validation_recovery_declaration(raw: Any) -> ValidationRecoveryDeclaration | None:
+    """Translate the catalog's recovery-content declaration, or ``None``.
+
+    The SDK validates that the declared resource exists at catalog build
+    time; here the block is either a well-formed ``content_path`` mapping or
+    absent. Anything malformed is a catalog transport error and fails load.
+    """
+
+    if raw is None:
+        return None
+    return ValidationRecoveryDeclaration.model_validate(raw)
+
+
+def _history_policy(tool_id: str, raw: Any, module: Any) -> HistoryPolicy | None:
+    """Validate a tool's ``history:`` block against its module.
+
+    A template naming an unknown parameter, or a declared hook the module
+    does not define, is an authoring error: it fails catalog load instead
+    of silently never folding.
+    """
+    if raw is None:
+        return None
+    policy = HistoryPolicy.model_validate(raw)
+    if module is None:
+        return policy
+    fields = getattr(getattr(module, "Parameters", None), "model_fields", None)
+    policy.validate_parameters(tool_id, fields.keys() if isinstance(fields, dict) else ())
+    for flag, hook in (("hook", "history_keys"), ("snapshot", "history_snapshot")):
+        if getattr(policy, flag) and not callable(getattr(module, hook, None)):
+            raise HistoryTemplateError(
+                f"tool {tool_id!r}: history.{flag} is set but the module defines no {hook}()"
+            )
+    return policy
 
 
 def _import_tool_module(module_path: str) -> Any:

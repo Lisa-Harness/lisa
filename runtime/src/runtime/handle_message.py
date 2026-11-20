@@ -48,6 +48,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from kernel.call_identity import mint_turn_id
 from kernel.execution_policy import ExecutionPolicy
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
@@ -95,7 +96,7 @@ from runtime.commands import (
     set_runtime_route_preview,
 )
 from runtime.context_assembly import build_turn_context
-from runtime.execution_policy import resolve_execution_policy
+from runtime.execution_policy import mode_scope_ids, resolve_execution_policy
 from runtime.operator_signal import OperatorSignal
 from runtime.provider_endpoints import proxy_route_view
 from runtime.thread import (
@@ -105,6 +106,7 @@ from runtime.thread import (
     paused_turn_owner_mode,
 )
 from runtime.token_accounting import apply_turn_usage, coerce_non_negative_int
+from runtime.turn_context_identity import TurnContextIdentity
 from runtime.turn_continuation import (
     load_continuation,
     persist_continuation,
@@ -570,7 +572,7 @@ def _is_state_settling_command(lowered: str) -> bool:
     These commands decide pending work (recovery items, approvals) — the
     operator's answer to a paused/stalled turn. Their outcome must land in
     the thread the same way ``/approve`` lands one, or the recorded tail
-    keeps replaying the question the operator already answered
+    keeps rehydrating the question the operator already answered
     (the 2026-10-05 stale-yield loop: ``/cancel-all`` cleaned up the
     recovery items at 02:57:51Z but the thread tail still ended at
     "paused awaiting your decision", so every later turn re-yielded the
@@ -902,7 +904,7 @@ def _strip_task_goal_marker(message: str) -> str:
     """Remove the operator's ``[task_goal: …]`` declaration from the message.
 
     The marker is an operator directive, not content. Leaving it in would
-    replay it to the model every turn, persist it in the thread entry's
+    rehydrate it to the model every turn, persist it in the thread entry's
     ``query``, and make it look like part of the request in a later resume.
 
     Args:
@@ -1048,15 +1050,18 @@ def _is_task_resume_request(message: str) -> bool:
     )
 
 
-def _kernel_loop_provenance(
-    runtime: HostRuntime, result: TurnResult, resumed: TurnContinuation | None
-) -> dict[str, str]:
-    """Link resumed loops and keep a paused loop resumable in place, not re-routed."""
+def _kernel_loop_provenance(runtime: HostRuntime, result: TurnResult) -> dict[str, str]:
+    """Keep a paused loop resumable in place, not re-routed.
+
+    The loop's execution identity rides the thread entry's top-level
+    ``turn_id`` (Evidence Envelope §4) instead of a provenance key of its own:
+    one execution gets one id and one name on the row, so a reader preferring
+    either cannot disagree with a reader preferring the other.
+    """
     paused_at = result.continuation
     if paused_at is None or paused_at.requires_approval or runtime.paths.thread_path is None:
-        return {"kernel_turn_id": resumed.turn_id if resumed is not None else ""}
+        return {}
     return {
-        "kernel_turn_id": paused_at.turn_id,
         "turn_continuation_ref": persist_continuation(runtime.paths.thread_path, paused_at),
     }
 
@@ -1117,6 +1122,9 @@ async def _handle_pending_approval(
     resolved_model: Any,
     turn_index: int,
     task_id: str,
+    turn_id: str = "",
+    parent_turn_id: str = "",
+    parent_dispatch_id: str = "",
     transport: TransportCallbacks,
     reservation: str = "",
 ) -> HostCommandResult | None:
@@ -1144,7 +1152,6 @@ async def _handle_pending_approval(
             "pending_approval_request_id": pending_approval.request_id,
             "pending_approval_tool_call_id": result.pending_approval_tool_call_id,
             "pending_approval_recovery_item_id": result.pending_approval_recovery_item_id,
-            "kernel_turn_id": result.continuation.turn_id if result.continuation else "",
             "turn_continuation_ref": persist_continuation(
                 runtime.paths.thread_path, result.continuation
             )
@@ -1155,8 +1162,16 @@ async def _handle_pending_approval(
         handoff_to=result.handoff_to or "",
         turn=turn_index,
         reservation=reservation,
+        # Execution identity and lineage (Evidence Envelope §4): the paused turn
+        # records the id it minted, so its ledger rows, this entry, and the
+        # approval machinery all name one execution, and the resume continues
+        # that execution instead of splitting it in two.
+        turn_id=turn_id or None,
+        parent_turn_id=parent_turn_id or None,
+        parent_dispatch_id=parent_dispatch_id or None,
         turn_input={"calls": result.model_requests} if result.model_requests else None,
         transcript=result.transcript,
+        history=result.history,
     )
     approved_result = (
         None
@@ -1243,9 +1258,31 @@ def _record_operation_error_thread_entry(
         },
         turn=turn_index,
         reservation=reservation,
+        run_ref=runtime.run_ref,
+        mode_digest=_mode_digest(mode),
+        turn_id=str(run_context.get("turn_id") or "") or None,
     )
     if committed_turn is not None:
         run_context["turn_index"] = committed_turn
+
+
+def _mode_digest(mode: Any) -> str | None:
+    """Return the content hash of the resolved mode definition (spec §3).
+
+    ``mode_digest`` names the mode a turn *actually ran* after overrides, so
+    it is computed from the resolved definition rather than from its id. A
+    definition that cannot be serialized degrades to ``None`` (unknown)
+    instead of failing the turn.
+    """
+    from runtime.run_manifest import config_digest
+
+    try:
+        dump = getattr(mode, "model_dump", None)
+        if callable(dump):
+            return config_digest(dump(mode="json"))
+        return config_digest(str(mode))
+    except Exception:  # pylint: disable=broad-except
+        return None
 
 
 def _update_completion_context(
@@ -1397,7 +1434,7 @@ def _consume_task_goal_declaration(message: str, query: str) -> tuple[str, str, 
 
     The operator's ``[task_goal: …]`` marker is a directive, not content: it
     selects the goal for this turn and is then removed, so it is never
-    replayed to the model as part of the request nor persisted in the thread
+    rehydrated to the model as part of the request nor persisted in the thread
     entry's ``query``.
 
     Args:
@@ -1461,18 +1498,7 @@ async def _execute_mode_turn(
     execution_policy = resolve_execution_policy(
         default_policy=runtime.config.execution_policy,
         session_request=runtime.session_plan.manifest.execution,
-        scope_ids=tuple(
-            scope_id
-            for scope_id in (
-                str(getattr(mode, "mode_provider_id", "") or ""),
-                (
-                    f"{getattr(mode, 'mode_provider_id', '')}:{mode.mode_id}"
-                    if getattr(mode, "mode_provider_id", "")
-                    else mode.mode_id
-                ),
-            )
-            if scope_id
-        ),
+        scope_ids=mode_scope_ids(mode),
     )
 
     preferred_model_id = preferred_model_id_for_route(
@@ -1527,6 +1553,20 @@ async def _execute_mode_turn(
         )
 
 
+def _resolve_mode_capability_limit(runtime: HostRuntime, mode_id: str) -> int | None:
+    """Resolve the active mode's scoped capability-call ceiling."""
+
+    mode = get_workflow_catalog().get(mode_id)
+    if mode is None:
+        return None
+    policy = resolve_execution_policy(
+        default_policy=runtime.config.execution_policy,
+        session_request=runtime.session_plan.manifest.execution,
+        scope_ids=mode_scope_ids(mode),
+    )
+    return policy.max_capability_calls
+
+
 async def _run_reserved_turn(
     runtime: HostRuntime,
     message: str,
@@ -1551,7 +1591,7 @@ async def _run_reserved_turn(
     # turn starts. The digest builders are synchronous; this is the async
     # seam where the durable stores are readable. A recorded blocker the
     # store already settled (consumed / denied / cancelled) is then
-    # annotated as superseded instead of replayed as a live prompt —
+    # annotated as superseded instead of rehydrated as a live prompt —
     # the 2026-10-05 stale-yield loop.
     runtime.session.live_workflow_state = await _resolve_live_workflow_state_for_turn(runtime)
 
@@ -1564,7 +1604,35 @@ async def _run_reserved_turn(
         resolved_model=resolved_model,
         mode=mode,
     )
-    run_context.update(turn_index=turn_index, task_id=task_id, task_goal=task_goal)
+    # Resolve this execution's identity (Evidence Envelope §4). ``turn_index``
+    # is a position in the thread and cannot distinguish two overlapping
+    # turns; ``turn_id`` names the execution, so this turn's ledger rows, its
+    # thread entry, and any child turn's ``parent_turn_id`` all agree. A
+    # resumed continuation carries the id the original turn minted
+    # (``_save_dispatch_continuation`` stamps it off the turn identity), so
+    # reading it back is what keeps one execution on one id; only a genuinely
+    # new turn mints one.
+    turn_id = (continuation.turn_id if continuation is not None else "") or mint_turn_id()
+    # One typed carrier, one source of truth (Evidence Envelope §4). The hooks
+    # read identity from here, so a field this turn cannot supply is a
+    # ``TypeError`` at the call site rather than a blank that typechecks all the
+    # way to a null on the ledger. ``run_context`` keeps a projection of the
+    # same values because the thread writers are a separate consumer; it is
+    # derived FROM the carrier, never read back into it.
+    identity = TurnContextIdentity(
+        turn_id=turn_id,
+        turn_index=turn_index,
+        task_id=task_id,
+        task_goal=task_goal,
+        parent_turn_id="",
+        parent_dispatch_id="",
+    )
+    run_context.update(
+        turn_index=identity.turn_index,
+        task_id=identity.task_id,
+        task_goal=identity.task_goal,
+        turn_id=identity.turn_id,
+    )
 
     _set_turn_context(runtime, run_context)
 
@@ -1577,7 +1645,11 @@ async def _run_reserved_turn(
         runtime,
         context=run_context,
         transport=transport,
+        identity=identity,
         extra_item_builders=extra_item_builders,
+    )
+    hooks.execution.resolve_capability_limit_for_mode = lambda target_mode_id: (
+        _resolve_mode_capability_limit(runtime, target_mode_id)
     )
     _log_turn_start(mode, resolved_model, query or message)
     try:
@@ -1646,6 +1718,9 @@ async def _run_reserved_turn(
         resolved_model=resolved_model,
         turn_index=turn_index,
         task_id=task_id,
+        turn_id=turn_id,
+        parent_turn_id=str(run_context.get("parent_turn_id") or ""),
+        parent_dispatch_id=str(run_context.get("parent_dispatch_id") or ""),
         transport=transport,
         reservation=reservation.token,
     )
@@ -1673,7 +1748,7 @@ async def _run_reserved_turn(
             resolved_model, operator_exit=str(getattr(result, "operator_exit", "") or "")
         ),
         "task_id": task_id,
-        **_kernel_loop_provenance(runtime, result, continuation),
+        **_kernel_loop_provenance(runtime, result),
         **({"block_origin": result.block_origin} if result.block_origin else {}),
     }
 
@@ -1714,6 +1789,15 @@ async def _run_reserved_turn(
         if isinstance(run_context.get("memory_ids"), list)
         else None,
         transcript=result.transcript,
+        history=result.history,
+        run_ref=runtime.run_ref,
+        mode_digest=_mode_digest(mode),
+        # Execution identity and lineage (Evidence Envelope §4). ``turn_id``
+        # names this execution; the ``parent_*`` keys are empty for a
+        # top-level turn and set only on a child.
+        turn_id=str(run_context.get("turn_id") or "") or None,
+        parent_turn_id=str(run_context.get("parent_turn_id") or "") or None,
+        parent_dispatch_id=str(run_context.get("parent_dispatch_id") or "") or None,
     )
     turn_index = turn_index if committed_turn is None else committed_turn
     run_context["turn_index"] = turn_index

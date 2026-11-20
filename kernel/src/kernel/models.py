@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from kernel.approval import EffectKind
 from kernel.capability_binding import ExecutionFloorView
+from kernel.history import HistoryPolicy
 
 if TYPE_CHECKING:
     pass  # forward-ref imports only
@@ -103,6 +104,16 @@ class ToolExecutionContext(BaseModel):
     execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = Field(
         default=None, exclude=True
     )
+    #: The session's selected sandbox implementation, expressed as the
+    #: provider-neutral runner surface (``kernel.sandbox_floor.SandboxRunner``).
+    #: A composing tool (the coding pack's configured checks) dispatches to
+    #: ``runner.tool_id`` and verifies through ``runner.interpret_result``
+    #: instead of naming a sandbox pack's tool id or result fields — so the
+    #: same tool works under bubblewrap on Linux and under a Windows sandbox
+    #: pack without a code change. ``None`` means no sandbox implementation is
+    #: active this session: a consumer that requires contained execution must
+    #: fail closed rather than run on the host.
+    sandbox_runner: Any = Field(default=None, exclude=True)
     delegated_tool_dispatch: Callable[[str, Mapping[str, Any]], Awaitable[ToolResult]] | None = (
         Field(default=None, exclude=True)
     )
@@ -156,6 +167,37 @@ class ToolExecutionContext(BaseModel):
     # not attributable to a turn (off-turn slice work, bare/test hosts) —
     # distinct from ``0``, which is the thread's first real turn.
     turn_index: int | None = Field(default=None, exclude=True)
+    #: Identity of the execution this dispatch belongs to (Evidence Envelope
+    #: §4). ``turn_index`` locates the dispatch's turn within one thread,
+    #: which cannot distinguish two overlapping turns; ``turn_id`` names the
+    #: execution itself, so a child turn's rows point back at the turn that
+    #: spawned them. Empty means unattributable, never invented.
+    turn_id: str = Field(default="", exclude=True)
+    #: Lineage of this dispatch's execution (Evidence Envelope §4), mirroring
+    #: ``kernel.turn_hooks.TurnIdentity``: ``parent_turn_id`` names the turn
+    #: that spawned this child turn and ``parent_dispatch_id`` the fork or
+    #: delegate dispatch that carried the spawn. Empty means this dispatch
+    #: belongs to a top-level turn; the publisher states that as an explicit
+    #: null on the row.
+    parent_turn_id: str = Field(default="", exclude=True)
+    parent_dispatch_id: str = Field(default="", exclude=True)
+    #: Dispatch-level join keys (Evidence Envelope §2), carried on the context
+    #: so the registry's telemetry publish stamps them without reaching back
+    #: into turn state. ``dispatch_id`` identifies this one dispatch (minted
+    #: even when the dispatch is rejected); ``tool_call_id`` is the provider's
+    #: tool-call id \u2014 what the transcript's tool result references \u2014 so a failed
+    #: dispatch row joins to exactly one transcript result; ``call_id`` names
+    #: the model call that requested it. Empty means unknown, never invented.
+    dispatch_id: str = Field(default="", exclude=True)
+    tool_call_id: str = Field(default="", exclude=True)
+    call_id: str = Field(default="", exclude=True)
+    iteration: int | None = Field(default=None, exclude=True)
+
+
+class ValidationRecoveryDeclaration(BaseModel):
+    """Catalog declaration of a tool's authored validation-recovery content."""
+
+    content_path: str
 
 
 class ToolResult(BaseModel):
@@ -249,6 +291,21 @@ class ToolDefinition(BaseModel):
     # and the host's transport. ``False`` (default) keeps a tool's output
     # invisible until dispatch completes.
     stream_output: bool = False
+    # Authored as the ``.tool.yml`` ``history:`` block (see
+    # ``kernel.history``): opaque supersession keys, invalidation prefixes,
+    # and a fold scope the kernel uses to stub stale results with their
+    # ``r<sha256>`` refs. ``None`` keeps every result resident as before.
+    history: HistoryPolicy | None = None
+    # Authored as the ``.tool.yml`` ``validation_recovery:`` block:
+    # ``content_path`` names a packaged Markdown resource (relative to the
+    # owning pack's content root) whose keyed sections render actionable
+    # recovery text when pre-execution parameter validation rejects a call
+    # (the coding-edit-schema-recovery design). The declaration names
+    # content only — it never selects a Python callable or import path.
+    # The section key comes from the implementation module's pure
+    # ``validation_recovery_key(exc)`` classifier; a tool without either
+    # half keeps its current validation error unchanged.
+    validation_recovery: ValidationRecoveryDeclaration | None = None
 
 
 class OperationExecutionContext(BaseModel):
@@ -283,6 +340,10 @@ class OperationExecutionContext(BaseModel):
     execution_floor_for: Callable[[str], ExecutionFloorView | None] | None = Field(
         default=None, exclude=True
     )
+    #: The session's selected sandbox runner (see the tool context's field of
+    #: the same name). Operations that compose contained execution read it
+    #: here and pass it down to the tool contexts they build.
+    sandbox_runner: Any = Field(default=None, exclude=True)
     approval_service: Any = Field(default=None, exclude=True)
     approval_request_id: str = Field(default="", exclude=True)
     task_id: str = Field(default="", exclude=True)
@@ -332,6 +393,15 @@ class OperationExecutionContext(BaseModel):
     # ``ToolExecutionContext.turn_index`` — same contract, and propagated
     # through ``_to_tool_context`` so nested tool calls keep the attribution.
     turn_index: int | None = Field(default=None, exclude=True)
+    #: Identity of the execution this dispatch belongs to (Evidence Envelope
+    #: §4). See ``ToolExecutionContext.turn_id`` — same contract, propagated
+    #: through ``_to_tool_context`` so nested tool calls keep the attribution.
+    turn_id: str = Field(default="", exclude=True)
+    #: Lineage of this dispatch's execution (Evidence Envelope §4). See
+    #: ``ToolExecutionContext.parent_turn_id`` — same contract, propagated
+    #: through ``_to_tool_context`` so nested tool calls keep the attribution.
+    parent_turn_id: str = Field(default="", exclude=True)
+    parent_dispatch_id: str = Field(default="", exclude=True)
     # Durable recorder for model requests made by this dispatch's
     # completions (``runtime.turn_continuation.persist_request`` shape:
     # persist one snapshot dict, return its content-addressed ref). Wired by
@@ -340,6 +410,32 @@ class OperationExecutionContext(BaseModel):
     # ``CompletionAuditContext`` from this seam so every operation dispatch
     # archives its off-turn model calls next to the turn loop's own.
     request_recorder: Any = Field(default=None, exclude=True)
+    #: Durable recorder for model RESPONSES made by this dispatch's
+    #: completions (Spec: MODEL-CALL-ARCHIVE §1; same ``persist_request``
+    #: shape — persist one snapshot dict, return its content-addressed
+    #: ref). Wired by the host alongside ``request_recorder``; ``None``
+    #: leaves responses unrecorded and the call's row carries no
+    #: ``response_ref`` — a reader reports the archive gap.
+    response_recorder: Any = Field(default=None, exclude=True)
+    #: Dispatch-level join keys (Evidence Envelope §2), read by
+    #: ``_completion_audit_context`` so an off-turn ``model.request`` row can
+    #: name the call it recorded and the dispatch that made it. ``call_id`` is
+    #: minted per off-turn completion; ``dispatch_id`` is the id of the tool or
+    #: operation dispatch this context belongs to. Empty means unknown.
+    call_id: str = Field(default="", exclude=True)
+    dispatch_id: str = Field(default="", exclude=True)
+    #: The provider's tool-call id — what the transcript's tool result
+    #: references. See ``ToolExecutionContext.tool_call_id``: same contract.
+    #: The operation registry's telemetry publish reads it, so an operation
+    #: dispatch that carried one names the same call the transcript does.
+    #: Without the field the read fell back to "" and an operation's rows
+    #: looked like they belonged to no tool call at all.
+    tool_call_id: str = Field(default="", exclude=True)
+    #: The turn-loop iteration this dispatch belongs to. See
+    #: ``ToolExecutionContext.iteration``: same contract. The operation
+    #: registry's rejection publish reads it, so a rejected operation names
+    #: the iteration that requested it.
+    iteration: int | None = Field(default=None, exclude=True)
 
 
 class OperationResult(BaseModel):
@@ -1036,10 +1132,10 @@ ContextPromptStrategy = Literal["broker_packet",]
 
 
 class LoadedContextPart(BaseModel):
-    """One dynamic prompt fragment recorded for previous-turn replay.
+    """One dynamic prompt fragment recorded for previous-turn inspection.
 
     The agent stores these parts in the exact order they were loaded into the
-    model input so `/debug context` can replay the prior turn without
+    model input so `/debug context` can show the prior turn's context without
     reconstructing from telemetry.
     """
 
@@ -1433,6 +1529,12 @@ class WorkflowModeConfig(BaseModel):
     # cannot stop. 0/absent = no mode rail. Authored in ``_mode.md``
     # front matter (``turn_completion_budget_tokens``).
     turn_completion_budget_tokens: int = Field(default=0, ge=0)
+    # Live-array working set the mode's loop needs (pack history semantics):
+    # caps the intra-turn soft trigger at ``min(window * share, this)`` so a
+    # long tool loop refs out old results before re-sending them dozens of
+    # times. 0/absent = window share only. Authored in ``_mode.md`` front
+    # matter (``working_set_tokens``).
+    working_set_tokens: int = Field(default=0, ge=0)
     # Python regex string used by parse_route() to detect activation.
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""
@@ -1807,6 +1909,13 @@ class ForkSpec(BaseModel):
             "0 preserves the legacy deadline-blind behavior."
         ),
     )
+    #: The ``dispatch_id`` of the fork dispatch that created these children
+    #: (Evidence Envelope §2, §4), supplied by the operation that builds the
+    #: spec. Every child records it as its ``parent_dispatch_id``, the key that
+    #: joins a child turn to the exact fan-out that spawned it —
+    #: ``parent_turn_id`` alone cannot when one fork has several targets or
+    #: when a turn both forks and delegates.
+    dispatch_id: str = Field(default="")
 
 
 class ForkResult(BaseModel):
@@ -1915,6 +2024,13 @@ class DelegationSpec(BaseModel):
             "writes. An undeclared goal fails closed."
         ),
     )
+    #: The ``dispatch_id`` of the delegate dispatch that created this child
+    #: (Evidence Envelope §2, §4), supplied by the operation that builds the
+    #: spec. The child records it as its ``parent_dispatch_id``, which is the
+    #: key that joins a child turn to the exact dispatch that spawned it —
+    #: ``parent_turn_id`` alone cannot, when one turn dispatches several
+    #: children. Empty when the caller has no dispatch to attribute.
+    dispatch_id: str = Field(default="")
 
 
 class DelegationResult(BaseModel):
@@ -2626,6 +2742,14 @@ class WorkflowRuntimeUsageEvent(BusEvent):
     stop_reason: str = ""
 
 
+UpstreamRoute = Literal[
+    "kernel-published",
+    "openrouter-reported",
+    "provider-not-reported",
+    "not-applicable",
+]
+
+
 class TokenUsageEvent(BusEvent):
     """Telemetry envelope for one LLM provider call's token usage and cost.
 
@@ -2634,9 +2758,25 @@ class TokenUsageEvent(BusEvent):
     directory. The handler uses the event timestamp, handler instance,
     sequence, and nanosecond suffix as the idempotency key so events from
     separate writers cannot collide on coarse-grained clocks.
+
+    Schema v3 (cache-efficiency §4): every measured numeric is nullable and
+    price signals are nullable *rates* — ``None`` means the provider (or
+    the harness) never surfaced the value — unknown; a present ``0`` is a
+    real measured zero and an explicit ``0.0`` rate is a genuinely free
+    tier, never a stand-in for missing data. Provenance fields name where
+    the effective model data came from and which upstream route served the
+    call. The durable serializer drops ``thread_store_slug`` and the
+    untyped ``extra`` bag, persisting only the privacy allowlist (typed
+    fields plus the data-root-scoped ``thread_pseudonym_id``), so raw
+    thread identity and any prompt-shaped payload never reach disk.
     """
 
     event_type: BusEventType = "token_used"
+    #: Durable-schema revision. Rows without this field are legacy rows:
+    # their zero-valued numerics are ambiguous (default- vs measured-zero)
+    # and readers must treat them as unknown, not measured zeros. v3 adds
+    # the §4 provenance/route/policy fields and the typed proxy counters.
+    schema_version: int = 3
     conversation_id: str = ""
     user_slug: str = "default"
     surface_type: ConversationSurface = "personal_dm"
@@ -2649,9 +2789,30 @@ class TokenUsageEvent(BusEvent):
     #: attributable. ``None`` = not attributable to a turn (off-turn slice
     #: work); ``0`` is the thread's first real turn.
     turn_index: int | None = None
-    #: Thread this model call belongs to, named by its store stem. Turn indices
-    #: are per-thread and two conversations of one user both count from zero,
-    #: so the owner alone cannot separate their cost rows.
+    #: Stable per-execution identity (Evidence Envelope section 4). ``None``
+    #: means unknown: the row belongs to no execution it can name (an
+    #: off-turn slice, or a legacy row written before turn identity existed).
+    #: Empty is never persisted, because an empty string would read as "a
+    #: turn whose id is the empty string" instead of "unknown".
+    turn_id: str | None = None
+    #: Call-level join keys (Evidence Envelope §2). ``call_id`` is minted when
+    #: the request is built and is unique within its turn; ``iteration`` names
+    #: the turn-loop iteration; ``attempt`` names why the call happened
+    #: (``primary``, ``stream_tool_fallback``, ``truncation_continuation``,
+    #: ``retry``) so two calls in one iteration are distinguishable; and
+    #: ``request_ref`` addresses the recorded request snapshot. All four stay
+    #: ``None`` on legacy rows and on off-turn calls with no iteration \u2014 absent
+    #: stays unknown rather than being invented.
+    call_id: str | None = None
+    iteration: int | None = None
+    attempt: str | None = None
+    request_ref: str | None = None
+    #: Data-root-scoped pseudonymous thread identity (``v1:<hmac>``) stamped
+    #: by the durable handler at append time. ``None`` = unattributed (no
+    #: key, no slug). Raw ``thread_store_slug`` never persists.
+    thread_pseudonym_id: str | None = None
+    #: In-process thread identity, used for joins before persistence. The
+    #: durable serializer strips this field; it must never reach disk.
     thread_store_slug: str = ""
     call_site: str = ""
     provider: str = ""
@@ -2664,24 +2825,60 @@ class TokenUsageEvent(BusEvent):
         "stream_chunk",
         "time_billed",
     ] = "chat_completion"
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cached_tokens: int = 0
-    reasoning_tokens: int = 0
+    #: All counters/costs below are ``None`` when unknown. ``0`` is a real
+    #: measured zero, never a stand-in for "the provider said nothing".
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
     #: Provider-reported prompt-cache *creation/population* tokens
-    #: (Anthropic ``cache_creation_input_tokens``). 0 when not reported.
-    cache_creation_tokens: int = 0
-    cost_usd: float = 0.0
+    #: (Anthropic ``cache_creation_input_tokens``). ``None`` when unknown.
+    cache_creation_tokens: int | None = None
+    #: Canonical host-side estimate; ``None`` when the call cannot be priced
+    #: from known counts and sourced rates. A zero is never an estimate of
+    #: "free" — an unpriced call is ``None``.
+    cost_usd: float | None = None
     #: The provider's own reported charge for this call (OpenRouter
-    #: ``usage.cost``), when it published one. ``cost_usd`` above is the
-    #: host-computed canonical estimate; this field exists so a host or pack
-    #: can reconcile its arithmetic against the provider's real meter
-    #: without losing either number. 0.0 = the provider reported nothing.
-    provider_cost_usd: float = 0.0
-    duration_ms: float = 0.0
-    time_cost_usd: float = 0.0
-    latency_ms: int = 0
+    #: ``usage.cost``). ``cost_usd`` above is the host-computed canonical
+    #: estimate; this field is the provider's real meter. ``None`` = the
+    #: provider reported nothing.
+    provider_cost_usd: float | None = None
+    duration_ms: float | None = None
+    time_cost_usd: float | None = None
+    latency_ms: int | None = None
+    #: Typed pack-owned proxy counters (e.g. ``{"tokens_saved": 40000}``),
+    #: allowlisted so a proxy's relay evidence survives persistence. Values
+    #: are non-negative ints; absent counters are simply absent keys.
+    proxy_telemetry: dict[str, int] = Field(default_factory=dict)
+    #: Which layer supplied the effective model data used for this call
+    #: (e.g. "manifest", "openrouter-catalog"). ``None`` = provenance not
+    #: produced by the host — explicitly unknown, never guessed.
+    effective_model_data_source: str | None = None
+    #: Version of that model data (catalog ``observed_at`` or manifest
+    #: revision). ``None`` = unknown, paired with the source above.
+    effective_model_data_version: str | None = None
+    #: How the provider served this call: ``kernel-published`` (the rates
+    #: the kernel manifest published matched), ``openrouter-reported`` (the
+    #: proxy relayed its own identity), ``provider-not-reported`` (the
+    #: provider sent no upstream identity), ``not-applicable`` (direct,
+    #: unproxied provider). ``None`` = not determined.
+    upstream_route: UpstreamRoute | None = None
+    #: Stable fingerprint of the cache policy in force (breakpoint layout,
+    #: fold settings) so prefix metrics are separable by policy. ``None`` =
+    #: not computed.
+    cache_policy_fingerprint: str | None = None
+    #: Provider-published cache TTL in seconds. Sourced only — never
+    #: inferred; ``None`` = the provider did not publish a TTL.
+    cache_ttl_seconds: int | None = None
+    #: Provider-published minimum cacheable-prefix length in characters.
+    #: Sourced only; ``None`` = not published.
+    cache_min_prefix_chars: int | None = None
+    #: Per-field origin map for derived/estimated values, e.g.
+    #: ``{"total_tokens": "derived"}``. Absent key = provider-reported or
+    #: host-measured at the source. Known values: ``provider``, ``derived``,
+    #: ``host``.
+    metric_origins: dict[str, str] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
     extra_context_appended: bool = False
     #: Per-instance monotonic counter the durable handler stamps at append
@@ -2707,6 +2904,18 @@ class ToolExecutionTelemetry(BusEvent):
     #: Global thread turn index this dispatch belongs to, so the dispatch
     #: ledger joins to the thread and the cost log. ``None`` = off-turn work.
     turn_index: int | None = None
+    #: Identity of the execution this dispatch belongs to (Evidence Envelope
+    #: §4). ``turn_index`` locates it within one thread and cannot separate two
+    #: overlapping turns; ``turn_id`` names the execution, so a child turn's
+    #: rows point back at the turn that spawned them. ``None`` = off-turn work.
+    turn_id: str | None = None
+    #: Lineage of the execution (Evidence Envelope §4): the parent turn's
+    #: ``turn_id`` and the fork or delegate dispatch that spawned it, so a
+    #: reader renders the delegation tree from the ledger alone. ``None``
+    #: states "this dispatch belongs to a top-level turn" explicitly rather
+    #: than leaving the key absent; the handler fills both on every row.
+    parent_turn_id: str | None = None
+    parent_dispatch_id: str | None = None
     #: Owner of the dispatch. The ledger is shared by every user of a data
     #: root and turn indices are per-thread, so readers scope by this.
     user_slug: str | None = None
@@ -2721,6 +2930,17 @@ class ToolExecutionTelemetry(BusEvent):
     #: normalization happened, so per-shape provider argument quality is
     #: measurable from the ledger alone without reading logs.
     normalized_fields: list[str] | None = None
+    #: Dispatch-level join keys (Evidence Envelope §2). ``dispatch_id`` is
+    #: minted per dispatch \u2014 including a rejected one \u2014 so a rejection row and
+    #: its transcript tool result address each other. ``tool_call_id`` is the
+    #: provider's tool-call id, the id the transcript result carries.
+    #: ``call_id`` names the model call that requested the dispatch and
+    #: ``iteration`` the turn-loop iteration it belonged to. ``None`` = unknown
+    #: (an off-turn or pre-attribution dispatch), never a fabricated value.
+    dispatch_id: str | None = None
+    tool_call_id: str | None = None
+    call_id: str | None = None
+    iteration: int | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

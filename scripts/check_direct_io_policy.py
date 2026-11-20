@@ -36,6 +36,8 @@ _BANNED_METHODS_WRITE: frozenset[str] = frozenset(
     }
 )
 
+_BANNED_LOCAL_FUNCS_WRITE: frozenset[str] = frozenset({"renameat2"})
+
 _BANNED_METHODS_READ: frozenset[str] = frozenset(
     {
         "read_text",
@@ -56,8 +58,12 @@ _BANNED_METHODS_MUTATE: frozenset[str] = frozenset(
 _BANNED_MODULE_FUNCS_WRITE: frozenset[tuple[str, str]] = frozenset(
     {
         ("os", "replace"),
+        ("os", "rename"),
+        ("os", "link"),
+        ("os", "unlink"),
         ("os", "remove"),
         ("os", "rmdir"),
+        ("os", "mkdir"),
         ("shutil", "copy"),
         ("shutil", "copy2"),
         ("shutil", "copyfile"),
@@ -119,6 +125,15 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     # ApprovalLedger._append_transition).
     "runtime/src/runtime/approval_ledger.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
+    ),
+    # Candidate catalog swap (MODEL-DATA-LAYERS slice 2): the discovery
+    # command layer writes models.proposed.yaml through a temp file +
+    # os.replace so a crash mid-write can never tear the candidate. The
+    # writer is only invoked after a fully successful probe run, so a
+    # failed/partial run never replaces the last good catalog.
+    "runtime/src/runtime/model_discovery/catalog.py": (
+        "os.replace(tmp_path, path)",
+        "os.unlink(tmp_path)",
     ),
     "runtime/src/runtime/intake.py": (
         "state_path.write_text(",
@@ -220,23 +235,47 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "path.parent.mkdir(parents=True, exist_ok=True)",
     ),
     "sdk/src/sdk/storage/_backend.py": (
-        "(data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
-        "(data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "(data_dir / DATA_DIR / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)",
         "shutil.rmtree(legacy_checkpoints)",
         "resolved.parent.mkdir(parents=True, exist_ok=True)",
-        "resolved.unlink()",
+        "target.unlink()",
         "resolved.mkdir(parents=True, exist_ok=True)",
-        "checkpoints_root.mkdir(parents=True, exist_ok=True)",
         "path.parent.mkdir(parents=True, exist_ok=True)",
         # ``edit_file`` stages the new bytes beside the target, then swaps
         # them in atomically, so a failed edit never truncates the original.
         "os.replace(temporary_path, target)",
         "temporary_path.unlink()",
+        # Directory operations are part of the storage primitive itself
+        # (the same carve-out as _move.py): rmdir-only and recursive
+        # deletes never follow symlinks (R7), and the trash substrate is
+        # rename-first into a timestamped session (spec §5).
+        "os.rmdir(target)",
+        "os.rmdir(name, dir_fd=parent_fd)",
+        "os.unlink(entry.path)",
+        "os.unlink(entry.name, dir_fd=directory_fd)",
+        "os.rename(target, destination)",
+        "shutil.rmtree(session_dir)",
+        "trash_root.mkdir(parents=True, exist_ok=True)",
+        "session_dir.mkdir()",
+        "destination.parent.mkdir(parents=True, exist_ok=True)",
+    ),
+    # File moves are part of the storage primitive itself. Descriptor-relative
+    # mkdir creates only verified sandbox parents; renameat2 remains no-overwrite.
+    "sdk/src/sdk/storage/_move.py": (
+        "os.mkdir(component, mode=0o700, dir_fd=current_fd)",
+        "result = renameat2(",
     ),
     "sdk/packs/memory/src/sdk/packs/memory/mining_slice.py": (
         "path.parent.mkdir(parents=True, exist_ok=True)",
         'path.write_text(seg_id, encoding="utf-8")',
+    ),
+    # Replay scratch seeding (Spec 3 slice 3): the exact-mode replay engine
+    # copies the source run's config/models.yaml into the scratch data root
+    # before driving a read-only-source replay run — host-internal scratch
+    # data, the same pattern as e2etest.environment._copy_base_data.
+    "runtime/src/runtime/replay/_engine.py": (
+        "scratch_config.mkdir(parents=True, exist_ok=True)",
+        'shutil.copy2(models_yaml, scratch_config / "models.yaml")',
     ),
 }
 
@@ -350,10 +389,15 @@ class _IOLocator(ast.NodeVisitor):
         if mode[0:1] in _WRITE_OPEN_MODES or (self._scan_reads and mode[0:1] == "r"):
             self.violations.append((node.lineno, ast.unparse(node)))
 
+    def _check_local_func(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Name) and node.func.id in _BANNED_LOCAL_FUNCS_WRITE:
+            self.violations.append((node.lineno, ast.unparse(node)))
+
     def visit_Call(self, node: ast.Call) -> None:
         self._check_method(node)
         self._check_module_func(node)
         self._check_open(node)
+        self._check_local_func(node)
         self.generic_visit(node)
 
 

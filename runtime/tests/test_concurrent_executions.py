@@ -190,7 +190,11 @@ def _decision_telemetry_worker(args: tuple[str, int, int]) -> int:
 
     async def _run() -> int:
         for i in range(count):
-            await handler.publish_turn_decision({"worker": worker_id, "item": i, "pad": "x" * 40})
+            # ``action_reason`` is a declared field, so the worker tag survives
+            # the write-time allowlist enforced by DecisionTelemetryHandler.
+            await handler.publish_turn_decision(
+                {"action_reason": f"worker-{worker_id}", "mode_id": "m", "iteration": i}
+            )
         return count
 
     return asyncio.run(_run())
@@ -704,7 +708,7 @@ def test_multiprocess_decision_telemetry_appends_and_seals_losslessly(tmp_path: 
             if line.strip():
                 record = json.loads(line)
                 assert record["topic"] == "turn.decision"
-                seen_workers.add(record["worker"])
+                seen_workers.add(int(record["action_reason"].removeprefix("worker-")))
     assert seen_workers == set(range(workers))
 
 
@@ -806,7 +810,10 @@ async def test_two_host_services_instances_append_telemetry_without_interleaving
 
     async def _publish(handler: Any, worker: int) -> None:
         for i in range(25):
-            await handler.publish_turn_decision({"worker": worker, "item": i, "pad": "x" * 40})
+            # ``action_reason`` is allowlisted; an undeclared tag would be dropped.
+            await handler.publish_turn_decision(
+                {"action_reason": f"worker-{worker}", "mode_id": "m", "iteration": i}
+            )
 
     await asyncio.gather(
         _publish(services_a.decision_telemetry_handler, 0),
@@ -819,4 +826,4 @@ async def test_two_host_services_instances_append_telemetry_without_interleaving
     for line in lines:
         record = json.loads(line)  # every append is one whole line, never torn
         assert record["topic"] == "turn.decision"
-    assert {json.loads(ln)["worker"] for ln in lines} == {0, 1}
+    assert {int(json.loads(ln)["action_reason"].removeprefix("worker-")) for ln in lines} == {0, 1}

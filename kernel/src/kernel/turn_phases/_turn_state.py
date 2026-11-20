@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from kernel.history import HistoryLedger
 from kernel.models import (
     EffectReceipt,
     ForkChildResult,
@@ -34,6 +35,7 @@ from kernel.models import (
 from kernel.provider_contracts import RequestContextBudget
 from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
+from kernel.turn_phases import _token_accounting
 from kernel.turn_phases._compaction import IntraTurnCompactionState, LiveArrayEstimator
 from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
@@ -53,9 +55,9 @@ class ForcedAction:
     several targets, expected tool ``fork``) or a single handoff
     (``kind == "transition"``, one target, expected tool
     ``transition_stage``). The dispatch loop increments
-    ``non_compliant_dispatches`` on every tool call that is not
-    ``expected_tool``; at ``forced_action_non_compliant_cap`` the kernel
-    synthesizes the call itself. The kind is *derived* from the target
+    ``non_compliant_dispatches`` once for each model completion whose tool
+    batch lacks ``expected_tool``; at ``forced_action_non_compliant_cap`` the
+    kernel synthesizes the call itself. The kind is *derived* from the target
     list — ``targets`` is the only state.
     """
 
@@ -358,8 +360,8 @@ class _TurnState:
     itself if the model refuses: a ``fork:<csv>`` target (kind ``fork``)
     or any single-handoff target — ``plan``, ``search``, ``remember`` …
     (kind ``transition``). The dispatch loop increments
-    ``non_compliant_dispatches`` on every tool call that is not the
-    expected tool (``fork`` / ``transition_stage``); at
+    ``non_compliant_dispatches`` once per model completion whose tool batch
+    omits the expected tool (``fork`` / ``transition_stage``); at
     ``forced_action_non_compliant_cap`` the kernel synthesizes the call
     itself. ``None`` when there is no pending deterministic routing
     decision. Replaces the pre-Phase-5 ``forced_fork_target`` /
@@ -428,6 +430,36 @@ class _TurnState:
     pending_approval_recovery_item_id: str = ""
     model_requests: list[dict[str, Any]] = field(default_factory=list)
     """Verbatim snapshot of every model request issued this turn."""
+    current_call_id: str = ""
+    """The ``call_id`` of the model call in flight (Evidence Envelope §2).
+
+    Minted when the iteration's request is built and cleared when the call
+    finishes, so a telemetry publisher downstream of the call can name which
+    call it is describing without threading the id through every signature.
+    Empty means no call is in flight.
+    """
+    current_call_attempt: str = ""
+    """Why the in-flight call happened (``primary`` and the extra-call kinds).
+
+    Paired with ``current_call_id``: a reader joins on the id and reads the
+    attempt to learn whether this was the iteration's first call or a fallback,
+    truncation continuation, or retry inside it.
+    """
+    current_call_ref: str = ""
+    """The ``r<sha256>`` ref of the request snapshot behind the in-flight call.
+
+    Paired with ``current_call_id``: the token row carries it so a reader can
+    address the exact request that produced the cost. Empty means the host
+    registered no ``record_request`` hook, so there is no addressable ref —
+    unknown, never a guess.
+    """
+    current_call_entry: dict[str, Any] | None = None
+    """The ``turn_input.calls`` entry staged for the call in flight (Spec:
+    MODEL-CALL-ARCHIVE §3). ``_record_request_snapshot`` attaches the very
+    dict it appended to ``model_requests``; the paired response recorder
+    stamps its ``response_ref`` in place after the call finishes. ``None``
+    between calls or when no call is recordable.
+    """
     action_tool_ids: set[str] = field(default_factory=set)
     """The side-effecting action tools the current mode declares (from
     ``mode_completion_effects``), resolved at turn start for parent and
@@ -472,6 +504,17 @@ class _TurnState:
     """Distinct serialization of retrieval-tool call arguments this turn.
     A call whose arguments repeat an earlier one re-delivers content the
     model already holds; the nudge reports the repeat count."""
+    dereference_calls: int = 0
+    """Count of read-tool dereference calls (``ref=...`` expansions) this turn.
+
+    Used by the dereference-budget guard to cap repeated expansion churn once
+    the turn already has enough retrieved evidence to synthesize."""
+    dereference_distinct_refs: set[str] = field(default_factory=set)
+    """Distinct dereference refs expanded this turn.
+
+    Paired with ``dereference_calls`` so the guard can distinguish broad
+    retrieval (many distinct refs) from repeated expansion of refs already
+    pulled into context."""
     consecutive_tool_errors: int = 0
     """Count of trailing dispatches to the same tool that returned an
     error (``ToolResult.error`` non-empty, ``OperationResult`` not
@@ -543,14 +586,18 @@ class _TurnState:
     # kernel settings once per turn so the governor's decisions are
     # consistent even if the process-wide settings object is reloaded
     # mid-turn; ``estimator`` anchors on the kernel's counted request
-    # tokens and advances with byte deltas; ``epoch_done_for_crossing``
-    # implements the hysteresis (at most ONE batched ref-out epoch per
-    # soft-trigger crossing); ``truncation_tripped`` is the one-way
+    # tokens and advances with byte deltas; ``epoch_estimate`` implements
+    # the growth hysteresis between batched ref-out epochs;
+    # ``truncation_tripped`` is the one-way
     # output circuit-breaker (first finish_reason=length mid-turn).
     intra_turn_compaction: IntraTurnCompactionState = field(
-        default_factory=IntraTurnCompactionState
+        default_factory=IntraTurnCompactionState.from_settings
     )
     intra_turn_compaction_estimator: LiveArrayEstimator = field(default_factory=LiveArrayEstimator)
+    history_ledger: HistoryLedger = field(default_factory=HistoryLedger)
+    """Pack-declared history claims for this turn's tool results
+    (``kernel.history``): drives the supersession epoch and the
+    ``TurnResult.history`` block rehydration folds from."""
     truncation_tripped: bool = False
     """One-way output circuit-breaker: set at the FIRST mid-turn
     finish_reason=length. Further large emissions are kernel-blocked
@@ -704,14 +751,14 @@ def record_model_usage(
     state: _TurnState,
     model_def: Any,
     *,
-    p: int,
-    c: int,
-    t: int,
-    ct: int,
-    rt: int,
-    d: float,
-    lat: int,
-    cc: int = 0,
+    p: int | None = None,
+    c: int | None = None,
+    t: int | None = None,
+    ct: int | None = None,
+    rt: int | None = None,
+    d: float | None = None,
+    lat: int | None = None,
+    cc: int | None = None,
     mode_id: str = "",
 ) -> None:
     """Merge one completion's counters into the per-model accumulator.
@@ -723,29 +770,44 @@ def record_model_usage(
     driven recursive handoff (plan → search → coding) merges every inner
     turn's tokens into the outer result and the host attributes them to
     the entry mode.
+
+    Cache-efficiency v2: callers forward the durable event's nullable
+    counters, so a ``None`` value (provider never surfaced the metric)
+    contributes ``0`` to these operational accumulators — the same
+    coercion ``merge_child_usage`` applies — while the durable event keeps
+    ``None`` so unknown never masquerades as a measured zero.
     """
+    p_tokens = _int(p)
+    c_tokens = _int(c)
+    t_tokens = _int(t)
+    ct_tokens = _int(ct)
+    rt_tokens = _int(rt)
+    cc_tokens = _int(cc)
+    d_ms = _float(d)
+    lat_ms = _int(lat)
+
     mid = (getattr(model_def, "model_id", "") or "-").strip()
     entry = state.per_model_usage.setdefault(mid, {"model_id": mid})
-    entry["prompt_tokens"] = entry.get("prompt_tokens", 0) + p
-    entry["completion_tokens"] = entry.get("completion_tokens", 0) + c
-    entry["total_tokens"] = entry.get("total_tokens", 0) + t
-    entry["cached_tokens"] = entry.get("cached_tokens", 0) + ct
-    entry["reasoning_tokens"] = entry.get("reasoning_tokens", 0) + rt
-    entry["cache_creation_tokens"] = entry.get("cache_creation_tokens", 0) + cc
-    entry["duration_ms"] = entry.get("duration_ms", 0.0) + d
-    entry["latency_ms"] = entry.get("latency_ms", 0) + lat
+    entry["prompt_tokens"] = entry.get("prompt_tokens", 0) + p_tokens
+    entry["completion_tokens"] = entry.get("completion_tokens", 0) + c_tokens
+    entry["total_tokens"] = entry.get("total_tokens", 0) + t_tokens
+    entry["cached_tokens"] = entry.get("cached_tokens", 0) + ct_tokens
+    entry["reasoning_tokens"] = entry.get("reasoning_tokens", 0) + rt_tokens
+    entry["cache_creation_tokens"] = entry.get("cache_creation_tokens", 0) + cc_tokens
+    entry["duration_ms"] = entry.get("duration_ms", 0.0) + d_ms
+    entry["latency_ms"] = entry.get("latency_ms", 0) + lat_ms
 
     mid_mode = (mode_id or "").strip()
     if mid_mode:
         mode_entry = state.per_mode_usage.setdefault(mid_mode, {"mode_id": mid_mode})
-        mode_entry["prompt_tokens"] = mode_entry.get("prompt_tokens", 0) + p
-        mode_entry["completion_tokens"] = mode_entry.get("completion_tokens", 0) + c
-        mode_entry["total_tokens"] = mode_entry.get("total_tokens", 0) + t
-        mode_entry["cached_tokens"] = mode_entry.get("cached_tokens", 0) + ct
-        mode_entry["reasoning_tokens"] = mode_entry.get("reasoning_tokens", 0) + rt
-        mode_entry["cache_creation_tokens"] = mode_entry.get("cache_creation_tokens", 0) + cc
-        mode_entry["duration_ms"] = mode_entry.get("duration_ms", 0.0) + d
-        mode_entry["latency_ms"] = mode_entry.get("latency_ms", 0) + lat
+        mode_entry["prompt_tokens"] = mode_entry.get("prompt_tokens", 0) + p_tokens
+        mode_entry["completion_tokens"] = mode_entry.get("completion_tokens", 0) + c_tokens
+        mode_entry["total_tokens"] = mode_entry.get("total_tokens", 0) + t_tokens
+        mode_entry["cached_tokens"] = mode_entry.get("cached_tokens", 0) + ct_tokens
+        mode_entry["reasoning_tokens"] = mode_entry.get("reasoning_tokens", 0) + rt_tokens
+        mode_entry["cache_creation_tokens"] = mode_entry.get("cache_creation_tokens", 0) + cc_tokens
+        mode_entry["duration_ms"] = mode_entry.get("duration_ms", 0.0) + d_ms
+        mode_entry["latency_ms"] = mode_entry.get("latency_ms", 0) + lat_ms
 
 
 def merge_child_usage(
@@ -832,11 +894,10 @@ def _float(value: Any) -> float:
 def processed_tokens(state: _TurnState) -> int:
     """Return tokens newly processed by providers this turn.
 
-    Cached prompt prefixes are re-read rather than processed again, so the
-    whole-turn token envelope counts uncached input plus output. Counting the
-    re-sent prefix would make useful context consumption, not work, the cap.
+    Delegates to the shared cycle-free accounting helper so the compaction
+    governor's effective-window cap and this budget rail can never drift.
     """
-    return max(0, state.total_tokens - state.total_cached_tokens)
+    return _token_accounting.processed_tokens(state.total_tokens, state.total_cached_tokens)
 
 
 def budget_forces_final(

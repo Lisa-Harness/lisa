@@ -39,7 +39,7 @@ from kernel.approval import (
 )
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import OperationResult, ToolResult
-from kernel.turn_runner import execute_approved_invocation
+from kernel.turn_runner import approved_invocation_history, execute_approved_invocation
 
 from runtime.approval.presentation import (
     approval_action_receipt,
@@ -49,6 +49,7 @@ from runtime.approval.presentation import (
     unresolved_approval_text,
 )
 from runtime.policy import MAX_AUTO_APPROVED_ACTIONS, read_containment, remember_allow_prefix
+from runtime.turn_context_identity import TurnContextIdentity
 from runtime.turn_continuation import load_continuation
 from runtime.turn_hooks_builder import build_turn_hooks
 
@@ -495,7 +496,7 @@ async def _record_and_continue_after_approval(
     # ── Thread record for the approved action ────────────────────────
     # No model call was made (the registry executed the saved invocation
     # directly), so there is no ``turn_input`` snapshot — provenance states
-    # the source so /debug does not try to replay a model input that never
+    # the source so /debug does not try to show a model input that never
     # existed. The receipt makes the write/execute contract countable.
     append_thread_entry(
         thread_path=runtime.paths.thread_path,
@@ -504,6 +505,13 @@ async def _record_and_continue_after_approval(
         mode_id=owner_mode,
         query=f"/approve {invocation.request_id}",
         response_text=action_text,
+        # Execution identity and lineage (Evidence Envelope §4): the approved
+        # action belongs to the execution that requested it, so this record and
+        # that execution's ledger rows name one id instead of looking like a
+        # turn that never ran.
+        turn_id=str((paused_entry or {}).get("turn_id") or "") or None,
+        parent_turn_id=str((paused_entry or {}).get("parent_turn_id") or "") or None,
+        parent_dispatch_id=str((paused_entry or {}).get("parent_dispatch_id") or "") or None,
         provenance={
             "source": "host-approved-failed" if error else "host-approved",
             "finish_reason": "approved-action-failed" if error else "approved-action",
@@ -520,6 +528,16 @@ async def _record_and_continue_after_approval(
         handoff_to=""
         if owner_mode == runtime.session.current_mode_id
         else runtime.session.current_mode_id,
+        history=None
+        if error or invocation.target_kind != "tool"
+        else approved_invocation_history(
+            tool_id=str(invocation.target_id or ""),
+            request_id=invocation.request_id,
+            parameters=dict(invocation.parameters or {}),
+            result=result,
+            log=logger,
+        )
+        or None,
     )
 
     if error and not (
@@ -751,7 +769,23 @@ async def _execute_approved_with_settlement(
     """
     paused_entry = _paused_approval_entry(runtime, request_id)
     task_id = str(((paused_entry or {}).get("provenance") or {}).get("task_id") or "")
-    hooks = build_turn_hooks(runtime, context={"task_id": task_id}, transport=transport)
+    # The approved action runs inside the paused turn's execution, so the hooks
+    # it publishes through carry that execution's id and lineage (Evidence
+    # Envelope §4). Without them every ledger row published on this path records
+    # a null ``turn_id`` — the data is on the paused entry, it just was not
+    # forwarded.
+    hooks = build_turn_hooks(
+        runtime,
+        identity=TurnContextIdentity(
+            turn_id=str((paused_entry or {}).get("turn_id") or ""),
+            turn_index=None,
+            task_id=task_id,
+            task_goal="",
+            parent_turn_id=str((paused_entry or {}).get("parent_turn_id") or ""),
+            parent_dispatch_id=str((paused_entry or {}).get("parent_dispatch_id") or ""),
+        ),
+        transport=transport,
+    )
     try:
         result = await execute_approved_invocation(invocation=record.invocation, hooks=hooks)
     except ApprovalRequired as required:

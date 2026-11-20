@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from runtime.turn_context_identity import NO_TURN_IDENTITY
 from runtime.turn_hooks_builder import (
     _complete_via_provider_gateways,
     _SliceProviderHooksView,
@@ -32,6 +33,46 @@ def _make_runtime(tmp_path: Path) -> HostRuntime:
         user_slug="user",
         surface_type="personal_dm",
         surface_id="surface",
+    )
+
+
+def test_discover_pack_slice_provider_factory_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kernel.slice_provider_discovery as discovery
+
+    from runtime import turn_hooks_builder
+
+    class Entry:
+        pack_name = "test-pack"
+        factory = staticmethod(lambda: lambda view, session_plan: SimpleNamespace(name="provider"))
+
+    monkeypatch.setattr(
+        discovery,
+        "discover_slice_provider_factories",
+        lambda: [Entry()],
+    )
+
+    providers = turn_hooks_builder._discover_pack_slice_providers(
+        view=SimpleNamespace(),
+        session_plan=SimpleNamespace(),
+    )
+    assert len(providers) == 1
+    assert providers[0].name == "provider"
+
+    class NonCallableEntry:
+        pack_name = "bad-pack"
+        factory = staticmethod(lambda: None)
+
+    monkeypatch.setattr(
+        discovery,
+        "discover_slice_provider_factories",
+        lambda: [NonCallableEntry()],
+    )
+    assert (
+        turn_hooks_builder._discover_pack_slice_providers(
+            view=SimpleNamespace(),
+            session_plan=SimpleNamespace(),
+        )
+        == []
     )
 
 
@@ -138,6 +179,43 @@ async def test_slice_completion_forwards_request_to_gateway() -> None:
     assert request.temperature == 0.1
     assert request.tools == tools
     assert request.response_format is dict
+    assert request.call_kind == "auxiliary"
+
+
+@pytest.mark.asyncio
+async def test_slice_completion_zero_tools_still_auxiliary() -> None:
+    """A slice completion without tools is still classified auxiliary.
+
+    FIX-2: the off-turn/slice seam stamps ``call_kind="auxiliary"``
+    regardless of the request's shape, so the replay gateway routes on
+    origin and never on a tools-based heuristic.
+    """
+    requests: list[Any] = []
+    model = SimpleNamespace(provider="example")
+
+    class Gateway:
+        async def complete(self, request: Any) -> str:
+            requests.append(request)
+            return "completed"
+
+    gateway = Gateway()
+
+    class Gateways:
+        def gateway_for(self, provider: str) -> Gateway:
+            return gateway
+
+    result = await _complete_via_provider_gateways(
+        Gateways(),
+        messages=[{"role": "user", "content": "hello"}],
+        model_def=model,
+        max_tokens=64,
+        temperature=0.1,
+        tools=None,
+    )
+
+    assert result == "completed"
+    assert requests[0].call_kind == "auxiliary"
+    assert requests[0].tools is None
 
 
 def test_view_accepts_execute_tool_assignment(tmp_path: Path) -> None:
@@ -178,7 +256,7 @@ def test_build_turn_hooks_assigns_execute_tool_on_view(tmp_path: Path) -> None:
     cover the slice's use of the seams).
     """
     runtime = _make_runtime(tmp_path)
-    hooks = build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks is not None
     assert hooks.operations.execute_operation is not None
 
@@ -199,7 +277,7 @@ def test_view_exposes_the_subscribed_event_bus(tmp_path: Path) -> None:
     assert view.event_bus is None
 
     # A hook build wires and publishes the bus.
-    hooks = build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks is not None
     bus = runtime.session.event_bus
     assert bus is not None

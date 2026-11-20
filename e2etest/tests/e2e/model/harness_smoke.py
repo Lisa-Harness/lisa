@@ -1,4 +1,4 @@
-"""Scripted model for harness_smoke.scenario.yml (see e2etest.scripted).
+"""Scripted model for harness_smoke.scenario.yml (see runtime.testing.scripted).
 
 Exercises the offline path end to end with zero credentials: the model
 script answers the planning attempt with "{}" (the planner tolerates a
@@ -11,7 +11,7 @@ dispatch, receipts, and persistence are all production code.
 
 from __future__ import annotations
 
-from e2etest.scripted import Reply, ScriptError, ScriptTurn
+from runtime.testing.scripted import Reply, ScriptError, ScriptTurn
 
 
 def auxiliary(turn: ScriptTurn) -> Reply:

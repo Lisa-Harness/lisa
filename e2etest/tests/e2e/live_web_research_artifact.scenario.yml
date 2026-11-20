@@ -1,0 +1,51 @@
+id: canary/web-research-artifact
+session_context: live_session_context.md
+packs:
+  - lisa-pack-memory
+  - lisa-pack-markdown
+  - lisa-pack-personas
+  - lisa-pack-serper
+turns:
+  - >-
+    Research the organization that operates the official Python.org website.
+    Call the `web_search` tool exactly once. Write a concise report to
+    research/python-org.md with one sourced fact and no more than 80 words,
+    then report the saved path and stop. Do not fetch pages.
+budgets:
+  max_messages: 2
+  max_continues: 0
+  max_yield_replies: 0
+  wall_clock_s: 240
+env:
+  MAX_TOOL_ITERATIONS: "12"
+  STAGE_NUDGE_THRESHOLD: "4"
+  STAGE_NUDGE_CAP: "7"
+  TURN_COMPLETION_MAX_TOKENS: "4096"
+oracles:
+  hygiene:
+    - not_aborted: {}
+    - no_turn_errors: {}
+    - no_operator_exit: {}
+    - no_unanswered_yield: {}
+    - no_runtime_errors: {}
+  research:
+    - receipt: {capability: web_search, min: 1}
+  artifact:
+    - receipt:
+        capability: [markdown_forge_document, storage.write_file]
+        min: 1
+    - data_check:
+        argv:
+          - python3
+          - -c
+          - >-
+            from pathlib import Path; p=Path("research/python-org.md");
+            text=p.read_text(encoding="utf-8");
+            assert text.strip() and "http" in text.lower(), text
+  efficiency:
+    - usage_within:
+        min_calls: 3
+        max_calls: 10
+        max_prompt_tokens: 150000
+        max_completion_tokens: 12000
+        max_total_tokens: 162000

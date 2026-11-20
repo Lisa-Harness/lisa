@@ -20,6 +20,7 @@ from runtime.model_discovery.probes.openrouter import (
     _cost_tier_from_price,
     _enrich_openrouter_model,
     _is_chat_capable,
+    _price,
 )
 from runtime.model_discovery.types import ProbeStatus
 
@@ -119,19 +120,20 @@ class TestEnrichment:
         assert model.prompt_price == pytest.approx(0.0000025)
         assert model.completion_price == pytest.approx(0.000015)
         assert model.pricing_currency == "USD"
+        # Capabilities come from the catalog row alone; the registry's
+        # "code" pin is gone (no id-shape inference).
         assert set(model.capabilities) == {
             "text",
             "tools",
             "structured_output",
             "vision",
             "reasoning",
-            "code",
         }
         assert model.thinking_model is True
         assert model.cost_tier == "frontier"
-        # ``known_models.yaml`` pins gpt-5.4 to medium latency (frontier cost,
-        # low-latency class) — the registry overrides the probe's computed tier.
-        assert model.latency_tier == "medium"
+        # A thinking model computes to the high-latency tier; no registry
+        # override layer exists anymore.
+        assert model.latency_tier == "high"
         assert model.description == "OpenAI's frontier model."
 
     def test_no_reasoning_block_not_thinking(self) -> None:
@@ -139,11 +141,22 @@ class TestEnrichment:
         assert model.thinking_model is False
         assert model.latency_tier == "medium"
 
-    def test_missing_pricing_leaves_zero_and_blank_tier(self) -> None:
+    def test_missing_pricing_is_unknown_and_blank_tier(self) -> None:
+        """§4: an unpublished price is unknown (``None``), not a free tier."""
         model = _enrich_openrouter_model("x/m", _row(pricing={}, reasoning=None))
+        assert model.prompt_price is None
+        assert model.completion_price is None
+        assert model.cost_tier == ""
+
+    def test_explicit_free_pricing_is_a_real_zero(self) -> None:
+        """§4: an explicit ``"0"`` is a genuinely free tier, kept distinct
+        from an unpublished (unknown) price — and prices the budget tier."""
+        model = _enrich_openrouter_model(
+            "x/free", _row(pricing={"prompt": "0", "completion": "0"}, reasoning=None)
+        )
         assert model.prompt_price == 0.0
         assert model.completion_price == 0.0
-        assert model.cost_tier == ""
+        assert model.cost_tier == "budget"
 
     def test_cache_pricing_maps_to_dedicated_fields(self) -> None:
         """``pricing.input_cache_read``/``input_cache_write`` land on the
@@ -165,10 +178,11 @@ class TestEnrichment:
         assert model.cache_write_price == pytest.approx(0.00000025)
         assert model.prompt_price == pytest.approx(0.0000002)
 
-    def test_missing_cache_pricing_leaves_zero(self) -> None:
+    def test_missing_cache_pricing_is_unknown(self) -> None:
+        """§4: no published cache rates stay unknown, distinct from free."""
         model = _enrich_openrouter_model("x/m", _row(reasoning=None))
-        assert model.cache_read_price == 0.0
-        assert model.cache_write_price == 0.0
+        assert model.cache_read_price is None
+        assert model.cache_write_price is None
 
     def test_falls_back_to_top_provider_context(self) -> None:
         model = _enrich_openrouter_model(
@@ -185,9 +199,32 @@ class TestEnrichment:
         assert "code" in model.capabilities
 
 
+class TestOptionalPrice:
+    def test_none_blank_and_unparseable_are_unknown(self) -> None:
+        assert _price(None) is None
+        assert _price("") is None
+        assert _price("not-a-number") is None
+
+    def test_negative_and_zero_are_clamped_or_free(self) -> None:
+        assert _price("-1") == 0.0
+        assert _price("0") == 0.0
+
+    def test_object_string_conversion_fallback(self) -> None:
+        class _BadString:
+            def __str__(self) -> str:
+                raise TypeError("cannot stringify")
+
+        assert _price(_BadString()) is None
+
+
 class TestCostTierFromPrice:
-    def test_blank_when_both_zero(self) -> None:
-        assert _cost_tier_from_price(0.0, 0.0) == ""
+    def test_blank_when_completion_rate_unknown(self) -> None:
+        """§4: an unknown driver rate blanks the tier — unknown ≠ free."""
+        assert _cost_tier_from_price(0.0, None) == ""
+
+    def test_budget_when_explicitly_free(self) -> None:
+        """A genuinely $0 model is budget tier, not an unknown blank."""
+        assert _cost_tier_from_price(0.0, 0.0) == "budget"
 
     def test_budget(self) -> None:
         # e.g. a $0.1/M-token completion model.

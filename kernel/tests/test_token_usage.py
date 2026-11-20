@@ -165,7 +165,7 @@ async def test_handler_swallows_os_errors() -> None:
         )
 
 
-def test_build_token_usage_event_defaults_total_tokens() -> None:
+def test_build_token_usage_event_derives_total_tokens() -> None:
     event = build_token_usage_event(
         provider="openai",
         model_id="gpt-4o",
@@ -173,9 +173,10 @@ def test_build_token_usage_event_defaults_total_tokens() -> None:
         completion_tokens=50,
     )
     assert event.total_tokens == 150
+    assert event.metric_origins["total_tokens"] == "derived"
     assert event.kind == "chat_completion"
-    assert event.duration_ms == 0.0
-    assert event.time_cost_usd == 0.0
+    assert event.duration_ms is None
+    assert event.time_cost_usd is None
 
 
 def test_build_token_usage_event_supports_time_billed_kind() -> None:
@@ -272,17 +273,33 @@ def test_estimate_call_cost_splits_cache_reads_and_writes() -> None:
     assert cost == pytest.approx(expected)
 
 
-def test_estimate_call_cost_falls_back_to_prompt_rate_without_cache_prices() -> None:
-    """An unpriced cache rate does not make those tokens free."""
+def test_estimate_call_cost_unknown_cache_rate_is_unknown_not_prompt_rate() -> None:
+    """§4: a reported cache split with an unknown read rate is unpriced.
+
+    The pre-§4 estimator fell back to the prompt rate, fabricating the
+    discount the cache split exists to bill. Unknown makes the call
+    unknown; only an explicit 0.0 bills a real zero.
+    """
     from kernel.token_usage import estimate_call_cost_usd
 
-    cost = estimate_call_cost_usd(
+    assert (
+        estimate_call_cost_usd(
+            prompt_tokens=1000,
+            completion_tokens=0,
+            cached_tokens=600,
+            prompt_price=0.000002,
+        )
+        is None
+    )
+    # The same split with an explicit free read rate prices a real figure.
+    free_read = estimate_call_cost_usd(
         prompt_tokens=1000,
         completion_tokens=0,
         cached_tokens=600,
         prompt_price=0.000002,
+        cache_read_price=0.0,
     )
-    assert cost == pytest.approx(1000 * 0.000002)
+    assert free_read == pytest.approx(400 * 0.000002)
 
 
 def test_estimate_call_cost_clamps_overreported_cache_counters() -> None:
@@ -297,16 +314,90 @@ def test_estimate_call_cost_clamps_overreported_cache_counters() -> None:
         prompt_price=0.000001,
         cache_write_price=0.000001,
     )
-    # 80 cached at 1e-6 (read falls back to prompt rate) + 20 clamped writes.
-    assert cost == pytest.approx(100 * 0.000001)
-    assert cost >= 0.0
+    # The split exceeds the prompt: v2 refuses to price rather than clamp
+    # and call the fabricated figure an estimate.
+    assert cost is None
 
 
-def test_estimate_call_cost_is_zero_when_provider_publishes_no_prices() -> None:
-    """Unpriced models (local Ollama) report no cost rather than a fake one."""
+def test_estimate_call_cost_is_unknown_when_provider_publishes_no_prices() -> None:
+    """Unpriced models (local Ollama) report unknown cost rather than a fake one."""
     from kernel.token_usage import estimate_call_cost_usd
 
-    assert estimate_call_cost_usd(prompt_tokens=5000, completion_tokens=500) == 0.0
+    assert estimate_call_cost_usd(prompt_tokens=5000, completion_tokens=500) is None
+
+
+def test_estimate_call_cost_explicit_free_rates_price_a_real_zero() -> None:
+    """§4: 0.0 means explicitly free — a real answer, not missing data."""
+    from kernel.token_usage import estimate_call_cost_usd
+
+    assert (
+        estimate_call_cost_usd(
+            prompt_tokens=1000,
+            completion_tokens=100,
+            prompt_price=0.0,
+            completion_price=0.0,
+        )
+        == 0.0
+    )
+    assert (
+        estimate_call_cost_usd(
+            prompt_tokens=1000,
+            completion_tokens=100,
+            cached_tokens=500,
+            prompt_price=0.0,
+            completion_price=0.0,
+            cache_read_price=0.0,
+            cache_write_price=0.0,
+        )
+        == 0.0
+    )
+
+
+def test_estimate_call_cost_missing_split_prices_full_prompt_or_is_unknown() -> None:
+    """§4: no reported split prices the full prompt at the prompt rate —
+    but any unknown rate still makes the total unknown, never partial."""
+    from kernel.token_usage import estimate_call_cost_usd
+
+    priced = estimate_call_cost_usd(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        prompt_price=0.000002,
+        completion_price=0.00001,
+    )
+    assert priced == pytest.approx(1000 * 0.000002 + 100 * 0.00001)
+    assert (
+        estimate_call_cost_usd(
+            prompt_tokens=1000,
+            completion_tokens=100,
+            prompt_price=0.000002,
+            completion_price=None,
+        )
+        is None
+    )
+
+
+def test_estimate_call_cost_zero_token_call_is_a_real_zero() -> None:
+    """Nothing cost-bearing exists, so unknown rates are moot, not blocking."""
+    from kernel.token_usage import estimate_call_cost_usd
+
+    assert estimate_call_cost_usd(prompt_tokens=0, completion_tokens=0) == 0.0
+
+
+def test_estimate_call_cost_all_none_rates_is_unknown() -> None:
+    """§4: ``None`` rates are unknown — the call is unpriced, never free."""
+    from kernel.token_usage import estimate_call_cost_usd
+
+    assert (
+        estimate_call_cost_usd(
+            prompt_tokens=100,
+            completion_tokens=10,
+            prompt_price=None,
+            completion_price=None,
+            cache_read_price=None,
+            cache_write_price=None,
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -327,6 +418,103 @@ async def test_event_persists_provider_reported_cost() -> None:
         record = json.loads(path.read_text(encoding="utf-8").strip())
         assert record["cost_usd"] == pytest.approx(0.0031)
         assert record["provider_cost_usd"] == pytest.approx(0.0029)
+
+
+@pytest.mark.asyncio
+async def test_proxy_telemetry_persists_to_the_durable_ledger() -> None:
+    """§4: proxy counters are typed fields, so the durable allowlist keeps
+    them instead of dropping them inside the untyped ``extra`` bag."""
+    with TemporaryDirectory() as td:
+        path = Path(td) / "token-usage.jsonl"
+        handler = TokenUsageTelemetryHandler(path)
+        event = build_token_usage_event(
+            provider="openrouter",
+            model_id="x/m",
+            prompt_tokens=1000,
+            completion_tokens=100,
+            proxy_telemetry={"tokens_saved": 40000, "requests": 1},
+        )
+        await handler.publish(event)
+        record = json.loads(path.read_text(encoding="utf-8").strip())
+        assert record["proxy_telemetry"] == {"tokens_saved": 40000, "requests": 1}
+
+
+@pytest.mark.asyncio
+async def test_ledger_rows_are_allowlisted_redacted_and_pseudonymous() -> None:
+    """§4 redaction by construction: only typed allowlisted fields persist.
+
+    A sloppy publisher's prompt-shaped ``extra`` payload and the raw thread
+    slug never reach disk; the row carries only the data-root-scoped
+    pseudonym (distinct per slug); unknown fields are absent keys, not
+    nulls; rows stamp schema v3.
+    """
+    from kernel.token_usage import build_token_usage_event
+
+    with TemporaryDirectory() as td:
+        path = Path(td) / "token-usage.jsonl"
+        handler = TokenUsageTelemetryHandler(path, data_dir=Path(td))
+
+        first = build_token_usage_event(provider="openai", model_id="gpt-4o", prompt_tokens=42)
+        first.extra = {"prompt": "SECRET-PROMPT-TEXT", "tools": "[{...}]"}
+        first.thread_store_slug = "raw-thread-slug"
+        await handler.publish(first)
+
+        second = build_token_usage_event(provider="openai", model_id="gpt-4o", prompt_tokens=7)
+        second.thread_store_slug = "another-thread"
+        await handler.publish(second)
+
+        raw = path.read_text(encoding="utf-8")
+        assert "SECRET-PROMPT-TEXT" not in raw
+        assert "raw-thread-slug" not in raw
+        first_row, second_row = (json.loads(line) for line in raw.strip().splitlines())
+        assert first_row["schema_version"] == 3
+        assert "extra" not in first_row
+        assert "thread_store_slug" not in first_row
+        assert first_row["thread_pseudonym_id"].startswith("v1:")
+        assert second_row["thread_pseudonym_id"].startswith("v1:")
+        assert first_row["thread_pseudonym_id"] != second_row["thread_pseudonym_id"]
+        assert first_row["provider"] == "openai"
+        assert first_row["sequence"] == 1
+        assert first_row["ledger_instance"]
+        # Absent provenance stays absent: no null-typed placeholders.
+        assert "upstream_route" not in first_row
+        assert "effective_model_data_source" not in first_row
+
+
+@pytest.mark.asyncio
+async def test_ledger_without_data_root_stays_unattributed() -> None:
+    """No pseudonym key -> rows persist without attribution, never with a
+    raw identity or a fabricated pseudonym."""
+    with TemporaryDirectory() as td:
+        path = Path(td) / "token-usage.jsonl"
+        handler = TokenUsageTelemetryHandler(path)
+        event = build_token_usage_event(provider="openai", model_id="gpt-4o")
+        event.thread_store_slug = "raw-thread-slug"
+        await handler.publish(event)
+        raw = path.read_text(encoding="utf-8")
+        assert "raw-thread-slug" not in raw
+        assert "thread_pseudonym_id" not in json.loads(raw.strip())
+
+
+def test_legacy_ledger_rows_without_schema_version_read_as_unknown() -> None:
+    """v1/v2 rows predate ``schema_version``; validating them must not
+    claim v3 — the missing key is distinguishable as explicit unknown via
+    ``model_fields_set``."""
+    from kernel.models import TokenUsageEvent
+
+    legacy = {
+        "event_type": "token_used",
+        "provider": "openai",
+        "model_id": "gpt-4o",
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+    }
+    event = TokenUsageEvent.model_validate(legacy)
+    assert "schema_version" not in event.model_fields_set
+
+    current = TokenUsageEvent.model_validate({**legacy, "schema_version": 3})
+    assert "schema_version" in current.model_fields_set
+    assert current.schema_version == 3
 
 
 # ── Proxy response telemetry ───────────────────────────────────────────

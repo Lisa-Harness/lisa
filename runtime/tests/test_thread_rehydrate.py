@@ -1,4 +1,4 @@
-"""Tests for replaying the latest turn and its unfinished task from the thread."""
+"""Tests for rehydrating the latest turn and its unfinished task from the thread."""
 
 from __future__ import annotations
 
@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from kernel.history import pack_state_message
 from runtime.host_commands import register_builtin_host_commands
 from runtime.thread import (
     append_thread_entry,
     build_open_task_messages,
+    persist_thread_tool_result,
     project_thread_messages,
     set_thread_redaction_policy,
 )
@@ -49,20 +51,23 @@ def _read_turn(turn_query: str, output: str, call_id: str = "c1") -> list[dict[s
     ]
 
 
-def test_resumed_turn_replays_latest_checkpoint_without_duplicating_history(tmp_path: Path) -> None:
+def test_resumed_turn_rehydrates_latest_checkpoint_without_duplicating_history(
+    tmp_path: Path,
+) -> None:
     thread = tmp_path / "threads" / "tester"
     transcript = _read_turn("original request", "first result")
     _append(
         thread,
         "original request",
         transcript=transcript,
-        provenance={"kernel_turn_id": "same-turn", "pending_approval_request_id": "approval"},
+        turn_id="same-turn",
+        provenance={"pending_approval_request_id": "approval"},
     )
     _append(
         thread,
         "original request",
         transcript=[*transcript, {"role": "assistant", "content": "finished"}],
-        provenance={"kernel_turn_id": "same-turn"},
+        turn_id="same-turn",
         response_text="finished",
     )
     messages = build_open_task_messages(thread_path=thread)
@@ -71,7 +76,7 @@ def test_resumed_turn_replays_latest_checkpoint_without_duplicating_history(tmp_
     assert not any("approval" in str(message.get("content")) for message in messages)
 
 
-def test_opaque_provider_context_survives_durable_thread_replay(tmp_path: Path) -> None:
+def test_opaque_provider_context_survives_durable_thread_rehydrate(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     transcript = _read_turn("check weather", "sunny")
     continuation = {
@@ -131,7 +136,7 @@ def test_task_view_recovers_raw_and_approved_results_from_runtime_records(tmp_pa
     assert ThreadStore(thread).load_range(start_turn=0, end_turn=0)[0]["transcript"] == transcript
 
 
-def test_open_task_replays_paused_chain_verbatim(tmp_path: Path) -> None:
+def test_open_task_rehydrates_paused_chain_verbatim(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(thread, "unrelated earlier", response_text="done")
     _append(
@@ -162,6 +167,62 @@ def test_open_task_replays_paused_chain_verbatim(tmp_path: Path) -> None:
     assert all(cid.startswith("t") for cid in call_ids)
 
 
+def test_open_task_rehydrate_folds_stale_results_losslessly(tmp_path: Path) -> None:
+    """Pack history folds a superseded read to a ref stub; the thread keeps it."""
+    thread = tmp_path / "threads" / "tester"
+    first, second = "FILE A v1 " * 50, "FILE A v2 " * 50
+
+    def history(content: str, **extra: object) -> dict[str, object]:
+        ref = persist_thread_tool_result(
+            thread, {"content": content, "task_id": "task-1", "tool_name": "read"}
+        )
+        record = {
+            "call_id": "c1",
+            "tool_id": "read",
+            "owner_id": "lisa-pack-coding",
+            "ref": ref,
+            "chars": len(content),
+        }
+        return {"records": [{**record, **extra}]}
+
+    _append(
+        thread,
+        "fix issue 6",
+        response_text="budget paused",
+        provenance={"source": "observed", "operator_exit": "paused", "task_id": "task-1"},
+        transcript=_read_turn("fix issue 6", first),
+        history=history(first, keys=["read:a.py"], anchor="read:a.py"),
+    )
+    _append(
+        thread,
+        "continue",
+        response_text="paused again",
+        provenance={"source": "observed", "operator_exit": "paused", "task_id": "task-1"},
+        transcript=_read_turn("continue", second),
+        history={
+            **history(second, keys=["read:a.py"]),
+            "snapshots": {"lisa-pack-coding": "w1: clean"},
+        },
+    )
+
+    messages = build_open_task_messages(thread_path=thread)
+
+    tool_contents = [str(m["content"]) for m in messages if m.get("role") == "tool"]
+    assert tool_contents[1] == second
+    stub = tool_contents[0]
+    assert stub.startswith("[superseded by call t1_c1") and "read:a.py" in stub
+    # The newest owner snapshot trails the transcript instead of riding on a
+    # folded result, so it never rewrites an earlier (cached) message.
+    assert "state]" not in stub
+    assert messages[-1] == pack_state_message({"lisa-pack-coding": "w1: clean"})
+    ref = next(word for word in stub.split() if word.startswith("r") and len(word) == 65)
+    page = json.loads(ThreadReader(ThreadStore(thread)).read_content(ref, 0))
+    assert page["content"] == first
+    raw = ThreadStore(thread).load_range(start_turn=0, end_turn=0)[0]
+    assert raw["transcript"][-1]["content"] == first
+    assert raw["history"]["records"][0]["keys"] == ["read:a.py"]
+
+
 def _call(call_id: str, name: str, arguments: str, *, flat: bool) -> dict[str, object]:
     # Provider gateways record the flat OpenAI shape; synthesized calls nest under "function".
     if flat:
@@ -171,7 +232,7 @@ def _call(call_id: str, name: str, arguments: str, *, flat: bool) -> dict[str, o
 
 @pytest.mark.parametrize("flat", [False, True])
 @pytest.mark.parametrize("failed", [False, True])
-def test_approved_action_replays_as_original_tool_result(
+def test_approved_action_rehydrates_as_original_tool_result(
     tmp_path: Path, failed: bool, flat: bool
 ) -> None:
     thread = tmp_path / "threads" / "tester"
@@ -228,7 +289,7 @@ def test_approved_action_replays_as_original_tool_result(
     assert all("/approve" not in str(message.get("content", "")) for message in messages)
 
 
-def test_open_task_replay_redacts_on_read(tmp_path: Path) -> None:
+def test_open_task_rehydrate_redacts_on_read(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(
         thread,
@@ -246,7 +307,7 @@ def test_open_task_replay_redacts_on_read(tmp_path: Path) -> None:
     assert "SECRET123" in thread.with_suffix(".current.jsonl").read_text(encoding="utf-8")
 
 
-def test_open_task_replay_redacts_flat_tool_call_arguments(tmp_path: Path) -> None:
+def test_open_task_rehydrate_redacts_flat_tool_call_arguments(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(
         thread,
@@ -271,7 +332,7 @@ def test_open_task_replay_redacts_flat_tool_call_arguments(tmp_path: Path) -> No
     assert "SECRET123" not in str(messages)
 
 
-def test_open_task_replay_does_not_duplicate_transcript_response(tmp_path: Path) -> None:
+def test_open_task_rehydrate_does_not_duplicate_transcript_response(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     _append(
         thread,
@@ -288,7 +349,7 @@ def test_open_task_replay_does_not_duplicate_transcript_response(tmp_path: Path)
     assert [message["role"] for message in messages] == ["user", "assistant"]
 
 
-def test_large_live_and_replayed_results_are_durable_and_lossless(tmp_path: Path) -> None:
+def test_large_live_and_rehydrated_results_are_durable_and_lossless(tmp_path: Path) -> None:
     thread = tmp_path / "threads" / "tester"
     original = "full output " * 10000
     transcript = _read_turn("read", original)
@@ -299,12 +360,12 @@ def test_large_live_and_replayed_results_are_durable_and_lossless(tmp_path: Path
     assert transcript[-1]["content"] == original
     assert project_thread_messages(transcript, "task-1", thread_path=thread) == live
     _append(thread, "read", transcript=transcript, provenance={"task_id": "task-1"})
-    replayed = build_open_task_messages(thread_path=thread, budget_bytes=65536)
-    replay_stub = json.loads(
-        next(message for message in replayed if message["role"] == "tool")["content"]
+    rehydrated = build_open_task_messages(thread_path=thread, budget_bytes=65536)
+    rehydrate_stub = json.loads(
+        next(message for message in rehydrated if message["role"] == "tool")["content"]
     )
-    assert replay_stub["abbreviated"]
-    assert replay_stub["ref"] == stub["ref"]
+    assert rehydrate_stub["abbreviated"]
+    assert rehydrate_stub["ref"] == stub["ref"]
     stored = json.loads(result_object_path(thread, stub["ref"]).read_text())
     assert stored["task_id"] == "task-1"
     reader = ThreadReader(ThreadStore(thread))
@@ -345,11 +406,11 @@ def test_inventory_refs_expand_to_original_bytes_not_stub_json(tmp_path: Path) -
         transcript=transcript,
     )
 
-    replayed = build_open_task_messages(thread_path=thread, budget_bytes=800)
+    rehydrated = build_open_task_messages(thread_path=thread, budget_bytes=800)
 
     reader = ThreadReader(ThreadStore(thread))
     refs: list[str] = []
-    for message in replayed:
+    for message in rehydrated:
         content = str(message.get("content") or "")
         if not content.startswith("{"):
             continue
@@ -409,7 +470,7 @@ def _tool_bytes(messages: list[dict[str, Any]]) -> int:
     )
 
 
-def test_replay_working_set_is_bounded_by_budget_bytes(tmp_path: Path) -> None:
+def test_rehydrate_working_set_is_bounded_by_budget_bytes(tmp_path: Path) -> None:
     """The resident working set is recomputed under a byte budget at the turn
     boundary (R2): six individually sub-threshold results (6KB each, below the
     8KB inline threshold so none stubs on its own) accumulate to 36KB verbatim
@@ -427,7 +488,7 @@ def test_replay_working_set_is_bounded_by_budget_bytes(tmp_path: Path) -> None:
 
     messages = build_open_task_messages(thread_path=thread, budget_bytes=12_000)
 
-    # Residency is bounded (verbatim replay was 36KB).
+    # Residency is bounded (verbatim history was 36KB).
     assert _tool_bytes(messages) <= 12_000
     # Coherence by address: every collapsed result carries a ref that
     # re-expands losslessly to its full 6000 chars.
@@ -443,7 +504,7 @@ def test_replay_working_set_is_bounded_by_budget_bytes(tmp_path: Path) -> None:
         assert page["content"] == "x" * 6000
 
 
-def test_replay_working_set_unbounded_without_budget(tmp_path: Path) -> None:
+def test_rehydrate_working_set_unbounded_without_budget(tmp_path: Path) -> None:
     """With no budget_bytes the prior verbatim behavior is unchanged."""
     thread = tmp_path / "threads" / "tester"
     _append(
@@ -552,14 +613,14 @@ def test_result_refs_cannot_follow_symlinks_or_cross_threads(tmp_path: Path) -> 
 
 def test_reprojection_reuses_original_result_references_under_pressure(tmp_path: Path) -> None:
     thread = tmp_path / "thread"
-    replayed = []
+    rehydrated = []
     original_refs = set()
     for index in range(200):
         turn = _read_turn("read", f"large result {index} " * 2000, call_id=f"call-{index}")[1:]
         preview = project_thread_messages(turn, "task-1", thread_path=thread, budget_bytes=4096)
         original_refs.add(json.loads(preview[-1]["content"])["ref"])
-        replayed.extend(preview)
-    projected = project_thread_messages(replayed, "task-1", thread_path=thread)
+        rehydrated.extend(preview)
+    projected = project_thread_messages(rehydrated, "task-1", thread_path=thread)
     for message in projected:
         if message.get("role") == "tool":
             assert json.loads(message["content"])["ref"] in original_refs
@@ -617,7 +678,7 @@ class TestVerifiedFactsExtraction:
         )
 
     def test_fact_round_trips_through_approved_turn(self, tmp_path: Path) -> None:
-        """The fact lands on the recorded approved turn and survives replay."""
+        """The fact lands on the recorded approved turn and survives rehydration."""
         thread = tmp_path / "threads" / "tester"
         _append(
             thread,

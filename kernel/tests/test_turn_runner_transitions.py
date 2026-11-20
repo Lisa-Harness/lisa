@@ -83,45 +83,78 @@ def test_fork_child_budget_none_when_parent_has_no_budget() -> None:
 
 
 def test_fork_child_budget_divides_max_tool_calls() -> None:
-    """max_tool_calls is divided equally across n children."""
-    budget = TurnBudget(max_tool_calls=10, max_total_tokens=0, max_wall_ms=0)
+    """max_tool_calls is divided equally across n children above the floor."""
+    budget = TurnBudget(max_tool_calls=500, max_total_tokens=0, max_wall_ms=0)
     child = _fork_child_budget(budget, 2)
     assert child is not None
-    assert child.max_tool_calls == 5
+    assert child.max_tool_calls == 250  # above the 75 floor
 
 
 def test_fork_child_budget_divides_max_total_tokens() -> None:
-    """max_total_tokens is divided equally across n children."""
-    budget = TurnBudget(max_tool_calls=0, max_total_tokens=1000, max_wall_ms=0)
+    """max_total_tokens is divided equally across n children above the floor."""
+    budget = TurnBudget(max_tool_calls=0, max_total_tokens=2_000_000, max_wall_ms=0)
     child = _fork_child_budget(budget, 4)
     assert child is not None
-    assert child.max_total_tokens == 250
+    assert child.max_total_tokens == 500_000  # above the 300K floor
 
 
 def test_fork_child_budget_divides_max_wall_ms() -> None:
-    """max_wall_ms is divided equally across n children."""
-    budget = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_wall_ms=800)
+    """max_wall_ms is divided equally across n children (no wall floor)."""
+    budget = TurnBudget(
+        max_tool_calls=0,
+        max_total_tokens=0,
+        max_wall_ms=800_000,
+    )
     child = _fork_child_budget(budget, 2)
     assert child is not None
-    assert child.max_wall_ms == 400
+    assert child.max_wall_ms == 400_000
 
 
 def test_fork_child_budget_passes_through_zero_as_unlimited() -> None:
-    """A field set to 0 (unlimited) is passed through as 0, not divided."""
-    budget = TurnBudget(max_tool_calls=0, max_total_tokens=100, max_wall_ms=0)
+    """A field set to 0 (unlimited) is passed through as 0, not divided.
+
+    The token floor applies only to finite parent fields; an unlimited (0)
+    parent field stays unlimited regardless of n or the floor.
+    """
+    budget = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_wall_ms=0)
     child = _fork_child_budget(budget, 3)
     assert child is not None
     assert child.max_tool_calls == 0  # unlimited stays unlimited
-    assert child.max_total_tokens == 33  # 100 // 3
+    assert child.max_total_tokens == 0  # unlimited stays unlimited
     assert child.max_wall_ms == 0  # unlimited stays unlimited
 
 
 def test_fork_child_budget_floors_division() -> None:
-    """Integer division floors gracefully when budget is smaller than n."""
+    """Division below the kernel floors is raised to the fork-child floor.
+
+    When the parent budget is smaller than n children, raw integer division
+    would floor the share near zero — the pre-floor behavior returned
+    ``max_tool_calls == 0``; the floor (75 by default) keeps each child
+    individually bounded but honest-work-sized.
+    """
     budget = TurnBudget(max_tool_calls=3, max_total_tokens=0, max_wall_ms=0)
     child = _fork_child_budget(budget, 5)
     assert child is not None
-    assert child.max_tool_calls == 0  # 3 // 5 = 0
+    assert child.max_tool_calls == 75  # 3 // 5 = 0 → floor 75
+    # An unlimited parent field stays unlimited regardless of n.
+
+
+def test_fork_child_budget_floors_token_share() -> None:
+    """A token share divided below the floor (1M/5 = 200K < 300K) is raised."""
+    budget = TurnBudget(max_tool_calls=0, max_total_tokens=1_000_000, max_wall_ms=0)
+    child = _fork_child_budget(budget, 5)
+    assert child is not None
+    assert child.max_tool_calls == 0  # unlimited stays unlimited
+    assert child.max_total_tokens == 300_000  # 200K share → 300K floor
+
+
+def test_fork_child_budget_floor_never_reshapes_bigger_share() -> None:
+    """A share already above the floor passes through at raw division."""
+    budget = TurnBudget(max_tool_calls=500, max_total_tokens=2_000_000, max_wall_ms=0)
+    child = _fork_child_budget(budget, 2)
+    assert child is not None
+    assert child.max_tool_calls == 250  # above the 75 floor
+    assert child.max_total_tokens == 1_000_000  # above the 300K floor
 
 
 # ── Fork: _fork_mode_requires_tools ────────────────────────────────────
@@ -651,8 +684,13 @@ async def test_handoff_to_terminal_mode_instructs_completion_not_handoff() -> No
         "terminal handoff must instruct completion, not further handoff; "
         f"got: {post_handoff_prompt!r}"
     )
-    assert "do NOT call `transition_stage`" in post_handoff_prompt, (
-        f"terminal handoff must explicitly forbid transition_stage; got: {post_handoff_prompt!r}"
+    assert "do NOT call `transition_stage`" not in post_handoff_prompt, (
+        "terminal handoff must not forbid mid-turn handoffs for budget/state reasons; "
+        f"got: {post_handoff_prompt!r}"
+    )
+    assert "call `transition_stage` as usual" in post_handoff_prompt, (
+        "terminal handoff must allow mid-turn handoffs for budget/state reasons; "
+        f"got: {post_handoff_prompt!r}"
     )
     # The unconditional hand-off directive must NOT appear on the terminal step.
     assert "After you complete your work, hand off to the next step" not in post_handoff_prompt, (
@@ -864,7 +902,17 @@ async def test_forced_fork_when_model_refuses_to_fork() -> None:
         # and the parent synthesis return text.
         return _StubCompletion(content="Synthesized from forced fork.")
 
+    published_events: list[tuple[str, dict[str, Any]]] = []
+
+    class _CaptureBus:
+        async def publish(self, topic: str, payload: dict[str, Any]) -> None:
+            published_events.append((topic, payload))
+
+        def subscribe(self, topic: str, handler: Any) -> None:
+            pass
+
     hooks = _build_hooks(two_step)
+    hooks.context_seams.event_bus = _CaptureBus()
     # A query that triggers a fork hint from default mode (remember + write).
     result = await run_turn(
         mode_id="default",
@@ -876,6 +924,20 @@ async def test_forced_fork_when_model_refuses_to_fork() -> None:
     # the model never called transition_stage with a fork target.
     assert result.fork_results is not None
     assert len(result.fork_results) >= 2
+
+    # The enforcer's fire is durably recorded: one ``routing.forced`` row
+    # per synthesis naming the kind, targets, and the non-compliant count
+    # that reached the cap (the 2026-11-13 routing-telemetry follow-up:
+    # "how many forced forks have ever fired" must be a ledger query,
+    # not a log grep).
+    forced_rows = [p for t, p in published_events if t == "routing.forced"]
+    assert len(forced_rows) >= 1
+    row = forced_rows[0]
+    assert row["kind"] == "fork"
+    assert len(row["targets"]) >= 2
+    assert row["non_compliant_dispatches"] == 2
+    assert row["trigger"] == "dispatch_override"
+    assert row["expected_tool"] == "fork"
 
 
 @pytest.mark.asyncio
@@ -1237,6 +1299,7 @@ def test_enforcer_treats_a_batch_with_the_expected_tool_as_compliant() -> None:
     assert _batch_contains_expected_tool(state, batch, "call_bash") is True
 
     name, arguments = _enforce_forced_action_on_dispatch(
+        hooks=TurnHooks(),
         state=state,
         mode_id="default",
         query="q",
@@ -1255,13 +1318,62 @@ def test_enforcer_treats_a_batch_with_the_expected_tool_as_compliant() -> None:
     assert state.forced_action.non_compliant_dispatches == 0
 
 
+def test_enforcer_counts_one_non_compliant_batch_only_once() -> None:
+    """Parallel reads in one completion must not exhaust a two-batch cap."""
+    from kernel.turn_runner import _enforce_forced_action_on_dispatch
+
+    state = _ForcedState(_forced_single("planner"))
+    first_batch = [
+        _make_tool_call("call_0", "bash_run", {"commands": ["true"]}),
+        _make_tool_call("call_1", "bash_run", {"commands": ["true"]}),
+        _make_tool_call("call_2", "bash_run", {"commands": ["true"]}),
+    ]
+
+    for index, call in enumerate(first_batch):
+        name, arguments = _enforce_forced_action_on_dispatch(
+            hooks=TurnHooks(),
+            state=state,
+            mode_id="default",
+            query="q",
+            tool_call=call,
+            tool_name="bash_run",
+            tool_arguments={"commands": ["true"]},
+            batch_has_expected=False,
+            log=logging.getLogger("test"),
+            count_non_compliant_batch=index == 0,
+        )
+        assert name == "bash_run"
+        assert arguments == {"commands": ["true"]}
+
+    assert state.forced_action is not None
+    assert state.forced_action.non_compliant_dispatches == 1
+
+    second_batch_call = _make_tool_call("call_3", "bash_run", {"commands": ["true"]})
+    name, arguments = _enforce_forced_action_on_dispatch(
+        hooks=TurnHooks(),
+        state=state,
+        mode_id="default",
+        query="q",
+        tool_call=second_batch_call,
+        tool_name="bash_run",
+        tool_arguments={"commands": ["true"]},
+        batch_has_expected=False,
+        log=logging.getLogger("test"),
+        count_non_compliant_batch=True,
+    )
+
+    assert name == "transition_stage"
+    assert arguments["target_stage_id"] == "planner"
+    assert state.forced_action is None
+
+
 def test_enforcer_still_forces_when_no_call_in_the_batch_complies() -> None:
     """The guard is NOT weakened: a batch with no transition still gets forced.
 
     The routing-hint backstop exists because a model can burn iterations on
     read-only tools forever. Batch-awareness must not disable it, only stop it
-    from misfiring on a batch that already complied. The enforcer fires on the
-    dispatch that reaches ``forced_action_non_compliant_cap`` (default 2) and
+    from misfiring on siblings inside one batch. The enforcer fires on the
+    batch that reaches ``forced_action_non_compliant_cap`` (default 2) and
     then clears ``state.forced_action``.
     """
     from kernel.turn_runner import (
@@ -1279,6 +1391,7 @@ def test_enforcer_still_forces_when_no_call_in_the_batch_complies() -> None:
         batch_has_expected = _batch_contains_expected_tool(state, batch, call_id)
         assert batch_has_expected is False
         name, arguments = _enforce_forced_action_on_dispatch(
+            hooks=TurnHooks(),
             state=state,
             mode_id="default",
             query="q",
@@ -1293,7 +1406,7 @@ def test_enforcer_still_forces_when_no_call_in_the_batch_complies() -> None:
             forced_arguments = arguments
             break
 
-    assert forced_on_call == "call_1", "cap=2 means the 2nd non-compliant dispatch forces"
+    assert forced_on_call == "call_1", "cap=2 means the 2nd non-compliant batch forces"
     assert forced_arguments["target_stage_id"] == "planner"
 
 
@@ -1313,6 +1426,7 @@ def test_forced_transition_rationale_reports_the_cap_not_a_refusal() -> None:
     for i in range(4):
         call = _make_tool_call(f"c{i}", "bash_run", {"commands": ["true"]})
         name, produced = _enforce_forced_action_on_dispatch(
+            hooks=TurnHooks(),
             state=state,
             mode_id="default",
             query="q",

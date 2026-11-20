@@ -40,6 +40,7 @@ __all__ = [
     "_noop_complete",
     "_plan_steps_to_workflow_steps",
     "_synthesized_call_missing_all_required",
+    "approved_invocation_history",
     "execute_approved_invocation",
     "get_workflow_catalog",
     "run_turn",
@@ -72,6 +73,19 @@ from kernel.approval import (
     is_expired,
     render_approval_request,
 )
+from kernel.call_archive import (
+    call_error_payload,
+    continuation_snapshot,
+    response_usage_snapshot,
+)
+from kernel.call_identity import (
+    PRIMARY_ATTEMPT,
+    STREAM_TOOL_FALLBACK_ATTEMPT,
+    TRUNCATION_CONTINUATION_ATTEMPT,
+    mint_call_id,
+    mint_dispatch_id,
+    mint_turn_id,
+)
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.config import settings as _kernel_settings
 from kernel.context.request_budget import estimate_request_tokens, fit_request_context
@@ -82,6 +96,7 @@ from kernel.context.sub_turn_contract import (
     render_sub_turn_midpoint_nudge,
 )
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
+from kernel.history import split_pack_state
 from kernel.ipsar_fsm import (
     get_mode_system_intro,
     get_routing_targets,
@@ -140,8 +155,11 @@ from kernel.system_segments import (
     N_ROUTING_HINT,
     SystemPromptSegments,
 )
+from kernel.telemetry import schedule_telemetry_publish
 from kernel.token_usage import build_token_usage_event as _build_token_usage_event_fn
 from kernel.token_usage import estimate_call_cost_usd as _estimate_call_cost_usd_fn
+from kernel.token_usage import nullable_float as _nullable_float_fn
+from kernel.token_usage import nullable_int as _nullable_int_fn
 from kernel.token_usage import publish_token_usage as _publish_token_usage_fn
 from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
 from kernel.tools.registry import execute_tool, get_tool_catalog
@@ -153,8 +171,10 @@ from kernel.turn_continuation import TurnContinuation, capture_segments, capture
 from kernel.turn_hooks import TaskCompletionEvidence, TaskCompletionRequest, TurnHooks, TurnIdentity
 from kernel.turn_phases._compaction import (
     hard_ceiling_stop_reason,
+    log_compaction_diagnostics,
     maybe_run_soft_epoch,
-    tool_size_refusal,
+    should_spill_on_arrival,
+    tool_dispatch_refusal,
 )
 from kernel.turn_phases._completion_contract import (
     AcceptTurn,
@@ -168,11 +188,18 @@ from kernel.turn_phases._completion_contract import (
 )
 from kernel.turn_phases._dispatch import (
     _track_consecutive_errors,
+    dereference_ref_for_read,
     dispatch_capability,
     summarize_json_result,
 )
 from kernel.turn_phases._entry import build_plan_failure_recovery, execute_entry_phase
 from kernel.turn_phases._fork import _build_minimal_context
+from kernel.turn_phases._history import (
+    approved_invocation_history,
+    finalize_turn_history,
+    maybe_run_supersession_epoch,
+    record_dispatch_history,
+)
 from kernel.turn_phases._lifecycle import (
     ContinueAction as _ContinueAction,
 )
@@ -232,6 +259,7 @@ from kernel.turn_phases._routing import (
     save_route_decision,
 )
 from kernel.turn_phases._routing_hint import (
+    _PLAN_ESCALATION_HINT,
     _compute_capability_routing_hint,
     _compute_fork_targets,
     _detect_query_intents,
@@ -335,8 +363,8 @@ _PLAN_MODEL_RELIABILITY_EXEMPT = 0.95
 _QUOTA_STATUS_CODE = 429
 
 
-def _valid_replay_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep replayable messages, pairing every assistant tool call with its result."""
+def _valid_rehydrate_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep history messages, pairing every assistant tool call with its result."""
     answered = {
         m.get("tool_call_id") for m in prior if m.get("role") == "tool" and m.get("tool_call_id")
     }
@@ -463,6 +491,40 @@ def _fold_mode_turn_budget(turn_budget: TurnBudget | None, mode_config: Any) -> 
     if effective == host_rail:
         return turn_budget
     return turn_budget.model_copy(update={"max_completion_tokens": effective})
+
+
+def _refresh_mode_capability_budget(
+    *,
+    state: _TurnState,
+    hooks: TurnHooks,
+    mode_id: str,
+    turn_budget: TurnBudget | None,
+    log: logging.Logger,
+) -> None:
+    """Apply the active mode's capability-call ceiling after a handoff.
+
+    The host's session/global envelope remains the outer policy. A mode
+    handoff may replace only the scoped capability-call ceiling, so a turn
+    entering a low-budget persona does not carry that persona's limit into a
+    downstream coding mode.
+    """
+    resolver = hooks.execution.resolve_capability_limit_for_mode
+    if resolver is None or turn_budget is None:
+        return
+    limit = resolver(mode_id)
+    if limit is None:
+        return
+    previous = turn_budget.max_tool_calls
+    turn_budget.max_tool_calls = max(0, int(limit))
+    state.max_tool_calls = turn_budget.max_tool_calls
+    if previous != turn_budget.max_tool_calls:
+        log.info(
+            "mode capability budget refreshed (mode=%s previous=%d current=%d calls_used=%d)",
+            mode_id,
+            previous,
+            turn_budget.max_tool_calls,
+            state.total_tool_calls,
+        )
 
 
 def _synthesized_call_missing_all_required(
@@ -616,6 +678,128 @@ def _extract_hint_target(hint_text: str) -> str:
     if end < 0:
         return ""
     return rest[:end].strip()
+
+
+def _model_forced_exempt(state: _TurnState) -> bool:
+    """Return the trust-aware enforcer exemption for the active model.
+
+    Frontier / reasoning / high-structured-reliability models are exempt
+    from the forced-action enforcer. The resolver reads the same predicate
+    via ``forced_action_exempt``; this helper keeps the telemetry rows and
+    the two enforcement sites from drifting apart.
+    """
+    model = getattr(state, "effective_model", None)
+    if model is None:
+        return False
+    return (
+        str(getattr(model, "cost_tier", "") or "") == "frontier"
+        or bool(getattr(model, "reasoning_model", False))
+        or float(getattr(model, "structured_reliability", 0.0) or 0.0)
+        >= _PLAN_MODEL_RELIABILITY_EXEMPT
+    )
+
+
+def _classify_routing_hint(hint_text: str) -> tuple[str, list[str]]:
+    """Classify a computed routing hint into ``(hint_kind, targets)``.
+
+    Pure prose classification over the kernel-emitted hint shapes (see
+    ``_compute_capability_routing_hint``): planner escalation, fork
+    fan-out, single/step handoff, or silence. Powers the
+    ``routing.decision`` telemetry row — the durable "what did the model
+    see, and what would the kernel force" record.
+
+    - ``planner_escalation``: the fixed ``_PLAN_ESCALATION_HINT`` prose.
+    - ``fork``: the "Call the `fork` operation with targets [...]" shape;
+      targets are the bracketed mode-id list.
+    - ``handoff``: any ``transition_stage`` directive; target is its
+      ``target_stage_id`` (plan-driven, chained, producer-first, single,
+      and partial-coverage hints all share this shape).
+    - ``none``: empty hint (no gap, or a suppressed computation).
+    """
+    if not hint_text.strip():
+        return "none", []
+    if hint_text == _PLAN_ESCALATION_HINT:
+        return "planner_escalation", [_extract_hint_target(hint_text)]
+    # Fork fan-out: "Call the `fork` operation with targets [a, b] to fan
+    # out in parallel."
+    marker = "Call the `fork` operation with targets ["
+    idx = hint_text.find(marker)
+    if idx >= 0:
+        rest = hint_text[idx + len(marker) :]
+        end = rest.find("]")
+        if end >= 0:
+            targets = [t.strip() for t in rest[:end].split(",") if t.strip()]
+            return "fork", targets
+    # Any transition_stage directive (single handoff, chained step,
+    # producer-first, partial coverage, plan-driven next step).
+    target = _extract_hint_target(hint_text)
+    if "transition_stage" in hint_text:
+        return "handoff", [target] if target else []
+    return "other", [target] if target else []
+
+
+async def _publish_routing_decision(
+    *,
+    hooks: TurnHooks,
+    state: _TurnState,
+    mode_id: str,
+    query: str,
+    hint_text: str,
+    suppressed: bool,
+    forced_kind: str,
+    forced_targets: list[str],
+    forced_exempt: bool,
+    log: logging.Logger,
+) -> None:
+    """Publish one ``routing.decision`` row (best-effort).
+
+    Called at every hint-computation site (turn start, post-handoff
+    recompute, and suppressed-suppression resumption) so ``decisions.jsonl``
+    carries the full hint lifecycle: what the model was shown, whether the
+    deterministic forced-action decision was armed for it, and whether the
+    model's trust tier exempted it from the enforcer. Failures never break
+    the turn (same posture as ``turn.decision``).
+
+    ``suppressed`` marks a computation the guards dropped (override cap,
+    duplicate, 2-cycle) so analysts can distinguish "no hint was needed"
+    from "a hint existed and was withheld".
+    """
+    event_bus = hooks.context_seams.event_bus
+    if event_bus is None:
+        return
+    hint_kind, hint_targets = _classify_routing_hint(hint_text)
+    try:
+        await event_bus.publish(
+            "routing.decision",
+            {
+                "mode_id": mode_id,
+                "query_preview": query[:120],
+                "turn_index": hooks.identity.turn_index,
+                "turn_id": hooks.identity.turn_id or None,
+                "parent_turn_id": hooks.identity.parent_turn_id or None,
+                "parent_dispatch_id": hooks.identity.parent_dispatch_id or None,
+                "user_slug": hooks.identity.user_slug,
+                "thread_store_slug": hooks.identity.thread_store_slug,
+                "iteration": state.iteration,
+                "turn": state.iteration,
+                "hint_kind": hint_kind,
+                "hint_targets": hint_targets,
+                "hint_injected": bool(hint_text) and not suppressed,
+                "hint_suppressed": suppressed,
+                "forced_armed": bool(forced_kind),
+                "forced_kind": forced_kind,
+                "forced_targets": forced_targets,
+                "forced_exempt": forced_exempt,
+                "model_id": str(getattr(state.effective_model, "model_id", "") or ""),
+                "model_cost_tier": str(getattr(state.effective_model, "cost_tier", "") or ""),
+                "model_reasoning": bool(getattr(state.effective_model, "reasoning_model", False)),
+                "model_structured_reliability": float(
+                    getattr(state.effective_model, "structured_reliability", 0.0) or 0.0
+                ),
+            },
+        )
+    except Exception as _bus_exc:  # pylint: disable=broad-except
+        log.debug("routing.decision telemetry publish failed: %s", _bus_exc)
 
 
 def _build_budget_briefing(
@@ -1433,7 +1617,7 @@ async def _run_turn_with_approval(
         # differs from the entry mode, so an approval paused in the entry
         # mode does not fabricate a self-handoff.
         owning_mode = required.invocation.identity.mode_id or ""
-        return _with_transcript(
+        approval_result = _with_transcript(
             TurnResult(
                 response_text=render_approval_request(required.invocation),
                 pending_approval=required.invocation,
@@ -1461,7 +1645,22 @@ async def _run_turn_with_approval(
             ),
             capture,
         )
-    return _with_transcript(result, capture)
+        return await _with_history(approval_result, capture, hooks)
+    return await _with_history(_with_transcript(result, capture), capture, hooks)
+
+
+async def _with_history(result: TurnResult, capture: list[Any], hooks: TurnHooks) -> TurnResult:
+    """Attach the turn's pack-history block; rehydration folds stale results from it."""
+    if not capture:
+        return result
+    try:
+        result.history = await finalize_turn_history(
+            state=capture[0], hooks=hooks, tool_catalog=get_tool_catalog(), log=logger
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        # Without the block rehydration keeps every result resident: costlier, never lossy.
+        logger.warning("turn history finalize failed; rehydration will not fold: %s", exc)
+    return result
 
 
 def _with_transcript(result: TurnResult, capture: list[Any]) -> TurnResult:
@@ -1546,8 +1745,13 @@ async def execute_approved_invocation(
             "data_dir": hooks.services.data_dir,
             "thread_dir": hooks.services.thread_dir,
             "turn_index": hooks.identity.turn_index,
+            "turn_id": hooks.identity.turn_id,
+            "parent_turn_id": hooks.identity.parent_turn_id,
+            "parent_dispatch_id": hooks.identity.parent_dispatch_id,
             "model_router": hooks.context_seams.model_router,
             "request_recorder": hooks.models.record_request,
+            "response_recorder": hooks.models.record_response,
+            "sandbox_runner": getattr(hooks.services, "sandbox_runner", None),
         }
         if invocation.target_kind == "tool":
             _tool_def = get_tool_catalog().get(invocation.target_id)
@@ -1728,6 +1932,7 @@ async def _pre_turn_memory_recall(
                 capability_binding_provider=hooks.services.capability_binding_provider,
                 approval_service=hooks.services.approval_service,
                 code_change_artifact_store=hooks.services.code_change_artifact_store,
+                sandbox_runner=getattr(hooks.services, "sandbox_runner", None),
                 workspace_id=hooks.identity.workspace_id,
                 user_id=hooks.identity.user_id,
                 user_slug=hooks.identity.user_slug,
@@ -1747,6 +1952,7 @@ async def _pre_turn_memory_recall(
                 fork_fn=fork_fn,
                 model_router=hooks.context_seams.model_router,
                 request_recorder=hooks.models.record_request,
+                response_recorder=hooks.models.record_response,
             )
             recall_ctx.params = {
                 "query": query,
@@ -1772,6 +1978,7 @@ def _wire_delegate_fn(
     delegate_depth: int,
     turn_budget: TurnBudget | None,
     execution_policy: ExecutionPolicy | None,
+    turn_start_mono: float,
     logger_override: logging.Logger | None,
 ) -> Callable[..., Awaitable[DelegationResult]]:
     """Build the per-turn ``delegate_fn`` closure for the ``delegate`` operation.
@@ -1791,6 +1998,7 @@ def _wire_delegate_fn(
         _hooks: TurnHooks = hooks,
         _budget: TurnBudget | None = turn_budget,
         _policy: ExecutionPolicy | None = execution_policy,
+        _turn_start_mono: float = turn_start_mono,
         _depth: int = _delegate_depth,
         _logr: logging.Logger | None = logger_override,
     ) -> DelegationResult:
@@ -1800,6 +2008,7 @@ def _wire_delegate_fn(
             turn_budget=_budget,
             execution_policy=_policy,
             depth=_depth + 1,
+            turn_start_mono=_turn_start_mono,
             logger_override=_logr,
         )
 
@@ -1919,14 +2128,14 @@ def _wire_record_model_usage(
     def _record_model_usage(
         model_def: Any,
         *,
-        p: int,
-        c: int,
-        t: int,
-        ct: int,
-        rt: int,
-        d: float,
-        lat: int,
-        cc: int = 0,
+        p: int | None = None,
+        c: int | None = None,
+        t: int | None = None,
+        ct: int | None = None,
+        rt: int | None = None,
+        d: float | None = None,
+        lat: int | None = None,
+        cc: int | None = None,
     ) -> None:
         """Merge one completion's counters into the per-model accumulator."""
         record_model_usage_fn(
@@ -2081,7 +2290,7 @@ def _wire_resolve_iteration_model(
     return _resolve_iteration_model
 
 
-def _init_turn_routing_hint(
+async def _init_turn_routing_hint(
     *,
     state: _TurnState,
     hooks: TurnHooks,
@@ -2194,6 +2403,22 @@ def _init_turn_routing_hint(
             getattr(mode_config, "satisfies_intents", None),
             get_routing_targets(mode_id) if mode_config else [],
         )
+    await _publish_routing_decision(
+        hooks=hooks,
+        state=state,
+        mode_id=mode_id,
+        query=query,
+        hint_text=routing_hint,
+        # The suppress_routing_hint gate (delegate/fork children, resume
+        # in-flight) withheld the computation entirely — record it as
+        # suppressed so the ledger can distinguish "nothing to suggest"
+        # from "computation withheld".
+        suppressed=suppress_routing_hint,
+        forced_kind=state.forced_action.kind if state.forced_action else "",
+        forced_targets=list(state.forced_action.targets) if state.forced_action else [],
+        forced_exempt=_model_forced_exempt(state),
+        log=log,
+    )
     return routing_hint, system_prompt
 
 
@@ -2240,11 +2465,17 @@ def _prepare_turn_messages_and_model(
     # so the rendered prompt stays byte-identical to the historical single
     # string while the stable prefix is never rewritten per-iteration.
     messages: list[dict[str, Any]] = [{"role": "system", "content": sys_segments.flatten()}]
+    pack_state = ""
     if hooks.context.prior_messages is not None and not state.sub_turn_kind:
-        messages.extend(_valid_replay_messages(hooks.context.prior_messages()))
+        prior, pack_state = split_pack_state(hooks.context.prior_messages())
+        messages.extend(_valid_rehydrate_messages(prior))
 
     # Build user message
     user_parts: list[str] = []
+    if pack_state:
+        # Rehydrated pack snapshots ride on the new user message, the first
+        # message that differs from the previous turn's requests anyway.
+        user_parts.append(f"## Pack State\n\n{pack_state}")
     if pre_briefing:
         user_parts.append(f"## Pre-turn Briefing\n\n{pre_briefing}")
     if memory_snippet:
@@ -2751,6 +2982,9 @@ async def _resolve_iteration_lifecycle(
                 {
                     "mode_id": mode_id,
                     "turn_index": hooks.identity.turn_index,
+                    "turn_id": hooks.identity.turn_id or None,
+                    "parent_turn_id": hooks.identity.parent_turn_id or None,
+                    "parent_dispatch_id": hooks.identity.parent_dispatch_id or None,
                     "user_slug": hooks.identity.user_slug,
                     # Which thread the row belongs to. Turn indices are
                     # per-thread, so two conversations of one user collide on
@@ -2768,6 +3002,11 @@ async def _resolve_iteration_lifecycle(
                     "read_receipts": sum(
                         1 for r in state.effect_receipts if r.effect in ("read", "execute")
                     ),
+                    # The model call whose output this decision resolved
+                    # (Evidence Envelope §2). ``None`` means the decision was not
+                    # attributable to a single call (a workflow-position yield,
+                    # or a legacy path with no call in flight).
+                    "call_id": state.current_call_id or None,
                 },
             )
         except Exception as _bus_exc:  # pylint: disable=broad-except
@@ -2932,16 +3171,84 @@ def _per_iteration_nudges(
     return _midpoint_nudge_text, _read_loop_nudge_text
 
 
+def _stamp_stream_timings(
+    timings: dict[str, Any] | None,
+    *,
+    chunk_count: int,
+    elapsed_ms: float,
+    timed_out: bool = False,
+) -> None:
+    """Finalize one stream's MODEL-CALL-ARCHIVE §2 timing facts."""
+    if timings is None:
+        return
+    timings["chunk_count"] = chunk_count
+    timings["elapsed_ms"] = elapsed_ms
+    if timed_out:
+        timings["timed_out"] = True
+    timings.setdefault("time_to_first_token_ms", None)
+
+
+def _stamp_first_token(
+    timings: dict[str, Any] | None, chunk: StreamedChunk, started: float
+) -> None:
+    """Record time-to-first-token for the first content-bearing chunk."""
+    if (
+        timings is not None
+        and "time_to_first_token_ms" not in timings
+        and (chunk.content or chunk.reasoning_content or chunk.tool_call_deltas)
+    ):
+        timings["time_to_first_token_ms"] = (time.perf_counter() - started) * 1000.0
+
+
+async def _complete_and_archive(
+    gateway: Any,
+    request: CompletionRequest,
+    *,
+    archive_response: Callable[..., None] | None,
+    started: float,
+) -> Any:
+    """Complete once, archiving the response pair at the call's boundary.
+
+    A failing call records ``error`` (or ``cancelled``) and re-raises
+    verbatim — the record must not swallow the real outcome (Spec §2).
+    """
+    try:
+        result = await gateway.complete(request)
+    except BaseException as exc:  # pylint: disable=broad-except
+        if archive_response is not None:
+            archive_response(
+                result=None,
+                outcome="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                error=exc,
+            )
+        raise
+    if archive_response is not None:
+        archive_response(
+            result=result, outcome="ok", elapsed_ms=(time.perf_counter() - started) * 1000.0
+        )
+    return result
+
+
 async def _collect_stream(
     stream_gateway_fn: Any,
     completion_request: CompletionRequest,
     on_delta: Callable[[str, str], Awaitable[None]] | None,
+    timings: dict[str, Any] | None = None,
 ) -> tuple[list[StreamedChunk], float]:
     """Consume one ``complete_stream`` generator, forwarding deltas to ``on_delta``.
 
     Returns ``(chunks, elapsed_ms)``. Bare metadata chunks (no
     ``content``/``reasoning_content``) are collected but not forwarded —
     transports only need to see real text.
+
+    ``timings`` is an optional out-param the response recorder reads for the
+    MODEL-CALL-ARCHIVE §2 streaming facts: ``time_to_first_token_ms`` (first
+    chunk carrying content, reasoning, or tool-call deltas; ``None`` when the
+    stream never surfaced one — bare metadata chunks never count),
+    ``chunk_count``, and ``elapsed_ms`` — each scoped to THIS call's stream,
+    so a truncation continuation archives its own facts. The signature stays
+    positional-compatible: existing three-arg callers are unaffected.
 
     Idle watchdog: a generation that goes silent for
     ``settings.stream_idle_timeout_s`` (0 disables) is aborted with a
@@ -2955,10 +3262,13 @@ async def _collect_stream(
         chunks: list[StreamedChunk] = []
         started = time.perf_counter()
         async for chunk in stream_gateway_fn(completion_request):
+            _stamp_first_token(timings, chunk, started)
             chunks.append(chunk)
             if on_delta is not None and (chunk.content or chunk.reasoning_content):
                 await on_delta(chunk.content, chunk.reasoning_content)
-        return chunks, (time.perf_counter() - started) * 1000.0
+        elapsed = (time.perf_counter() - started) * 1000.0
+        _stamp_stream_timings(timings, chunk_count=len(chunks), elapsed_ms=elapsed)
+        return chunks, elapsed
 
     started = time.perf_counter()
     chunks = []
@@ -2967,13 +3277,22 @@ async def _collect_stream(
         try:
             chunk = await asyncio.wait_for(stream.__anext__(), timeout=timeout_s)
         except StopAsyncIteration:
-            return chunks, (time.perf_counter() - started) * 1000.0
+            elapsed = (time.perf_counter() - started) * 1000.0
+            _stamp_stream_timings(timings, chunk_count=len(chunks), elapsed_ms=elapsed)
+            return chunks, elapsed
         except TimeoutError as exc:
             # The generator is abandoned mid-``__anext__``; close it so the
             # gateway's finally-block (httpx response cleanup) still runs.
             with contextlib.suppress(Exception):
                 await stream.aclose()
+            _stamp_stream_timings(
+                timings,
+                chunk_count=len(chunks),
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                timed_out=True,
+            )
             raise StreamIdleTimeout(f"stream produced no chunk for {timeout_s:.0f}s") from exc
+        _stamp_first_token(timings, chunk, started)
         chunks.append(chunk)
         if on_delta is not None and (chunk.content or chunk.reasoning_content):
             await on_delta(chunk.content, chunk.reasoning_content)
@@ -3035,6 +3354,54 @@ class StreamIdleTimeout(RuntimeError):
     """A streamed generation went silent past ``stream_idle_timeout_s``."""
 
 
+def _archive_streamed_response(
+    state: _TurnState | None,
+    hooks: TurnHooks,
+    model_def: Any,
+    aggregated_result: Any,
+    timings: dict[str, Any],
+) -> None:
+    """Archive one streamed call's response with its streaming facts.
+
+    ``timings`` is the out-param ``_collect_stream`` filled for THIS
+    call's stream, so the truncation continuations and the tool-call
+    fallback each archive their own facts (Spec: MODEL-CALL-ARCHIVE §2,
+    streaming path only; ``None`` facts when not streamed).
+    """
+    _record_response_snapshot(
+        state=state,
+        hooks=hooks,
+        completion=aggregated_result,
+        model_def=model_def,
+        elapsed_ms=float(timings.get("elapsed_ms", 0.0) or 0.0),
+        streamed=True,
+        time_to_first_token_ms=timings.get("time_to_first_token_ms"),
+        chunk_count=timings.get("chunk_count"),
+    )
+
+
+def _archive_fallback_call_response(
+    *,
+    result: Any,
+    state: _TurnState | None,
+    hooks: TurnHooks,
+    model_def: Any,
+    outcome: str = "ok",
+    elapsed_ms: float = 0.0,
+    error: BaseException | None = None,
+) -> None:
+    """Archive one non-streamed fallback call's response at its boundary."""
+    _record_response_snapshot(
+        state=state,
+        hooks=hooks,
+        completion=result,
+        model_def=model_def,
+        outcome=outcome,
+        elapsed_ms=elapsed_ms,
+        error=error,
+    )
+
+
 async def _streamed_gateway_completion(
     *,
     gateway: Any,
@@ -3046,20 +3413,59 @@ async def _streamed_gateway_completion(
     complete_started: float,
     log: logging.Logger,
     tools_offered_this_turn: bool = False,
+    state: _TurnState | None = None,
+    request_snapshot: dict[str, Any] | None = None,
 ) -> Any:
     """Stream one completion with tool-call fallback and a truncation rescue.
 
     v1: stream tokens to the host. When the stream indicates tool_calls are
     needed (finish_reason='tool_calls'), fall back to the non-streaming
     complete() for that iteration to get the structured tool-call payload.
+
+    Every extra call this function makes is recorded as its own call with its
+    own ``attempt`` (Evidence Envelope §2), so the truncation retries and the
+    tool-call fallback stop being invisible spend: ``truncation_continuation``
+    for a rescue retry and ``stream_tool_fallback`` for the non-streaming
+    regeneration. ``state`` is optional so the function stays callable without
+    a turn state (tests and the audit-seam path pass none), in which case no
+    call is recorded.
     """
+
+    def _record_extra_call(attempt: str, request: CompletionRequest) -> str:
+        """Record one extra call in this iteration and return its call id.
+
+        The recorded call is also the turn's current call: the extra call is
+        the one whose usage the iteration will report, so the identity the
+        token row carries must be this one, not the iteration's first.
+        """
+        if state is None or request_snapshot is None:
+            return ""
+        return _record_request_snapshot(
+            state,
+            hooks,
+            {**request_snapshot, "max_tokens": request.max_tokens},
+            attempt=attempt,
+        )
+
     stream_gateway_fn = getattr(gateway, "complete_stream", None)
     assert callable(stream_gateway_fn)  # guarded by the caller's complete_stream check
     on_delta = hooks.models.on_delta
-    chunks, collect_ms = await _collect_stream(stream_gateway_fn, completion_request, on_delta)
+    _archive_stream_response = partial(
+        _archive_streamed_response, state, hooks, effective_model_def
+    )
+
+    primary_timings: dict[str, Any] = {}
+    chunks, collect_ms = await _collect_stream(
+        stream_gateway_fn, completion_request, on_delta, timings=primary_timings
+    )
     stream_ms = collect_ms
     aggregated = _aggregate_streamed_chunks(chunks)
     fallback_request = completion_request
+    # The primary call's boundary is here: the rescues below may supersede
+    # ``aggregated``, but the truncated primary response is its own archive
+    # pair (Spec acceptance: a rescue archives the truncated response and
+    # the continuation as separate pairs).
+    _archive_stream_response(aggregated, primary_timings)
 
     # Truncated-stream rescue retry: when tools were offered and
     # the stream stops by length, the generation was cut off
@@ -3096,11 +3502,14 @@ async def _streamed_gateway_completion(
                 getattr(effective_model_def, "model_id", ""),
                 retry_max_tokens,
             )
+            _record_extra_call(TRUNCATION_CONTINUATION_ATTEMPT, fallback_request)
+            retry_timings: dict[str, Any] = {}
             retry_chunks, retry_ms = await _collect_stream(
-                stream_gateway_fn, fallback_request, on_delta
+                stream_gateway_fn, fallback_request, on_delta, timings=retry_timings
             )
             stream_ms += retry_ms
             aggregated = _aggregate_streamed_chunks(retry_chunks)
+            _archive_stream_response(aggregated, retry_timings)
 
     # Reasoning-burnout rescue (the 2026-10-13 turn 789 stall): a stream
     # that ends ``stop`` with empty content, no streamed tool calls, and a
@@ -3119,8 +3528,8 @@ async def _streamed_gateway_completion(
         and not aggregated.content.strip()
         and aggregated.reasoning_content.strip()
         and (effective_tools or tools_offered_this_turn)
-        and aggregated.usage
-        and aggregated.usage.completion_tokens
+        and aggregated.usage is not None
+        and (aggregated.usage.completion_tokens or 0)
         >= completion_request.max_tokens * _REASONING_BURNOUT_SHARE
     ):
         _retry = _truncation_retry_budget(
@@ -3139,11 +3548,20 @@ async def _streamed_gateway_completion(
                 getattr(effective_model_def, "model_id", ""),
                 retry_max_tokens,
             )
-            retry_chunks, retry_ms = await _collect_stream(
-                stream_gateway_fn, fallback_request, on_delta
+            _record_extra_call(TRUNCATION_CONTINUATION_ATTEMPT, fallback_request)
+            burnout_timings: dict[str, Any] = {}
+            burnout_chunks, burnout_ms = await _collect_stream(
+                stream_gateway_fn, fallback_request, on_delta, timings=burnout_timings
             )
-            stream_ms += retry_ms
-            aggregated = _aggregate_streamed_chunks(retry_chunks)
+            stream_ms += burnout_ms
+            aggregated = _aggregate_streamed_chunks(burnout_chunks)
+            _archive_stream_response(aggregated, burnout_timings)
+    _archive_fallback_response = partial(
+        _archive_fallback_call_response,
+        state=state,
+        hooks=hooks,
+        model_def=effective_model_def,
+    )
 
     if aggregated.finish_reason == "tool_calls" and not aggregated.tool_calls:
         # Fall back to non-streaming for the structured tool-call payload.
@@ -3154,6 +3572,7 @@ async def _streamed_gateway_completion(
         # ``delta.tool_calls``) keep the regeneration path with its
         # truncation rescue (the 2026-10-08 "ran out without doing
         # anything" incident).
+        _record_extra_call(STREAM_TOOL_FALLBACK_ATTEMPT, fallback_request)
         completion = await _rescue_truncated_fallback_completion(
             gateway=gateway,
             fallback_request=fallback_request,
@@ -3162,6 +3581,8 @@ async def _streamed_gateway_completion(
             effective_tools=effective_tools,
             tools_offered_this_turn=tools_offered_this_turn,
             log=log,
+            record_call=_record_extra_call,
+            archive_response=_archive_fallback_response,
         )
     else:
         # Build a completion-like object from the aggregated stream
@@ -3182,6 +3603,8 @@ async def _rescue_truncated_fallback_completion(
     effective_tools: list[dict[str, Any]] | None,
     tools_offered_this_turn: bool,
     log: logging.Logger,
+    record_call: Callable[[str, CompletionRequest], str] | None = None,
+    archive_response: Callable[..., None] | None = None,
 ) -> Any:
     """Non-streaming fallback for a tool_calls stream, with truncation rescue.
 
@@ -3199,7 +3622,9 @@ async def _rescue_truncated_fallback_completion(
     budget (context-window-capped).
     """
     fallback_started = time.perf_counter()
-    completion = await gateway.complete(fallback_request)
+    completion = await _complete_and_archive(
+        gateway, fallback_request, archive_response=archive_response, started=fallback_started
+    )
     if completion.duration_ms <= 0.0:
         completion.duration_ms = (time.perf_counter() - fallback_started) * 1000.0
     if getattr(
@@ -3235,7 +3660,14 @@ async def _rescue_truncated_fallback_completion(
             retry_max_tokens,
         )
     retry_started = time.perf_counter()
-    completion = await gateway.complete(retry_request)
+    if record_call is not None:
+        # The retry is a second model call inside this iteration. It is
+        # recorded so the token row that reports its spend names THIS call
+        # rather than the fallback's request.
+        record_call(TRUNCATION_CONTINUATION_ATTEMPT, retry_request)
+    completion = await _complete_and_archive(
+        gateway, retry_request, archive_response=archive_response, started=retry_started
+    )
     if completion.duration_ms <= 0.0:
         completion.duration_ms = (time.perf_counter() - retry_started) * 1000.0
     return completion
@@ -3251,6 +3683,8 @@ async def _nonstreamed_gateway_completion(
     complete_started: float,
     log: logging.Logger,
     tools_offered_this_turn: bool = False,
+    record_call: Callable[[str, CompletionRequest], str] | None = None,
+    archive_response: Callable[..., None] | None = None,
 ) -> Any:
     """Complete non-streaming with a one-shot doubled-budget truncation rescue.
 
@@ -3265,7 +3699,9 @@ async def _nonstreamed_gateway_completion(
     Retry once with a doubled budget (bounded by the model's context window)
     before accepting the truncated completion as final.
     """
-    completion = await gateway.complete(completion_request)
+    completion = await _complete_and_archive(
+        gateway, completion_request, archive_response=archive_response, started=complete_started
+    )
     # Same predicate as the streaming rescue: a truncated stripped-tools
     # completion is still a write the model was building. The 2026-10-06
     # "unfinished turns" incidents ended blocked turns on this path. The
@@ -3303,7 +3739,14 @@ async def _nonstreamed_gateway_completion(
                     retry_max_tokens,
                 )
             retry_started = time.perf_counter()
-            completion = await gateway.complete(retry_request)
+            if record_call is not None:
+                # The retry is a second model call inside this iteration. It
+                # is recorded so the token row that reports its spend names
+                # THIS call rather than the iteration's first.
+                record_call(TRUNCATION_CONTINUATION_ATTEMPT, retry_request)
+            completion = await _complete_and_archive(
+                gateway, retry_request, archive_response=archive_response, started=retry_started
+            )
             if completion.duration_ms <= 0.0:
                 completion.duration_ms = (time.perf_counter() - retry_started) * 1000.0
     if completion.duration_ms <= 0.0:
@@ -3331,7 +3774,7 @@ def _audit_request_context(
     budget = request.context_budget
     if budget is None:
         return completion
-    observed = _extract_completion_usage(completion).prompt_tokens
+    observed = _extract_completion_usage(completion).prompt_tokens or 0
     key = f"{getattr(request.model_def, 'provider', '')}:{request.model_def.model_id}"
     if observed > budget.input_tokens > 0:
         state.request_token_scales[key] = (
@@ -3415,12 +3858,180 @@ def _prompt_cache_key(hooks: TurnHooks) -> str:
     return "lisa-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:32]
 
 
-def _record_request_snapshot(state: _TurnState, hooks: TurnHooks, snapshot: dict[str, Any]) -> None:
+def _record_request_snapshot(
+    state: _TurnState,
+    hooks: TurnHooks,
+    snapshot: dict[str, Any],
+    attempt: str = PRIMARY_ATTEMPT,
+) -> str:
+    """Record one model request and return the ``call_id`` minted for it.
+
+    This is the single point where a model call becomes addressable. Every
+    gateway call site routes through here \u2014 the iteration's primary call and
+    each extra call inside that same iteration (the streaming tool-call
+    fallback, the truncation continuation, and the provider retry) \u2014 so a turn
+    that made three calls in one iteration records three entries instead of
+    one. Before this, ``turn_input.calls`` held ``{iteration, ref}``, so those
+    calls were indistinguishable and the extra spend could not be attributed.
+
+    ``attempt`` defaults to ``primary`` because most sites are the iteration's
+    first call; the extra-call sites pass their own reason. The entry carries
+    ``call_id`` and ``attempt`` alongside ``iteration`` and ``ref``, so the
+    token ledger, the decision row, and the transcript name the same call.
+
+    The minted id is returned and also stashed on ``state`` as the call in
+    flight, so a publisher downstream of the call can stamp it without
+    threading the id through every signature. Each call gets a fresh id even
+    when two calls share a request shape: identity is per call, not per shape.
+    The unrecorded case keeps the snapshot's own shape. With no
+    ``record_request`` hook there is no ``r<sha256>`` ref to store, so the entry
+    *is* the request snapshot plus the call identity. Nesting the request under
+    ``ref`` there would break every reader that reads
+    ``model_requests[0]["messages"]``, and the transcript is a reader.
+    """
+    call_id = mint_call_id()
+    ref: str | None = None
     if hooks.models.record_request is not None:
-        reference = hooks.models.record_request(snapshot)
-        state.model_requests.append({"iteration": state.iteration, "ref": reference})
+        ref = hooks.models.record_request(snapshot)
+        entry: dict[str, Any] = {
+            "call_id": call_id,
+            "iteration": state.iteration,
+            "attempt": attempt,
+            "ref": ref,
+        }
     else:
-        state.model_requests.append(copy.deepcopy(snapshot))
+        entry = copy.deepcopy(snapshot)
+        entry["call_id"] = call_id
+        entry["iteration"] = state.iteration
+        entry["attempt"] = attempt
+    state.model_requests.append(entry)
+    state.current_call_id = call_id
+    state.current_call_attempt = attempt
+    state.current_call_ref = ref or ""
+    state.current_call_entry = entry
+    return call_id
+
+
+# ── Response recording (Spec: MODEL-CALL-ARCHIVE) ────────────────────────
+
+
+def _record_response_snapshot(  # pylint: disable=too-many-arguments,too-many-locals
+    *,
+    state: _TurnState | None,
+    hooks: TurnHooks,
+    completion: Any,
+    model_def: Any = None,
+    outcome: str = "ok",
+    elapsed_ms: float = 0.0,
+    streamed: bool = False,
+    time_to_first_token_ms: float | None = None,
+    chunk_count: int | None = None,
+    error: BaseException | None = None,
+) -> None:
+    """Archive one model call's response next to its request (Spec §§1-3).
+
+    The call's request entry was staged on ``state.current_call_entry`` by
+    ``_record_request_snapshot``; this consumes it and stamps its
+    ``response_ref`` in place, so the ``turn_input.calls`` entry the host
+    persists names both halves of the archive. Exactly one recording happens
+    per call: each call site records at its own completion boundary, and the
+    graceful-expiry handlers in ``_iteration_completion_or_expiry`` consume
+    whatever entry the in-flight call had staged when no boundary fired.
+    ``None`` ``response_ref`` (no hook, or a recording failure) is the
+    countable archive gap a reader reports — unknown, never fabricated.
+
+    Non-``ok`` calls are recorded too: a wall-budget expiry or a silent
+    stream is exactly the call an operator needs to see. Duration reads the
+    completion's own ``duration_ms`` when the gateway measured it, falling
+    back to the site's elapsed measurement. Streaming facts land only on the
+    streaming path.
+    """
+    if state is None:
+        return
+    entry = state.current_call_entry
+    if entry is None:
+        return
+    state.current_call_entry = None
+    duration_ms = (
+        (getattr(completion, "duration_ms", 0.0) or 0.0) if completion is not None else 0.0
+    )
+    snapshot: dict[str, Any] = {
+        "call_id": entry.get("call_id") or None,
+        "attempt": entry.get("attempt") or None,
+        "iteration": entry.get("iteration"),
+        "request_ref": entry.get("ref") or None,
+        "outcome": outcome,
+        "content": getattr(completion, "content", "") if completion is not None else "",
+        "tool_calls": copy.deepcopy(getattr(completion, "tool_calls", None) or [])
+        if completion is not None
+        else [],
+        "reasoning_content": getattr(completion, "reasoning_content", "")
+        if completion is not None
+        else "",
+        "finish_reason": getattr(completion, "finish_reason", None)
+        if completion is not None
+        else None,
+        "truncated": getattr(completion, "truncated", None) if completion is not None else None,
+        "continuation": continuation_snapshot(
+            getattr(completion, "continuation", None) if completion is not None else None
+        ),
+        "provider": str(getattr(model_def, "provider", "") or ""),
+        "model_id": str(getattr(model_def, "model_id", "") or ""),
+        "provider_request_id": (getattr(completion, "request_id", None) or None)
+        if completion is not None
+        else None,
+        "usage": response_usage_snapshot(
+            getattr(completion, "usage", None) if completion is not None else None
+        ),
+        "duration_ms": duration_ms or elapsed_ms,
+        "streamed": streamed,
+        "time_to_first_token_ms": time_to_first_token_ms,
+        "chunk_count": chunk_count,
+    }
+    if outcome != "ok":
+        snapshot["error"] = (
+            call_error_payload(error) if error is not None else {"class": outcome, "message": ""}
+        )
+    response_ref: str | None = None
+    recorder = hooks.models.record_response
+    if recorder is not None:
+        try:
+            response_ref = recorder(snapshot)
+        except Exception:  # pylint: disable=broad-except
+            # Spec §1: a recording failure logs a WARNING and the call
+            # proceeds unrecorded — the same posture as request recording.
+            logging.getLogger(__name__).warning(
+                "model call %s: response recording failed; leaving archive gap",
+                snapshot["call_id"] or "",
+                exc_info=True,
+            )
+    entry["response_ref"] = response_ref
+
+
+def _record_unarchived_call(
+    *,
+    state: _TurnState,
+    hooks: TurnHooks,
+    outcome: str,
+    error: BaseException | None = None,
+) -> None:
+    """Archive the in-flight call whose boundary never fired (Spec §2).
+
+    The graceful-expiry handlers in ``_iteration_completion_or_expiry``
+    call this when the wall deadline or a silent stream killed the call
+    mid-flight: the staged entry still names the call in flight, so the
+    pair records with ``outcome`` and no content. No-op when no entry is
+    staged (the call already archived at its own boundary). Non-quota
+    gateway failures pass through here too before re-raising.
+    """
+    _record_response_snapshot(
+        state=state,
+        hooks=hooks,
+        completion=None,
+        model_def=getattr(state, "effective_model", None),
+        outcome=outcome,
+        error=error,
+    )
 
 
 async def _iteration_completion_or_expiry(
@@ -3478,13 +4089,14 @@ async def _iteration_completion_or_expiry(
             turn_budget=turn_budget,
             turn_start_mono=turn_start_mono,
         )
-    except TimeoutError:
+    except TimeoutError as exc:
         log.warning(
             "turn wall budget expired mid-model-call "
             "(mode=%s, iteration=%d); finalizing with partial work",
             mode_id,
             state.iteration,
         )
+        _record_unarchived_call(state=state, hooks=hooks, outcome="wall_budget_expired", error=exc)
         state.wall_budget_expired = True
         return None
     except StreamIdleTimeout as exc:
@@ -3498,13 +4110,16 @@ async def _iteration_completion_or_expiry(
             mode_id,
             state.iteration,
         )
+        _record_unarchived_call(state=state, hooks=hooks, outcome="stream_idle_timeout", error=exc)
         state.stream_stalled = True
         state.stream_stall_detail = str(exc)
         return None
     except ProviderGatewayError as exc:
         if exc.status_code != _QUOTA_STATUS_CODE:
             # Non-quota provider failures keep the historical contract:
-            # they propagate and the host's handler reports them.
+            # they propagate and the host's handler reports them. The call
+            # still archives its error pair first (Spec §2).
+            _record_unarchived_call(state=state, hooks=hooks, outcome="error", error=exc)
             raise
         # The provider refused the call with a quota/rate failure. Not
         # retried here (the gateway client already retried — 429 is in
@@ -3524,6 +4139,7 @@ async def _iteration_completion_or_expiry(
         )
         state.provider_quota_exhausted = True
         state.provider_quota_detail = f"{exc.provider}:{exc.model_id} — {exc.message}"
+        _record_unarchived_call(state=state, hooks=hooks, outcome="error", error=exc)
         return None
 
 
@@ -3693,6 +4309,14 @@ async def _model_completion_for_iteration(
         system_prompt_segments=sys_segments.as_segments_copy(),
         context_budget=state.request_context_budget,
         prompt_cache_key=_prompt_cache_key(hooks),
+        # FIX-2: explicit call origin. Every in-turn gateway call — the
+        # primary request and the ``dataclasses.replace`` clones the
+        # truncation/stream-fallback rescues derive from it — carries
+        # ``call_kind="turn"`` so a consumer that must distinguish call
+        # origins (the replay gateway) routes on the recorded origin,
+        # never on the request's shape (a zero-tool turn would otherwise
+        # look like an auxiliary call).
+        call_kind="turn",
     )
     snapshot = {
         "iteration": state.iteration,
@@ -3709,6 +4333,27 @@ async def _model_completion_for_iteration(
         else None,
     }
     _record_request_snapshot(state, hooks, snapshot)
+
+    def _record_extra_call(attempt: str, request: CompletionRequest) -> str:
+        """Record one extra call in this iteration and return its call id.
+
+        The rescue paths make a second model call inside the iteration. It is
+        recorded so the token row that reports its spend names THIS call
+        rather than the iteration's first.
+        """
+        return _record_request_snapshot(
+            state,
+            hooks,
+            {**snapshot, "max_tokens": request.max_tokens},
+            attempt=attempt,
+        )
+
+    _archive_iteration_response = partial(
+        _archive_fallback_call_response,
+        state=state,
+        hooks=hooks,
+        model_def=effective_model_def,
+    )
 
     _stream_gateway_fn = getattr(_gateway, "complete_stream", None)
     _complete_started = time.perf_counter()
@@ -3742,6 +4387,8 @@ async def _model_completion_for_iteration(
                     completion_request=completion_request,
                     complete_started=_complete_started,
                     log=log,
+                    state=state,
+                    request_snapshot=snapshot,
                 ),
                 _iteration_wall_s,
             ),
@@ -3764,6 +4411,8 @@ async def _model_completion_for_iteration(
                 completion_request=completion_request,
                 complete_started=_complete_started,
                 log=log,
+                record_call=_record_extra_call,
+                archive_response=_archive_iteration_response,
             ),
             _iteration_wall_s,
         ),
@@ -3777,11 +4426,11 @@ def _resolve_call_cost(
     *,
     effective_model_def: Any,
     usage: Any,
-    prompt_tokens: int,
-    completion_tokens: int,
-    cached_tokens: int,
-    cache_creation_tokens: int,
-) -> tuple[float, float]:
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    cached_tokens: int | None,
+    cache_creation_tokens: int | None,
+) -> tuple[float | None, float | None]:
     """Return ``(canonical_cost_usd, provider_cost_usd)`` for one model call.
 
     ``canonical_cost_usd`` is the harness's own arithmetic, computed from the
@@ -3792,20 +4441,28 @@ def _resolve_call_cost(
 
     ``provider_cost_usd`` is the provider's own reported charge
     (``usage.cost`` from OpenRouter), passed through untouched so a host or
-    pack can compare the two. Both are 0.0 when the corresponding source is
-    absent — an unpriced local model reports no cost rather than a fake one.
+    pack can compare the two. Cache-efficiency v2 honesty: ``None`` means
+    the value is unknown — an unpriced model reports ``None``, never a
+    fabricated ``0.0``. A genuine ``0.0`` survives only when a sourced
+    rate is explicitly zero.
     """
 
-    provider_cost = float(getattr(usage, "provider_cost_usd", 0.0) or 0.0)
+    provider_cost = _nullable_float_fn(getattr(usage, "provider_cost_usd", None))
     canonical = _estimate_call_cost_usd_fn(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cached_tokens=cached_tokens,
         cache_creation_tokens=cache_creation_tokens,
-        prompt_price=float(getattr(effective_model_def, "prompt_price", 0.0) or 0.0),
-        completion_price=float(getattr(effective_model_def, "completion_price", 0.0) or 0.0),
-        cache_read_price=float(getattr(effective_model_def, "cache_read_price", 0.0) or 0.0),
-        cache_write_price=float(getattr(effective_model_def, "cache_write_price", 0.0) or 0.0),
+        # §4 sentinel cutover: None = the provider published no rate
+        # (unknown). Passing the Optionals through keeps unknown distinct
+        # from an explicit free 0.0 instead of collapsing both into 0.0 —
+        # the estimator returns None for unknown-bearing calls.
+        prompt_price=_nullable_float_fn(getattr(effective_model_def, "prompt_price", None)),
+        completion_price=_nullable_float_fn(getattr(effective_model_def, "completion_price", None)),
+        cache_read_price=_nullable_float_fn(getattr(effective_model_def, "cache_read_price", None)),
+        cache_write_price=_nullable_float_fn(
+            getattr(effective_model_def, "cache_write_price", None)
+        ),
     )
     return canonical, provider_cost
 
@@ -3821,6 +4478,9 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
     effective_model_def: Any,
     record_model_usage: Callable[..., None],
     emit_stage: Callable[[str, dict[str, Any] | None], Awaitable[None]],
+    call_id: str = "",
+    attempt: str = "",
+    request_ref: str | None = None,
 ) -> dict[str, Any]:
     """Fold one iteration's completion into the turn: usage, telemetry, history.
 
@@ -3829,16 +4489,25 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
     telemetry, emits ``model_call_complete``, and appends the assistant
     message (visible text + tool calls + provenance) to ``messages``.
     Returns the usage fields as a dict for the caller's locals.
+
+    ``call_id`` / ``attempt`` / ``request_ref`` name the model call this
+    completion IS. They are passed in rather than read from ``state`` because
+    one iteration can make several calls: the streaming tool-call fallback and
+    the truncation rescues each issue their own request, and the call that
+    produced the usage is the last one, not the iteration's first. Reading
+    ``state.current_call_attempt`` at publish time named whichever call was
+    recorded most recently, so a row could report a spend against an attempt
+    that did not issue it. Empty / ``None`` means unknown, never a guess.
     """
     usage = _extract_completion_usage(completion)
-    prompt_tokens = usage.prompt_tokens
-    completion_tokens = usage.completion_tokens
-    completion_total_tokens = usage.total_tokens
-    cached_tokens = usage.cached_tokens
-    reasoning_tokens = usage.reasoning_tokens
-    cache_creation_tokens = usage.cache_creation_tokens
-    duration_ms = usage.duration_ms
-    latency_ms = usage.latency_ms
+    prompt_tokens = _nullable_int_fn(usage.prompt_tokens)
+    completion_tokens = _nullable_int_fn(usage.completion_tokens)
+    completion_total_tokens = _nullable_int_fn(usage.total_tokens)
+    cached_tokens = _nullable_int_fn(usage.cached_tokens)
+    reasoning_tokens = _nullable_int_fn(usage.reasoning_tokens)
+    cache_creation_tokens = _nullable_int_fn(usage.cache_creation_tokens)
+    duration_ms = _nullable_float_fn(usage.duration_ms)
+    latency_ms = _nullable_int_fn(usage.latency_ms)
     cost_usd, provider_cost_usd = _resolve_call_cost(
         effective_model_def=effective_model_def,
         usage=usage,
@@ -3847,14 +4516,17 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
         cached_tokens=cached_tokens,
         cache_creation_tokens=cache_creation_tokens,
     )
-    state.total_prompt_tokens += prompt_tokens
-    state.total_completion_tokens += completion_tokens
-    state.total_tokens += completion_total_tokens
-    state.total_cached_tokens += cached_tokens
-    state.total_reasoning_tokens += reasoning_tokens
-    state.total_cache_creation_tokens += cache_creation_tokens
-    state.total_duration_ms += duration_ms
-    state.total_latency_ms += latency_ms
+    # Operational accumulators stay total-based arithmetic (a ``None``
+    # counter contributes 0 to turn/session math), while the durable event
+    # above keeps ``None`` so unknown never masquerades as a measured zero.
+    state.total_prompt_tokens += prompt_tokens or 0
+    state.total_completion_tokens += completion_tokens or 0
+    state.total_tokens += completion_total_tokens or 0
+    state.total_cached_tokens += cached_tokens or 0
+    state.total_reasoning_tokens += reasoning_tokens or 0
+    state.total_cache_creation_tokens += cache_creation_tokens or 0
+    state.total_duration_ms += duration_ms or 0.0
+    state.total_latency_ms += latency_ms or 0
     # Anchor the intra-turn compaction estimator on the kernel's own
     # counted input tokens for this request (authoritative; includes
     # framing), so the governor's soft/hard thresholds are computed from
@@ -3862,7 +4534,7 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
     state.intra_turn_compaction_estimator.observe_request_tokens(
         state.request_context_budget.input_tokens
         if state.request_context_budget is not None
-        else prompt_tokens
+        else (prompt_tokens or 0)
     )
     proxy_telemetry = dict(usage.proxy_telemetry or {})
     if proxy_telemetry:
@@ -3902,20 +4574,40 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
             latency_ms=latency_ms,
             cost_usd=cost_usd,
             provider_cost_usd=provider_cost_usd,
-            # Proxy counters ride the durable record's free-form ``extra``
-            # block rather than widening the event schema: the key set is
-            # pack-owned, so a pack can add a counter without a kernel change
-            # and a pack reading the log finds exactly what its proxy sent.
-            extra={"proxy_telemetry": proxy_telemetry} if proxy_telemetry else None,
+            proxy_telemetry=dict(proxy_telemetry) if proxy_telemetry else None,
             request_id=str(getattr(completion, "request_id", "") or ""),
             mode_id=mode_id,
             stage_id=str(getattr(state, "current_stage_id", "") or ""),
             turn_index=hooks.identity.turn_index,
+            turn_id=hooks.identity.turn_id or None,
+            # Call-level join keys (Evidence Envelope §2): this row names the
+            # exact call it paid for, why that call happened, and the request
+            # snapshot behind it. Without them two calls in one iteration were
+            # indistinguishable and their spend could not be attributed.
+            # ``getattr`` defaults because a caller may pass a partial state
+            # stub (the provider-continuation seam does): an absent attribute is
+            # unknown, not a crash on the telemetry path. The call identity
+            # comes from the caller's own call, not from mutable turn state.
+            call_id=call_id or None,
+            iteration=getattr(state, "iteration", None),
+            attempt=attempt or None,
+            request_ref=request_ref,
             call_site="turn_loop",
             conversation_id=hooks.identity.conversation_id,
             user_slug=hooks.identity.user_slug,
             thread_store_slug=hooks.identity.thread_store_slug,
             surface_id=str(hooks.identity.surface_id or ""),
+            metric_origins=dict(getattr(usage, "metric_origins", None) or {}),
+            effective_model_data_source=(
+                str(x)
+                if (x := getattr(effective_model_def, "effective_model_data_source", None))
+                else None
+            ),
+            effective_model_data_version=(
+                str(x)
+                if (x := getattr(effective_model_def, "effective_model_data_version", None))
+                else None
+            ),
         ),
     )
 
@@ -4014,6 +4706,7 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
 
 def _synthesize_empty_completion_call(
     *,
+    hooks: TurnHooks,
     state: _TurnState,
     mode_id: str,
     query: str,
@@ -4044,6 +4737,16 @@ def _synthesize_empty_completion_call(
             mode_id,
             state.iteration,
             _fa.targets,
+        )
+        _publish_routing_forced(
+            hooks=hooks,
+            state=state,
+            mode_id=mode_id,
+            forced_kind=_fa.kind,
+            forced_targets=list(_fa.targets),
+            non_compliant_dispatches=_fa.non_compliant_dispatches,
+            trigger="empty_completion",
+            log=log,
         )
         if _fa.kind == "fork":
             _forced_arguments: dict[str, Any] = {
@@ -4299,8 +5002,62 @@ def _compute_post_handoff_hint(
     return post_handoff_hint
 
 
-def _apply_post_handoff_hint_guards(
+async def _refresh_post_handoff_forced_action(
     *,
+    hooks: TurnHooks,
+    state: _TurnState,
+    query: str,
+    target_stage: str,
+    target_mode_config: Any,
+    post_handoff_hint: str,
+    routing_hint: str,
+    log: logging.Logger,
+) -> None:
+    """Refresh ``state.forced_action`` for a handoff and emit the routing row.
+
+    Both concerns are post-handoff: the enforcer re-arms against the new
+    mode's routing decision (the fork list wins when both shapes are
+    present), and the ``routing.decision`` ledger row records the hint the
+    model will see next plus the armed decision behind it.
+
+    When the surviving hint is empty, still emits a row with the "none"
+    classification — the ledger must distinguish "all gaps closed" (this
+    case) from "a hint was computed but withheld" (the ``suppressed`` flag)
+    and from "no computation ran at all" (no row).
+    """
+    _ph_fork_targets = _compute_fork_targets(
+        query=query,
+        routing_targets=get_routing_targets(target_stage),
+        mode_config=target_mode_config,
+        extra_satisfied=state.chain_satisfied,
+    )
+    _post_handoff_target = _extract_hint_target(post_handoff_hint)
+    _ph_transition_target = (
+        _post_handoff_target
+        if _post_handoff_target and not _post_handoff_target.startswith("fork")
+        else ""
+    )
+    _ph_targets = _ph_fork_targets or ([_ph_transition_target] if _ph_transition_target else [])
+    from kernel.turn_phases._turn_state import ForcedAction
+
+    state.forced_action = ForcedAction(targets=list(_ph_targets)) if _ph_targets else None
+    await _publish_routing_decision(
+        hooks=hooks,
+        state=state,
+        mode_id=target_stage,
+        query=query,
+        hint_text=routing_hint or "",
+        suppressed=bool(post_handoff_hint) and not routing_hint,
+        forced_kind=state.forced_action.kind if state.forced_action else "",
+        forced_targets=list(state.forced_action.targets) if state.forced_action else [],
+        forced_exempt=_model_forced_exempt(state),
+        log=log,
+    )
+
+
+async def _apply_post_handoff_hint_guards(
+    *,
+    hooks: TurnHooks,
     state: _TurnState,
     target_stage: str,
     target_mode_config: Any,
@@ -4323,6 +5080,7 @@ def _apply_post_handoff_hint_guards(
     refreshes the forced action for the new mode. Returns
     ``(routing_hint, chain_advance_guidance, pending_yield)``.
     """
+
     if post_handoff_hint:
         # ── Hint-override suppression ──────
         # After the model overrides the hint
@@ -4485,24 +5243,16 @@ def _apply_post_handoff_hint_guards(
             # (Phase 5: one enforcer; the fork
             # list wins when both shapes are
             # present).
-            _ph_fork_targets = _compute_fork_targets(
+            await _refresh_post_handoff_forced_action(
+                hooks=hooks,
+                state=state,
                 query=query,
-                routing_targets=get_routing_targets(target_stage),
-                mode_config=target_mode_config,
-                extra_satisfied=state.chain_satisfied,
+                target_stage=target_stage,
+                target_mode_config=target_mode_config,
+                post_handoff_hint=post_handoff_hint,
+                routing_hint=routing_hint,
+                log=log,
             )
-            _post_handoff_target = _extract_hint_target(post_handoff_hint)
-            _ph_transition_target = (
-                _post_handoff_target
-                if _post_handoff_target and not _post_handoff_target.startswith("fork")
-                else ""
-            )
-            _ph_targets = _ph_fork_targets or (
-                [_ph_transition_target] if _ph_transition_target else []
-            )
-            from kernel.turn_phases._turn_state import ForcedAction
-
-            state.forced_action = ForcedAction(targets=list(_ph_targets)) if _ph_targets else None
     else:
         # The new mode satisfies all remaining
         # intents; clear the stale hint so the
@@ -4513,6 +5263,18 @@ def _apply_post_handoff_hint_guards(
         state.last_hint_text = ""
         # No remaining gap → no forced action.
         state.forced_action = None
+        await _publish_routing_decision(
+            hooks=hooks,
+            state=state,
+            mode_id=target_stage,
+            query=query,
+            hint_text="",
+            suppressed=False,
+            forced_kind="",
+            forced_targets=[],
+            forced_exempt=_model_forced_exempt(state),
+            log=log,
+        )
     return routing_hint, chain_advance_guidance, pending_yield
 
 
@@ -5178,12 +5940,21 @@ def _build_structured_handoff_context(
 
         # Terminal-step directive: when there are no
         # remaining steps, tell the model to COMPLETE
-        # and respond, not to hand off. The previous
-        # unconditional "hand off to the next step"
+        # and respond when its work is done. The
+        # previous unconditional "hand off to the next step"
         # line contradicted the "(none — this is the
         # final step)" sentinel and left the terminal
         # mode (e.g. markdown) flailing with no
         # completion signal (2026-07-30 incident).
+        # Do NOT forbid mid-turn handoffs: a terminal
+        # mode may still need to route to another mode
+        # for a fresh read budget or state reasons
+        # (2026-11-12 turn 1247: coding_execute hit the
+        # 50-call read cap, tried to hand off to
+        # coding_review for a fresh budget, but the
+        # "do NOT call transition_stage" directive
+        # made the model narrate the handoff in prose
+        # instead of calling the tool).
         if remaining_steps:
             next_directive = (
                 "- After you complete your work, hand off to "
@@ -5193,8 +5964,10 @@ def _build_structured_handoff_context(
         else:
             next_directive = (
                 "- You are the final step in this chain. "
-                "Complete your work and respond to the user "
-                "directly — do NOT call `transition_stage`.\n"
+                "When your work is complete, respond to the user "
+                "directly. If you need to hand off mid-turn "
+                "(e.g. for a fresh read budget or state reasons), "
+                "call `transition_stage` as usual.\n"
             )
         handoff_context = (
             "\n\n## Handoff Context\n"
@@ -5829,6 +6602,41 @@ class _MidTurnHandoffOutcome(NamedTuple):
     entry_output: str
 
 
+def _swap_base_for_handoff(
+    *,
+    sys_segments: SystemPromptSegments,
+    hooks: TurnHooks,
+    assemble_system: Callable[[str, str | None], str],
+    target_stage: str,
+) -> str:
+    """Return the post-handoff stable base, mutating segments in place.
+
+    With ``assemble_system_prompt_parts`` wired and a factored S0/S1
+    registry, only the mode tail (S1) is rewritten and the flattened
+    factored base is returned: the invariant head (S0: harness +
+    session + customizations) keeps its bytes and its provider cache
+    across the handoff (docs/design-safe-handoff-prompt-layout.md).
+    Otherwise the merged base replaces the stable segment wholesale,
+    exactly as before (``clear_base`` keeps the pre-segment bare-mode
+    behavior for an intro-less target). Dynamics are cleared either
+    way; the caller re-adds the new mode's routing hint below.
+    """
+    target_mode_instruction = get_mode_system_intro(target_stage)
+    merged_base = assemble_system(target_mode_instruction, None)
+    sys_segments.clear_dynamic(N_ROUTING_HINT)
+    sys_segments.clear_dynamic(N_HANDOFF_CONTEXT)
+    parts_hook = hooks.context.assemble_system_prompt_parts
+    if parts_hook is not None and sys_segments.has_factored_base():
+        _, mode_tail = parts_hook(target_mode_instruction, None)
+        sys_segments.replace_mode_tail(mode_tail)
+        return sys_segments.flatten()
+    if merged_base.strip():
+        sys_segments.replace_base(merged_base)
+    else:
+        sys_segments.clear_base()
+    return merged_base
+
+
 async def _execute_mid_turn_handoff(
     *,
     state: _TurnState,
@@ -5842,6 +6650,7 @@ async def _execute_mid_turn_handoff(
     context_payload: str,
     ledger: CallLedger,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     routing_ctx: RoutingContext,
     pool: MCPToolPool,
     preferred_model_id: str | None,
@@ -5898,22 +6707,19 @@ async def _execute_mid_turn_handoff(
         if target_mode_config is None:
             tool_output = f"Target mode '{target_stage}' not found."
         else:
-            # Swap system prompt: replace the entire
-            # stable base for the post-handoff mode. The
-            # routing hint for the new mode is re-added
+            # Swap system prompt for the post-handoff mode; with a
+            # factored base (``assemble_system_prompt_parts`` wired)
+            # only the mode tail is rewritten, so the invariant head's
+            # provider cache survives the handoff
+            # (docs/design-safe-handoff-prompt-layout.md). Dynamics are
+            # cleared inside; the new mode's routing hint is re-added
             # below as a dynamic segment.
-            target_mode_instruction = get_mode_system_intro(target_stage)
-            _new_base = assemble_system(target_mode_instruction, None)
-            sys_segments.clear_dynamic(N_ROUTING_HINT)
-            sys_segments.clear_dynamic(N_HANDOFF_CONTEXT)
-            if _new_base.strip():
-                sys_segments.replace_base(_new_base)
-            else:
-                # Pre-segment behavior allowed an empty
-                # target prompt (bare mode with no intro);
-                # preserve it by clearing the stable segment
-                # rather than raising mid-turn.
-                sys_segments.clear_base()
+            _new_base = _swap_base_for_handoff(
+                sys_segments=sys_segments,
+                hooks=hooks,
+                assemble_system=assemble_system,
+                target_stage=target_stage,
+            )
             messages[0] = {
                 "role": "system",
                 "content": _new_base,
@@ -5980,6 +6786,13 @@ async def _execute_mid_turn_handoff(
                 resolve_model=hooks.models.resolve_model,
                 log=log,
                 at_handoff=True,
+            )
+            _refresh_mode_capability_budget(
+                state=state,
+                hooks=hooks,
+                mode_id=target_stage,
+                turn_budget=turn_budget,
+                log=log,
             )
             # Phase 8: the completion contract follows
             # the mode the turn is actually in —
@@ -6086,7 +6899,12 @@ async def _execute_mid_turn_handoff(
             # ``_apply_post_handoff_hint_guards``
             # (suppression guards, chain-advance
             # guidance, forced-action refresh).
-            routing_hint, chain_advance_guidance, pending_yield = _apply_post_handoff_hint_guards(
+            (
+                routing_hint,
+                chain_advance_guidance,
+                pending_yield,
+            ) = await _apply_post_handoff_hint_guards(
+                hooks=hooks,
                 state=state,
                 target_stage=target_stage,
                 target_mode_config=target_mode_config,
@@ -6188,21 +7006,21 @@ async def _force_final_content_completion(
             content = final_visible
             content_source = ""
             final_usage = _extract_completion_usage(final_completion)
-            final_reasoning_tokens = final_usage.reasoning_tokens
+            final_reasoning_tokens = final_usage.reasoning_tokens or 0
             final_cost, final_provider_cost = _resolve_call_cost(
                 effective_model_def=effective_model_def,
                 usage=final_usage,
-                prompt_tokens=final_usage.prompt_tokens,
-                completion_tokens=final_usage.completion_tokens,
-                cached_tokens=final_usage.cached_tokens,
-                cache_creation_tokens=final_usage.cache_creation_tokens,
+                prompt_tokens=_nullable_int_fn(final_usage.prompt_tokens),
+                completion_tokens=_nullable_int_fn(final_usage.completion_tokens),
+                cached_tokens=_nullable_int_fn(final_usage.cached_tokens),
+                cache_creation_tokens=_nullable_int_fn(final_usage.cache_creation_tokens),
             )
-            state.total_prompt_tokens += final_usage.prompt_tokens
-            state.total_completion_tokens += final_usage.completion_tokens
-            state.total_tokens += final_usage.total_tokens
-            state.total_cached_tokens += final_usage.cached_tokens
-            state.total_cache_creation_tokens += final_usage.cache_creation_tokens
-            state.total_duration_ms += final_usage.duration_ms
+            state.total_prompt_tokens += final_usage.prompt_tokens or 0
+            state.total_completion_tokens += final_usage.completion_tokens or 0
+            state.total_tokens += final_usage.total_tokens or 0
+            state.total_cached_tokens += final_usage.cached_tokens or 0
+            state.total_cache_creation_tokens += final_usage.cache_creation_tokens or 0
+            state.total_duration_ms += final_usage.duration_ms or 0.0
             record_model_usage(
                 effective_model_def,
                 p=final_usage.prompt_tokens,
@@ -6232,11 +7050,23 @@ async def _force_final_content_completion(
                     request_id=str(getattr(final_completion, "request_id", "") or ""),
                     mode_id=mode_id,
                     turn_index=hooks.identity.turn_index,
+                    turn_id=hooks.identity.turn_id or None,
                     call_site="forced_final",
                     conversation_id=hooks.identity.conversation_id,
                     user_slug=hooks.identity.user_slug,
                     thread_store_slug=hooks.identity.thread_store_slug,
                     surface_id=str(hooks.identity.surface_id or ""),
+                    metric_origins=dict(getattr(final_usage, "metric_origins", None) or {}),
+                    effective_model_data_source=(
+                        str(x)
+                        if (x := getattr(effective_model_def, "effective_model_data_source", None))
+                        else None
+                    ),
+                    effective_model_data_version=(
+                        str(x)
+                        if (x := getattr(effective_model_def, "effective_model_data_version", None))
+                        else None
+                    ),
                 ),
             )
         else:
@@ -6485,6 +7315,39 @@ def _resolve_provider_failure_diagnostic(
     return None
 
 
+def _render_fork_outcome_summary(fork_results: list[Any]) -> str:
+    """Render the fan-out digest for a parent that cannot synthesize.
+
+    Used when the loop broke on fork results with no model call to fold
+    them (terminal dispatch failure, budget out). Per child: status, the
+    write receipts it landed (verifiable work), and its partial output.
+    A child whose output came from a reasoning-only completion is labeled
+    as thinking, not a response.
+    """
+    lines: list[str] = ["## Fork fan-out outcome"]
+    for result in fork_results:
+        lines.append("")
+        lines.append(f"### {result.target.mode_id} — status: `{result.status}`")
+        _write_receipt_ids = [
+            r.get("capability_id", "")
+            for r in (result.effect_receipts or [])
+            if str(r.get("effect", "")) in ("write", "external_write") and r.get("artifact_id")
+        ]
+        if _write_receipt_ids:
+            lines.append(
+                "- **Verified writes**: "
+                + ", ".join(f"`{_rid}`" for _rid in _write_receipt_ids)
+                + " — this work is real; verify and continue it rather than re-creating it."
+            )
+        if result.error_message:
+            lines.append(f"- **Cause**: {result.error_message}")
+        output = (result.output_text or "").strip()
+        if output:
+            lines.append("- **Output**:")
+            lines.append(output)
+    return "\n".join(lines)
+
+
 async def _resolve_empty_turn_content(
     *,
     state: _TurnState,
@@ -6509,7 +7372,9 @@ async def _resolve_empty_turn_content(
 ) -> tuple[str, str, bool, YieldAction | None]:
     """Resolve the turn's final content when the loop broke with none.
 
-    Priority: the cap-pause diagnostic (the stuck-in-stage cap, NOT an
+    Priority: the provider-failure diagnostics, the fork fan-out outcome
+    digest (the loop broke on fork results before any model call could
+    fold them), the cap-pause diagnostic (the stuck-in-stage cap, NOT an
     operator signal), the operator exit (no content by design), a pending
     yield's question, the yield-policy fallback question (honest about
     whether the budget actually fired), and finally the legacy forced
@@ -6527,15 +7392,22 @@ async def _resolve_empty_turn_content(
     )
     if provider_failure_content is not None:
         return provider_failure_content, content_source, _yielded, pending_yield
+    # ── Fork fan-out outcome ────────────────────────────────────────
+    # The loop broke on fork results before the model could read them
+    # (terminal dispatch failure on any non-ok child). The turn 1258
+    # incident (2026-11-13): a 3/5 fan-out — one child landed verified
+    # write receipts, two were duds, two failed — surfaced as a bare
+    # "Fork child turns failed ... Their results are unverified." line;
+    # the successes and their write receipts were erased pre-model.
+    # Render the per-child digest instead: statuses, verified writes,
+    # and each child's partial output, so the operator (and the next
+    # turn's model, rehydrating the thread) sees what actually happened.
+    # A synthesis model call is NOT made here: the loop already broke on
+    # the failed children, so a forced completion would re-plan with the
+    # failures in hand — that is the NEXT turn's job against the persisted
+    # digest, not this turn's.
     if state.fork_results and any(result.status != "ok" for result in state.fork_results):
-        _failed_children = [
-            result.target.mode_id for result in state.fork_results if result.status != "ok"
-        ]
-        content = (
-            "Fork child turns failed or were interrupted after read-only calls: "
-            + ", ".join(_failed_children)
-            + ". Their results are unverified."
-        )
+        content = _render_fork_outcome_summary(state.fork_results)
     # ── Cap-pause diagnostic ────────────────────────────────────────
     # The stuck-in-stage cap (NOT an operator signal) broke the loop
     # before the model call. Surface a diagnostic so the user knows why
@@ -6543,7 +7415,6 @@ async def _resolve_empty_turn_content(
     # pause — the cap fired because the model was stuck in a loop (often
     # retrying a failing tool call). The diagnostic lets the user
     # intervene with the right path or instruction.
-    # ── Cap-pause diagnostic ────────────────────────────────
     # Built by ``_build_cap_pause_diagnostic`` (last-tool context
     # and structured operation context).
     if content:
@@ -6803,6 +7674,48 @@ def _guard_repeated_tool_batch(
     return action
 
 
+def _deref_budget_refusal(
+    *,
+    state: _TurnState,
+    tool_name: str,
+    tool_arguments: Any,
+    tool_def: Any,
+) -> str:
+    """Return a refusal text when repeated deref expansion exceeds budget.
+
+    The guard intentionally keys off read-tool ``ref`` expansions and repeated
+    refs, not tool names or languages, so it bounds churn without coupling to
+    any specific workflow.
+    """
+    call_limit = _kernel_settings.max_dereference_calls_per_turn
+    if call_limit <= 0:
+        return ""
+    deref_ref = dereference_ref_for_read(
+        tool_name=tool_name,
+        tool_arguments=tool_arguments,
+        tool_def=tool_def,
+    )
+    if deref_ref is None:
+        return ""
+    projected_calls = state.dereference_calls + 1
+    if projected_calls <= call_limit:
+        return ""
+    distinct = state.dereference_distinct_refs
+    projected_distinct = len(distinct) + (0 if deref_ref in distinct else 1)
+    projected_repeats = max(0, projected_calls - projected_distinct)
+    repeat_limit = max(0, _kernel_settings.max_dereference_repeats_per_turn)
+    if projected_repeats <= repeat_limit:
+        return ""
+    state.intra_turn_compaction.finish_now = True
+    return (
+        f"Not executed: dereference budget reached ({projected_calls} ref expansions this turn, "
+        f"{projected_repeats} repeated ref expansions; cap={call_limit}, "
+        f"repeat_cap={repeat_limit}). Do not expand more refs. Synthesize from the "
+        "evidence already gathered, or call a different non-dereference tool if "
+        "new evidence is genuinely missing."
+    )
+
+
 def _handle_truncated_tool_arguments(
     *,
     state: _TurnState,
@@ -6922,8 +7835,63 @@ def _abort_synthesized_call_missing_params(
     return True
 
 
+def _publish_routing_forced(
+    *,
+    hooks: TurnHooks,
+    state: _TurnState,
+    mode_id: str,
+    forced_kind: str,
+    forced_targets: list[str],
+    non_compliant_dispatches: int,
+    trigger: str,
+    log: logging.Logger,
+) -> None:
+    """Publish one ``routing.forced`` row (fire-and-forget, never drops silently).
+
+    Called on every forced-action synthesis (dispatch-override enforcer
+    and empty-completion synthesizer). This is the enforcer's durable
+    accountability record: what the kernel forced, which model trust tier
+    put it in the enforcer's jurisdiction, and how many non-compliant
+    dispatches accumulated first. Uses the shared ``schedule_telemetry_publish``
+    so a failed publish is logged at WARNING (the ledger must not lose a
+    row silently) and the turn never waits on telemetry.
+    """
+    event_bus = getattr(hooks, "context_seams", None)
+    bus = getattr(event_bus, "event_bus", None) if event_bus is not None else None
+    if bus is None:
+        return
+    model = state.effective_model
+    schedule_telemetry_publish(
+        bus,
+        "routing.forced",
+        {
+            "mode_id": mode_id,
+            "turn_index": hooks.identity.turn_index,
+            "turn_id": hooks.identity.turn_id or None,
+            "parent_turn_id": hooks.identity.parent_turn_id or None,
+            "parent_dispatch_id": hooks.identity.parent_dispatch_id or None,
+            "user_slug": hooks.identity.user_slug,
+            "thread_store_slug": hooks.identity.thread_store_slug,
+            "iteration": state.iteration,
+            "kind": forced_kind,
+            "targets": forced_targets,
+            "non_compliant_dispatches": non_compliant_dispatches,
+            "trigger": trigger,
+            "expected_tool": "fork" if forced_kind == "fork" else "transition_stage",
+            "model_id": str(getattr(model, "model_id", "") or ""),
+            "model_cost_tier": str(getattr(model, "cost_tier", "") or ""),
+            "model_reasoning": bool(getattr(model, "reasoning_model", False)),
+            "model_structured_reliability": float(
+                getattr(model, "structured_reliability", 0.0) or 0.0
+            ),
+        },
+        source="turn_runner.routing_forced",
+    )
+
+
 def _enforce_forced_action_on_dispatch(
     *,
+    hooks: TurnHooks,
     state: _TurnState,
     mode_id: str,
     query: str,
@@ -6932,6 +7900,7 @@ def _enforce_forced_action_on_dispatch(
     tool_arguments: Any,
     batch_has_expected: bool,
     log: logging.Logger,
+    count_non_compliant_batch: bool = True,
 ) -> tuple[str, Any]:
     """Override a non-compliant dispatch with the forced-action tool call.
 
@@ -6946,17 +7915,18 @@ def _enforce_forced_action_on_dispatch(
     2026-07-30 400k-token pre-plan tool-cycling burn; the 2026-08-07
     ``plan → remember → search`` stall where ``search`` never ran).
 
-    Each non-expected dispatch increments ``non_compliant_dispatches``; at
-    the (trust-aware) cap the kernel synthesizes the expected call itself by
-    overriding the current tool call's name/arguments and letting the caller
-    dispatch it. A batch that already contains the expected tool is
-    compliant as a whole: the model did call it, so no sibling in that batch
-    counts as a refusal. Mutates the current ``tool_call`` dict IN PLACE — it is the
-    same object referenced by the assistant message already appended to
-    ``messages``, so overriding ``function.name`` / ``function.arguments``
-    here keeps the assistant message and the tool result message consistent
-    (the 2026-07-27 follow-on: a fresh ``forced_fork_N`` id was rejected by
-    the provider with ``tool_call_id not found``). Returns
+    Each model completion's non-compliant tool batch increments
+    ``non_compliant_dispatches`` once. At the (trust-aware) cap the kernel
+    synthesizes the expected call itself by overriding the first eligible
+    tool call's name/arguments and letting the caller dispatch it. A batch
+    that already contains the expected tool is compliant as a whole: the
+    model did call it, so no sibling in that batch counts as a refusal.
+    Mutates the current ``tool_call`` dict IN PLACE — it is the same object
+    referenced by the assistant message already appended to ``messages``, so
+    overriding ``function.name`` / ``function.arguments`` here keeps the
+    assistant message and the tool result message consistent (the 2026-07-27
+    follow-on: a fresh ``forced_fork_N`` id was rejected by the provider
+    with ``tool_call_id not found``). Returns
     ``(tool_name, tool_arguments)`` — unchanged when the enforcer did not
     fire. The expected tool's calls reset the state and never trigger the
     enforcer.
@@ -6988,6 +7958,9 @@ def _enforce_forced_action_on_dispatch(
     if is_frontier or is_reasoning or reliability >= _PLAN_MODEL_RELIABILITY_EXEMPT:
         return tool_name, tool_arguments
 
+    if not count_non_compliant_batch:
+        return tool_name, tool_arguments
+
     _forced.non_compliant_dispatches += 1
     effective_cap = _kernel_settings.forced_action_non_compliant_cap
 
@@ -7003,6 +7976,16 @@ def _enforce_forced_action_on_dispatch(
         _forced.non_compliant_dispatches,
         _forced.kind,
         _forced.targets,
+    )
+    _publish_routing_forced(
+        hooks=hooks,
+        state=state,
+        mode_id=mode_id,
+        forced_kind=_forced.kind,
+        forced_targets=list(_forced.targets),
+        non_compliant_dispatches=_forced.non_compliant_dispatches,
+        trigger="dispatch_override",
+        log=log,
     )
     if _forced.kind == "fork":
         tool_arguments = {
@@ -7274,6 +8257,7 @@ async def _intercept_mode_handoff(
     pool: MCPToolPool,
     ledger: Any,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     routing_ctx: RoutingContext,
     preferred_model_id: str | None,
     suppress_routing_hint: bool,
@@ -7404,6 +8388,7 @@ async def _intercept_mode_handoff(
         context_payload=context_payload,
         ledger=ledger,
         execution_policy=execution_policy,
+        turn_budget=turn_budget,
         routing_ctx=routing_ctx,
         pool=pool,
         preferred_model_id=preferred_model_id,
@@ -7613,6 +8598,7 @@ async def _intercept_transition_stage(
     pool: MCPToolPool,
     ledger: Any,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     routing_ctx: RoutingContext,
     preferred_model_id: str | None,
     suppress_routing_hint: bool,
@@ -7764,6 +8750,7 @@ async def _intercept_transition_stage(
             pool=pool,
             ledger=ledger,
             execution_policy=execution_policy,
+            turn_budget=turn_budget,
             routing_ctx=routing_ctx,
             preferred_model_id=preferred_model_id,
             suppress_routing_hint=suppress_routing_hint,
@@ -7871,6 +8858,7 @@ async def _dispatch_capability_and_track(
     dispatch loop (the messages append happens here so the in-turn
     history records the tool's yield receipt).
     """
+    dispatch_id = mint_dispatch_id()
     _outcome = await dispatch_capability(
         tool_name=tool_name,
         tool_arguments=tool_arguments if isinstance(tool_arguments, dict) else {},
@@ -7886,6 +8874,16 @@ async def _dispatch_capability_and_track(
         recovery_item_id=recovery_item_id,
         recovery_retry_policy=recovery_retry_policy,
         build_recovery_identity_fn=build_recovery_identity_fn,
+        # Dispatch-level join keys (Evidence Envelope §2). ``dispatch_id`` is
+        # minted here so every dispatch -- including one that raises
+        # ApprovalRequired and never runs -- has an identity, which is what
+        # lets its telemetry row and approval row address its transcript tool
+        # result. ``tool_call_id`` is the provider's id, the id the transcript
+        # result carries; ``call_id`` names the model call that asked for it.
+        dispatch_id=dispatch_id,
+        tool_call_id=tool_call_id,
+        call_id=state.current_call_id,
+        iteration=state.iteration,
         log=log,
     )
     tool_output = _outcome.tool_output
@@ -7929,7 +8927,11 @@ async def _dispatch_capability_and_track(
             }
         )
 
-    return {"tool_output": tool_output, "delegate_yield": delegate_yield}
+    return {
+        "tool_output": tool_output,
+        "delegate_yield": delegate_yield,
+        "tool_result": _outcome.tool_result,
+    }
 
 
 def _wire_build_entry_ctx(
@@ -7970,6 +8972,7 @@ def _wire_build_entry_ctx(
             "capability_binding_provider": hooks.services.capability_binding_provider,
             "approval_service": hooks.services.approval_service,
             "code_change_artifact_store": hooks.services.code_change_artifact_store,
+            "sandbox_runner": getattr(hooks.services, "sandbox_runner", None),
             "gateway_provider_fn": lambda: hooks.context_seams.provider_gateways,
             "workspace_id": hooks.identity.workspace_id,
             "user_id": hooks.identity.user_id,
@@ -7991,9 +8994,20 @@ def _wire_build_entry_ctx(
             "model_router": hooks.context_seams.model_router,
             "event_bus": tool_output_bus,
             "request_recorder": hooks.models.record_request,
+            "response_recorder": hooks.models.record_response,
         }
         base_ctx_kwargs.update(overrides)
-        return _build_minimal_context(**base_ctx_kwargs)
+        # Execution identity and lineage (Evidence Envelope §4). The dispatch
+        # context inherits them from the turn's own identity, so every row a
+        # tool or operation dispatch publishes names its execution and, for a
+        # child turn, the turn and spawn dispatch it descends from.
+        return _build_minimal_context(**base_ctx_kwargs).model_copy(
+            update={
+                "turn_id": hooks.identity.turn_id,
+                "parent_turn_id": hooks.identity.parent_turn_id,
+                "parent_dispatch_id": hooks.identity.parent_dispatch_id,
+            }
+        )
 
     return _build_entry_ctx
 
@@ -8095,6 +9109,10 @@ class _TurnEntryOutcome(NamedTuple):
     mode_instruction: str
     stage_instruction: str | None
     ctx: Any
+    #: Optional factored stable base ``(invariant, mode_tail)`` from
+    #: ``assemble_system_prompt_parts``. ``None`` means the merged-base
+    #: path seeded the registry via ``from_base``.
+    system_prompt_parts: tuple[str, str] | None = None
 
 
 async def _run_turn_entry_sequence(
@@ -8266,6 +9284,12 @@ async def _run_turn_entry_sequence(
         stage_id_override=stage_id_override,
     )
     system_prompt = assemble_system(mode_instruction, stage_instruction)
+    _system_prompt_parts: tuple[str, str] | None = None
+    _parts_hook = hooks.context.assemble_system_prompt_parts
+    if _parts_hook is not None:
+        _invariant, _mode_tail = _parts_hook(mode_instruction, stage_instruction)
+        _system_prompt_parts = (_invariant, _mode_tail)
+        system_prompt = "\n\n".join(part for part in (_invariant, _mode_tail) if part.strip())
     return _TurnEntryOutcome(
         None,
         query,
@@ -8277,11 +9301,13 @@ async def _run_turn_entry_sequence(
         mode_instruction,
         stage_instruction,
         ctx,
+        _system_prompt_parts,
     )
 
 
 async def _process_empty_completion(
     *,
+    hooks: TurnHooks,
     state: _TurnState,
     mode_id: str,
     query: str,
@@ -8322,6 +9348,7 @@ async def _process_empty_completion(
     """
     synthesized_forced = False
     tool_calls, synthesized_forced, pre_handoff_text = _synthesize_empty_completion_call(
+        hooks=hooks,
         state=state,
         mode_id=mode_id,
         query=query,
@@ -8654,6 +9681,11 @@ def _prepare_turn_infrastructure(
     ``_TurnState`` (budget caps, sub-turn kind, action-tool contract), the
     guard caps, the routing context, and the stage/tool-output emitters.
     """
+    # Wall-clock anchor shared by this turn's delegate closures. Nested
+    # delegates use it to receive the remaining parent wall budget rather
+    # than re-arming the full operation timeout.
+    turn_start_mono = time.monotonic()
+
     # ── Delegate hook wiring ──────────────────────────────────────────
     # Build the ``delegate_fn`` closure that the pack-level ``delegate``
     # operation calls via ``ctx.host.delegate(spec)``. The closure captures
@@ -8665,6 +9697,7 @@ def _prepare_turn_infrastructure(
         delegate_depth=delegate_depth,
         turn_budget=turn_budget,
         execution_policy=execution_policy,
+        turn_start_mono=turn_start_mono,
         logger_override=logger_override,
     )
 
@@ -8673,10 +9706,6 @@ def _prepare_turn_infrastructure(
     # declarative operation runtime keeps its own in-loop counter for its
     # bounded sub-agent, but the ledger is the authoritative cross-branch cap.
     ledger = CallLedger()
-    # Wall-clock anchor for the turn budget. Captured once so every budget
-    # check measures from the same origin.
-    turn_start_mono = time.monotonic()
-
     # ── Mutable turn state (extracted to _TurnState) ───────────────────
     # Promoted from nested closures to a dataclass + module-level functions
     # in kernel.turn_phases._turn_state.  The state object is threaded
@@ -8722,6 +9751,9 @@ def _prepare_turn_infrastructure(
     # counter).
     state.max_iterations = max_tool_iterations
     state.max_tool_calls = turn_budget.max_tool_calls if turn_budget is not None else 0
+    state.intra_turn_compaction.turn_token_envelope = (
+        turn_budget.max_total_tokens if turn_budget is not None else 0
+    )
     state.max_handoffs = _kernel_settings.max_handoffs_per_turn
     # ── Completion-contract state (sub-turns AND parent) ──────────
     # Resolve the mode's required side-effecting capabilities once at
@@ -8870,6 +9902,7 @@ async def _assemble_turn_surface_and_messages(
     mode_config: Any,
     pre_briefing: str,
     system_prompt: str,
+    system_prompt_parts: tuple[str, str] | None,
     suppress_routing_hint: bool,
     yield_policy_override: YieldPolicy | None,
     preferred_model_id: str | None,
@@ -8993,7 +10026,14 @@ async def _assemble_turn_surface_and_messages(
     # Seed the typed prompt-segment registry from the stable harness +
     # session + customization + mode + stage base assembled above. Any
     # routing hint below lands as an ephemeral segment on top of it.
-    _sys_segments = SystemPromptSegments.from_base(system_prompt)
+    # With ``assemble_system_prompt_parts`` wired, the base is factored
+    # into an invariant head (S0) and a mode tail (S1) so a mid-turn
+    # handoff swaps only the tail
+    # (docs/design-safe-handoff-prompt-layout.md).
+    if system_prompt_parts is not None:
+        _sys_segments = SystemPromptSegments.from_parts(*system_prompt_parts)
+    else:
+        _sys_segments = SystemPromptSegments.from_base(system_prompt)
 
     # Unified FSM routing: capability-manifest-aware proactive hint injection.
     # Compare the manifest against the user's query — if the current mode
@@ -9019,7 +10059,7 @@ async def _assemble_turn_surface_and_messages(
     # per-iteration lifecycle briefing for exactly one iteration; cleared
     # after the next model call regardless of outcome.
     _stalled_write_guidance = ""
-    routing_hint, system_prompt = _init_turn_routing_hint(
+    routing_hint, system_prompt = await _init_turn_routing_hint(
         state=state,
         hooks=hooks,
         mode_id=mode_id,
@@ -9242,6 +10282,7 @@ async def _prepare_tool_call_dispatch(
     mode_id: str,
     query: str,
     state: _TurnState,
+    effective_model_def: Any,
     ledger: CallLedger,
     messages: list[dict[str, Any]],
     operation_catalog: Any,
@@ -9255,30 +10296,6 @@ async def _prepare_tool_call_dispatch(
 ) -> _PreparedToolCall:
     tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
     tool_call_id = str(tool_call.get("id") or "")
-    # ── Hard-ceiling / circuit-breaker large-dispatch gate ─────────
-    # Under the hard ceiling (or after the breaker tripped), large
-    # dispatches are denied with a model-visible refusal. Read-only
-    # tools are never gated: the model may still need to inspect what
-    # it already holds. The refusal keeps the loop alive so the model
-    # can observe the cap and finalize instead of being mistaken for a
-    # natural empty completion.
-    _ceiling_refusal = tool_size_refusal(state=state, tool_arguments=tool_arguments)
-    if _ceiling_refusal:
-        log.warning(
-            "refusing large dispatch of %s (mode=%s, breaker=%s)",
-            tool_name,
-            mode_id,
-            state.truncation_tripped,
-        )
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "name": tool_name,
-                "content": _ceiling_refusal,
-            }
-        )
-        return _PreparedToolCall(_ContinueIteration(), True)
     if _handle_truncated_tool_arguments(
         state=state,
         mode_id=mode_id,
@@ -9303,6 +10320,7 @@ async def _prepare_tool_call_dispatch(
         return _PreparedToolCall(_BreakIteration(), False)
 
     tool_name, tool_arguments = _enforce_forced_action_on_dispatch(
+        hooks=hooks,
         state=state,
         mode_id=mode_id,
         query=query,
@@ -9311,6 +10329,7 @@ async def _prepare_tool_call_dispatch(
         tool_arguments=tool_arguments,
         batch_has_expected=_batch_contains_expected_tool(state, tool_calls, tool_call_id),
         log=log,
+        count_non_compliant_batch=tool_call is tool_calls[0],
     )
     from kernel.capability import resolve_capability_for_turn_limit
 
@@ -9321,14 +10340,73 @@ async def _prepare_tool_call_dispatch(
     )
     max_calls = int(getattr(target_def, "max_calls_per_turn", 0) or 0) if target_def else 0
     max_calls = resolve_capability_invocation_limit(execution_policy, tool_name, max_calls)
-    if ledger.is_exhausted(tool_name, max_calls):
+    refusal_text = ""
+    dispatch_effect = str(getattr(target_def, "effect", "") or "")
+    if not dispatch_effect:
+        spec_fn = getattr(pool, "tool_spec", None) if pool is not None else None
+        spec = spec_fn(tool_name) if spec_fn is not None else None
+        dispatch_effect = (
+            "read" if spec is not None and bool(getattr(spec, "read_only_hint", False)) else "write"
+        )
+    if dispatch_effect != "read":
+        project_messages = hooks.context.project_messages
+        projector = (
+            (
+                lambda source, *, budget_bytes: project_messages(
+                    source, hooks.identity.task_id, budget_bytes=budget_bytes
+                )
+            )
+            if project_messages is not None
+            else None
+        )
+        completion_max_tokens = (
+            state.request_context_budget.completion_tokens
+            if state.request_context_budget is not None
+            else _effective_completion_max_tokens(
+                effective_model_def,
+                mode_budget_tokens=int(
+                    getattr(state.mode_config, "completion_budget_tokens", 0) or 0
+                ),
+            )
+        )
+        refusal_text = tool_dispatch_refusal(
+            state=state,
+            messages=messages,
+            model_def=effective_model_def,
+            tools=state.tool_schemas or None,
+            max_tokens=completion_max_tokens,
+            projector=projector,
+            counter=partial(_count_resident_request, state=state, hooks=hooks),
+        )
+        if refusal_text:
+            log.warning(
+                "refusing proposed %s dispatch at fitted context ceiling (mode=%s, breaker=%s)",
+                tool_name,
+                mode_id,
+                state.truncation_tripped,
+            )
+    refusal_text = refusal_text or _deref_budget_refusal(
+        state=state,
+        tool_name=tool_name,
+        tool_arguments=tool_arguments,
+        tool_def=target_def,
+    )
+    if refusal_text:
+        log.warning(
+            "refusing dereference call %s after deref budget exceeded (mode=%s)",
+            tool_name,
+            mode_id,
+        )
+    elif ledger.is_exhausted(tool_name, max_calls):
         state.capability_limit_hit = True
+        refusal_text = f"Tool '{tool_name}' has reached its per-turn call limit ({max_calls})."
+    if refusal_text:
         messages.append(
             {
                 "role": "tool",
                 "tool_call_id": tool_call_id,
                 "name": tool_name,
-                "content": f"Tool '{tool_name}' has reached its per-turn call limit ({max_calls}).",
+                "content": refusal_text,
             }
         )
         # A rejected call still produced a tool-result message; keep the
@@ -9416,6 +10494,7 @@ class _EmptyCompletionResult:
 
 async def _resolve_empty_completion_for_dispatch(
     *,
+    hooks: TurnHooks,
     tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
     yielded: bool,
@@ -9461,6 +10540,7 @@ async def _resolve_empty_completion_for_dispatch(
         stalled_write_guidance,
         action,
     ) = await _process_empty_completion(
+        hooks=hooks,
         state=state,
         mode_id=mode_id,
         query=query,
@@ -9503,6 +10583,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
     pool: MCPToolPool,
     ledger: CallLedger,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     operation_catalog: Any,
     tool_catalog: Any,
     query: str,
@@ -9548,6 +10629,7 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
                 pool=pool,
                 ledger=ledger,
                 execution_policy=execution_policy,
+                turn_budget=turn_budget,
                 routing_ctx=routing_ctx,
                 preferred_model_id=preferred_model_id,
                 suppress_routing_hint=suppress_routing_hint,
@@ -9643,11 +10725,12 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
     if thought_signature:
         tool_result_msg["thought_signature"] = thought_signature
     messages.append(tool_result_msg)
-    # Spill-on-arrival: the cache-aware default. A large result is ref'd
-    # out at delivery, BEFORE it ever enters the cached prefix, so normal
-    # operation stays append-only. The estimator always observes the
-    # (possibly previewed) append.
-    if state.intra_turn_compaction.enabled:
+    # Spill-on-arrival under pressure: once the live-array estimate crosses
+    # the soft trigger, large results are ref'd out at delivery. Below that
+    # threshold, results stay inline and request-fit projection handles
+    # reductions only when needed. The estimator always observes the
+    # resulting append.
+    if state.intra_turn_compaction.enabled and should_spill_on_arrival(state=state):
         maybe_spill_tool_result(
             result_message=tool_result_msg,
             persist=hooks.tools.persist_tool_result,
@@ -9655,6 +10738,16 @@ async def _execute_prepared_tool_call(  # noqa: C901  # linear interception chai
             preview_repeat_limit=state.intra_turn_compaction.preview_repeat_limit,
         )
     state.intra_turn_compaction_estimator.observe_append(tool_result_msg)
+    record_dispatch_history(
+        state=state,
+        tool_def=tool_catalog.get(prepared.tool_name),
+        tool_name=prepared.tool_name,
+        tool_call_id=prepared.tool_call_id,
+        params=prepared.tool_arguments,
+        tool_result=dispatch["tool_result"],
+        resident_content=str(tool_result_msg["content"]),
+        log=log,
+    )
     return _ContinueIteration()
 
 
@@ -9663,10 +10756,12 @@ async def _dispatch_turn_tool_calls(
     tool_calls: list[dict[str, Any]],
     synthesized_forced: bool,
     state: _TurnState,
+    effective_model_def: Any,
     hooks: TurnHooks,
     pool: MCPToolPool,
     ledger: CallLedger,
     execution_policy: ExecutionPolicy | None,
+    turn_budget: TurnBudget | None,
     operation_catalog: Any,
     tool_catalog: Any,
     query: str,
@@ -9728,6 +10823,7 @@ async def _dispatch_turn_tool_calls(
                 mode_id=state.active_mode_id,
                 query=query,
                 state=state,
+                effective_model_def=effective_model_def,
                 ledger=ledger,
                 messages=messages,
                 operation_catalog=operation_catalog,
@@ -9756,6 +10852,7 @@ async def _dispatch_turn_tool_calls(
                 pool=pool,
                 ledger=ledger,
                 execution_policy=execution_policy,
+                turn_budget=turn_budget,
                 operation_catalog=operation_catalog,
                 tool_catalog=tool_catalog,
                 query=query,
@@ -10077,6 +11174,10 @@ async def _resolve_checked_commit_evidence(
     was cap-paused mid-work (an interrupted executor turn still carries
     the checked-commit promise — the 2026-10-03 turns 477/478 regression
     keeps its diagnostic + footnote).
+
+    An implementation turn that reuses a task-owned worktree from an earlier
+    turn never calls the producer; it is verified through the task-scoped
+    verifier before the soft-accept rule applies.
     """
     if mode_config is None or mode_config.task_completion != "checked_commit" or yielded:
         return None, False
@@ -10093,6 +11194,7 @@ async def _resolve_checked_commit_evidence(
     _producer_attempts = set(state.called_tool_names) | {
         bare_tool_name(name) for name in state.called_tool_names
     }
+    verifier = hooks.services.verify_task_completion
     if (
         producer
         and not receipt_artifact_ids
@@ -10101,6 +11203,23 @@ async def _resolve_checked_commit_evidence(
         and state.total_tool_calls > 0
         and producer not in _producer_attempts
     ):
+        # A multi-turn task may reuse a worktree an earlier turn produced; the
+        # task-scoped verifier discovers it, so a verified commit completes the
+        # turn before the producer-less soft-accept rule can block it.
+        if (
+            hooks.identity.task_goal != "diagnostic"
+            and hooks.identity.task_id
+            and verifier is not None
+        ):
+            evidence = await _verify_checked_commit(
+                verifier=verifier,
+                task_id=hooks.identity.task_id,
+                producer=producer,
+                receipt_artifact_ids=(),
+                log=log,
+            )
+            if evidence.verified:
+                return evidence, False
         return _resolve_soft_accept(
             state=state,
             hooks=hooks,
@@ -10108,7 +11227,6 @@ async def _resolve_checked_commit_evidence(
             mode_id=mode_id,
             log=log,
         )
-    verifier = hooks.services.verify_task_completion
     if not producer or len(receipt_artifact_ids) > 1:
         return (
             TaskCompletionEvidence(
@@ -10124,21 +11242,38 @@ async def _resolve_checked_commit_evidence(
             ),
             False,
         )
+    evidence = await _verify_checked_commit(
+        verifier=verifier,
+        task_id=hooks.identity.task_id,
+        producer=producer,
+        receipt_artifact_ids=receipt_artifact_ids,
+        log=log,
+    )
+    return evidence, False
+
+
+async def _verify_checked_commit(
+    *,
+    verifier: Callable[[TaskCompletionRequest], Awaitable[TaskCompletionEvidence]],
+    task_id: str,
+    producer: str,
+    receipt_artifact_ids: tuple[str, ...],
+    log: logging.Logger,
+) -> TaskCompletionEvidence:
     try:
-        evidence = await verifier(
+        return await verifier(
             TaskCompletionRequest(
-                task_id=hooks.identity.task_id,
+                task_id=task_id,
                 origin_tool_id=producer,
                 receipt_artifact_ids=receipt_artifact_ids,
             )
         )
     except Exception:
-        log.exception("checked-commit verification failed for task %s", hooks.identity.task_id)
-        evidence = TaskCompletionEvidence(
+        log.exception("checked-commit verification failed for task %s", task_id)
+        return TaskCompletionEvidence(
             verified=False,
             reason="Could not verify a current checked commit for this task.",
         )
-    return evidence, False
 
 
 async def _finalize_turn_result(
@@ -10347,7 +11482,7 @@ def _save_dispatch_continuation(
         return
     capture[1:] = [
         TurnContinuation(
-            turn_id=previous.turn_id if previous is not None else uuid4().hex,
+            turn_id=identity.turn_id or mint_turn_id(),
             identity=identity,
             mode_id=state.active_mode_id,
             query=query,
@@ -10520,6 +11655,9 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
     # The entry-context builder closure lives in
     # ``_wire_build_entry_ctx`` (module-level factory binding the
     # executor/delegate/fork seams).
+    # One-shot compaction-envelope diagnostics: emitted once per runner
+    # invocation when the first model/window is known (reset on resume).
+    _compaction_diag_emitted = False
     _build_entry_ctx = _wire_build_entry_ctx(
         hooks=hooks,
         mode_id=mode_id,
@@ -10548,6 +11686,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         mode_instruction,
         _,  # stage_instruction — consumed inside the helper
         ctx,
+        _system_prompt_parts,
     ) = await _run_turn_entry_sequence(
         hooks=hooks,
         mode_id=mode_id,
@@ -10605,6 +11744,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         mode_config=mode_config,
         pre_briefing=pre_briefing,
         system_prompt=system_prompt,
+        system_prompt_parts=_system_prompt_parts,
         suppress_routing_hint=suppress_routing_hint,
         yield_policy_override=_yield_policy_override,
         preferred_model_id=preferred_model_id,
@@ -10784,10 +11924,12 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         tool_calls=continuation.pending_calls if continuation else [],
         synthesized_forced=False,
         state=_state,
+        effective_model_def=effective_model_def,
         hooks=hooks,
         pool=pool,
         ledger=ledger,
         execution_policy=execution_policy,
+        turn_budget=turn_budget,
         operation_catalog=operation_catalog,
         tool_catalog=tool_catalog,
         query=query,
@@ -10964,6 +12106,33 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         )
 
         effective_model_def = _resolve_iteration_model(_state.iteration)
+        if _state.intra_turn_compaction.enabled and not _compaction_diag_emitted:
+            _compaction_diag_emitted = True
+            log_compaction_diagnostics(
+                state=_state,
+                model_def=effective_model_def,
+                mode_id=mode_id,
+                log=_log,
+            )
+        if _state.intra_turn_compaction.enabled:
+            # Pre-request: compact before paying for the call. The anchor
+            # plus appended tool bytes covers fresh results and a resumed
+            # (paused-turn) array whose cache prefix is already cold.
+            maybe_run_soft_epoch(
+                state=_state,
+                hooks=hooks,
+                messages=messages,
+                model_def=effective_model_def,
+                tools=effective_tools,
+                max_tokens=(
+                    _state.request_context_budget.completion_tokens
+                    if _state.request_context_budget is not None
+                    else 0
+                ),
+                mode_id=mode_id,
+                prompt_cache_key=_prompt_cache_key(hooks),
+                log=_log,
+            )
         # ── Router terminal actions ──────────────────────────────────
         # When the model router returns a ``finish`` or ``transition_to``
         # action, the turn loop forces a final no-tools completion instead
@@ -11024,6 +12193,15 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             effective_model_def=effective_model_def,
             record_model_usage=_record_model_usage,
             emit_stage=_emit_stage,
+            # The identity of the call whose usage this completion reports.
+            # One iteration can make several calls (the streaming tool-call
+            # fallback, the truncation rescues), and the LAST recorded call
+            # is the one that produced this completion's spend. Reading the
+            # identity here - right after the call - is what keeps the row
+            # from naming a call that did not issue it.
+            call_id=_state.current_call_id,
+            attempt=_state.current_call_attempt,
+            request_ref=_state.current_call_ref or None,
         )
         _state.intra_turn_compaction_estimator.observe_request_tokens(
             _state.request_context_budget.input_tokens
@@ -11031,20 +12209,12 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             else 0
         )
         if _state.intra_turn_compaction.enabled:
-            maybe_run_soft_epoch(
+            maybe_run_supersession_epoch(
                 state=_state,
                 hooks=hooks,
                 messages=messages,
-                model_def=effective_model_def,
-                tools=effective_tools,
-                max_tokens=(
-                    _state.request_context_budget.completion_tokens
-                    if _state.request_context_budget is not None
-                    else 0
-                ),
-                mode_id=mode_id,
-                prompt_cache_key=_prompt_cache_key(hooks),
                 log=_log,
+                model_def=effective_model_def,
             )
         if _state.intra_turn_compaction.finish_now and effective_tools is not None:
             effective_tools = None
@@ -11066,6 +12236,7 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
         # dispatch path raises ``UnboundLocalError`` on a real-tool-call
         # iteration (2026-08-27 planner transition turn).
         _empty_completion = await _resolve_empty_completion_for_dispatch(
+            hooks=hooks,
             tool_calls=tool_calls,
             synthesized_forced=False,
             yielded=_yielded,
@@ -11148,10 +12319,12 @@ async def _run_turn_inner(  # noqa: PLR0915, PLR0912, C901  # restored dispatch 
             tool_calls=tool_calls,
             synthesized_forced=_synthesized_forced,
             state=_state,
+            effective_model_def=effective_model_def,
             hooks=hooks,
             pool=pool,
             ledger=ledger,
             execution_policy=execution_policy,
+            turn_budget=turn_budget,
             operation_catalog=operation_catalog,
             tool_catalog=tool_catalog,
             query=query,

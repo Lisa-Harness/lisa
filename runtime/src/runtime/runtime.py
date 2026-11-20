@@ -200,6 +200,14 @@ class SessionState:
         # hosts that own gateway construction set it before the first turn.
         self.provider_gateways_override: Any = None
 
+        # ── Tool-call answerer override seam ─────────────────────────────
+        # When set, ``build_turn_hooks`` wires this callable onto
+        # ``hooks.tools.answer_tool_call`` so tool dispatches are answered
+        # instead of executed. Turn replay (``runtime.replay``) sets it to
+        # answer from a recording; hosts that own tool execution set it before
+        # the first turn. Cleared by setting it back to ``None``.
+        self.tool_call_answerer: Any = None
+
         # ── Manifest cache ──────────────────────────────────────────────
         # Mutable: setup_framework seeds it, /models reload swaps it.
         self.manifest: Any = None
@@ -460,6 +468,19 @@ class RuntimeResources:
         with stage("pool_readiness"):
             await self._ensure_pool_ready_impl()
 
+    async def _await_mcp_started_event(self) -> None:
+        """Wait for deferred pool construction without caching caller cancellation."""
+        event = self._mcp_started_event
+        if event is None:
+            return
+        try:
+            await event.wait()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # pylint: disable=broad-except
+            self._mcp_start_exc = exc
+            raise
+
     async def _ensure_pool_ready_impl(self) -> None:
         """Readiness body (wrapped by :meth:`ensure_pool_ready`'s stage timer)."""
         if self._mcp_start_exc is not None:
@@ -468,11 +489,7 @@ class RuntimeResources:
             # Deferred start: wait for the pool to be constructed (not for
             # the task to finish — the task is long-lived and only ends at
             # teardown). Cache the exception once if the build phase failed.
-            try:
-                await self._mcp_started_event.wait()
-            except BaseException as exc:  # pylint: disable=broad-except
-                self._mcp_start_exc = exc
-                raise
+            await self._await_mcp_started_event()
             if self._mcp_start_exc is not None:
                 raise self._mcp_start_exc
             # If the build phase failed, the task ended with an exception
@@ -482,10 +499,9 @@ class RuntimeResources:
                 and self._mcp_start_task.done()
                 and not self._mcp_started
             ):
-                start_error = self._mcp_start_task.exception()
-                if start_error is not None:
-                    self._mcp_start_exc = start_error
-                    raise start_error
+                self._capture_mcp_start_error()
+                if self._mcp_start_exc is not None:
+                    raise self._mcp_start_exc
             return
         if self._mcp_start_task is not None:
             # Sync-start fallback path: the task is a completed no-op or
@@ -566,10 +582,11 @@ class RuntimeResources:
         if self._mcp_tool_pool is not None:
             try:
                 await self._mcp_tool_pool.aclose()
-            except asyncio.CancelledError:
+            except BaseException:
                 logger.debug(
-                    "RuntimeResources: pool aclose cancelled during deferred "
-                    "teardown; subprocess cleanup best-effort"
+                    "RuntimeResources: pool aclose interrupted during deferred "
+                    "teardown; subprocess cleanup best-effort",
+                    exc_info=True,
                 )
             self._mcp_tool_pool = None
         await self._close_proxy_pool()
@@ -589,7 +606,13 @@ class RuntimeResources:
         try:
             await self._proxy_pool.start()
         except BaseException:
-            await self._proxy_pool.aclose()
+            try:
+                await self._proxy_pool.aclose()
+            except BaseException:
+                logger.debug(
+                    "RuntimeResources: proxy pool close failed after start failure",
+                    exc_info=True,
+                )
             self._proxy_pool = None
             raise
         self._proxy_routes = self._proxy_pool.routes
@@ -601,7 +624,13 @@ class RuntimeResources:
     async def _close_proxy_pool(self) -> None:
         """Close host-owned proxy processes and discard their provider routes."""
         if self._proxy_pool is not None:
-            await self._proxy_pool.aclose()
+            try:
+                await self._proxy_pool.aclose()
+            except BaseException:
+                logger.debug(
+                    "RuntimeResources: proxy pool close interrupted; discarding routes anyway",
+                    exc_info=True,
+                )
             self._proxy_pool = None
         self._proxy_routes = {}
 
@@ -644,7 +673,7 @@ class RuntimeResources:
             # then re-raise so the caller knows startup failed.
             try:
                 await self._mcp_tool_pool.aclose()
-            except Exception:  # pylint: disable=broad-except
+            except BaseException:
                 logger.debug("RuntimeResources: pool aclose after failed start", exc_info=True)
             self._mcp_tool_pool = None
             raise
@@ -692,6 +721,28 @@ class RuntimeResources:
             len(self._mcp_warm_configs),
         )
 
+    def _capture_mcp_start_error(self) -> None:
+        """Preserve a completed deferred start task's startup exception."""
+        if self._mcp_start_task is None:
+            return
+        if self._mcp_start_task.cancelled():
+            if self._mcp_start_exc is None:
+                self._mcp_start_exc = asyncio.CancelledError("deferred MCP startup cancelled")
+            return
+        try:
+            start_error = self._mcp_start_task.exception()
+        except BaseException:
+            return
+        if start_error is not None and self._mcp_start_exc is None:
+            self._mcp_start_exc = start_error
+
+    def _reset_deferred_close_state(self) -> None:
+        """Clear close ownership after the deferred start task finishes."""
+        self._mcp_start_task = None
+        self._mcp_started_event = None
+        self._mcp_close_signal = None
+        self._release_shared_session_lease()
+
     async def aclose(self) -> None:
         """Close the MCP tool pool in the same event loop that started it.
 
@@ -716,9 +767,9 @@ class RuntimeResources:
             if self._mcp_started_event is not None and not self._mcp_started_event.is_set():
                 try:
                     await self._mcp_started_event.wait()
-                except Exception:  # pylint: disable=broad-except
+                except BaseException:
                     logger.debug(
-                        "RuntimeResources: deferred build failed during aclose",
+                        "RuntimeResources: deferred build wait interrupted during aclose",
                         exc_info=True,
                     )
             self._mcp_close_signal.set()
@@ -741,18 +792,24 @@ class RuntimeResources:
                     "deferred start task teardown; suppressing (start task "
                     "finishes teardown best-effort)"
                 )
-            except Exception:  # pylint: disable=broad-except
+                if self._mcp_start_task.done():
+                    self._capture_mcp_start_error()
+                    self._reset_deferred_close_state()
+                    logger.debug("RuntimeResources: MCP pool closed (deferred)")
+                return
+            except BaseException:
                 # The task may raise the cached build-phase exception or a
                 # teardown error; we're tearing down either way.
                 logger.debug(
                     "RuntimeResources: deferred start task ended during aclose",
                     exc_info=True,
                 )
-            self._mcp_start_task = None
-            self._mcp_start_exc = None
-            self._mcp_started_event = None
-            self._mcp_close_signal = None
-            self._release_shared_session_lease()
+                self._capture_mcp_start_error()
+                self._reset_deferred_close_state()
+                logger.debug("RuntimeResources: MCP pool closed (deferred)")
+                return
+            self._capture_mcp_start_error()
+            self._reset_deferred_close_state()
             logger.debug("RuntimeResources: MCP pool closed (deferred)")
             return
         # Sync-start path (start() was called directly, or the deferred
@@ -767,11 +824,17 @@ class RuntimeResources:
         # Proxy-first teardown is verified to complete cleanly.
         await self._close_proxy_pool()
         if self._mcp_tool_pool is not None:
-            await self._mcp_tool_pool.aclose()
+            try:
+                await self._mcp_tool_pool.aclose()
+            except BaseException:
+                logger.debug(
+                    "RuntimeResources: MCP pool close interrupted; discarding pool anyway",
+                    exc_info=True,
+                )
             self._mcp_tool_pool = None
         self._mcp_started = False
+        self._capture_mcp_start_error()
         self._mcp_start_task = None
-        self._mcp_start_exc = None
         self._mcp_started_event = None
         self._mcp_close_signal = None
         self._release_shared_session_lease()
@@ -781,8 +844,16 @@ class RuntimeResources:
         """Release this build's shared-session lease (idempotent)."""
         lease = self._shared_session_lease
         if lease is not None:
-            lease.release()
-            self._shared_session_lease = None
+            try:
+                lease.release()
+            except BaseException:
+                logger = logging.getLogger(__name__)
+                logger.debug(
+                    "RuntimeResources: shared-session lease release failed",
+                    exc_info=True,
+                )
+            finally:
+                self._shared_session_lease = None
 
 
 def _archive_boot_session_plan(
@@ -929,6 +1000,103 @@ class HostRuntime:
         # increments it; capping here prevents a runaway auto-approve loop.
         self._auto_approved_this_turn: int = 0
 
+        # Run provenance (evidence envelope spec §3): one manifest per
+        # effective configuration, rebuilt on startup and on pack/mode/policy/
+        # router reload. New thread entries and ledger rows stamp the current
+        # run_ref; rebuilding never rewrites rows already written.
+        self._run_ref: str | None = None
+        self.refresh_run_manifest()
+
+    # ── Plan / config projections used across the host ─────────────────────
+
+    @property
+    def run_ref(self) -> str | None:
+        """Return the current run manifest's content address (``r<sha256>``)."""
+        return self._run_ref
+
+    def refresh_run_manifest(self) -> str | None:
+        """Rebuild and store the run manifest; return its ``run_ref``.
+
+        Storing is idempotent by construction: an unchanged configuration
+        hashes to the same bytes and lands on the same ref. A failure logs and
+        leaves the previous ref in place — provenance never breaks a turn.
+        """
+        from runtime.run_manifest import build_run_manifest, run_base_path
+        from runtime.thread import persist_thread_tool_result
+
+        try:
+            manifest = build_run_manifest(
+                config_hashes=self._run_config_hashes(),
+                model_data_version=self._run_model_data_version(),
+                host_type=self.config.host_kind or self.config.surface_type or None,
+                # The protocol version belongs to the transport that
+                # negotiated it; a host that speaks none has ``None``, and
+                # that is recorded as unknown rather than guessed.
+                host_protocol_version=None,
+            )
+            self._run_ref = persist_thread_tool_result(
+                run_base_path(self.paths.data_dir),
+                manifest.to_stored_record(),
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("run manifest refresh failed; keeping previous run_ref", exc_info=True)
+        return self._run_ref
+
+    def _run_config_hashes(self) -> dict[str, str]:
+        """Return content hashes of the resolved mode, policy, and router config.
+
+        Only hashes reach the manifest, never the resolved values, so the
+        stored document cannot carry configuration content.
+
+        Every value is normalized through ``model_dump(mode="json")`` before it
+        is hashed. The resolved policy and routing are pydantic models, and
+        ``json.dumps`` cannot serialize a model directly — hashing them raw
+        raised ``TypeError``, which the old per-call ``except`` swallowed at
+        debug level. The manifest then recorded only the session-plan digest,
+        so two hosts that differed *only* in execution policy or routing
+        hashed identically and the manifest could not tell them apart. That is
+        the whole reason these hashes exist (Evidence Envelope §3).
+
+        ``session_plan`` hashes the plan's own ``plan_digest`` — a content
+        hash of the compiled plan. Re-hashing it would produce
+        ``sha256(sha256(...))``, which is not the plan's identity and invites
+        a reader to treat the hash as a double-encoded digest. The plan digest
+        IS the content hash, so it is stored as-is.
+        """
+        from runtime.run_manifest import config_digest_of
+
+        hashes: dict[str, str] = {}
+        for name, value in (
+            ("execution_policy", self.execution_policy),
+            ("routing", self.session_plan.manifest.routing),
+            # The resolved model manifest. A ``/models`` reload swaps it in
+            # place, so without this hash the run manifest would not change
+            # and the new ``run_ref`` would assert a provenance the host no
+            # longer has. Only the hash is stored; the manifest itself never
+            # reaches disk here.
+            ("model_manifest", getattr(self.session, "manifest", None)),
+        ):
+            digest = config_digest_of(value)
+            if digest is not None:
+                hashes[name] = digest
+        # The plan digest is already a content hash of the compiled plan.
+        plan_digest = str(self.session_plan.plan_digest or "").strip()
+        if plan_digest:
+            hashes["session_plan"] = plan_digest
+        return hashes
+
+    def _run_model_data_version(self) -> str | None:
+        """Return the effective model data version, or ``None`` when unknown.
+
+        The session manifest has no ``models`` field — the model manifest is a
+        separate document — so this reads the host's *resolved* model manifest
+        instead. ``None`` means unknown: the manifest records the absence
+        rather than a version it cannot verify.
+        """
+        manifest = getattr(self.session, "manifest", None)
+        version = getattr(manifest, "model_data_version", None)
+        return str(version) if isinstance(version, str) and version else None
+
     # ── Plan / config projections used across the host ────────────────
 
     @property
@@ -1015,7 +1183,7 @@ class HostRuntime:
 
         Wired as ``ToolHooks.post_dispatch_result``. Paths come from the tool's
         own arguments — the kernel does not know which argument holds one, and
-        tools that touch no identifiable file (commit, run_check, a
+        tools that touch no identifiable file (commit, verify, a
         workspace-wide listing) carry none, so they pass through untouched.
 
         Each instruction body is appended at most once per dispatch token,

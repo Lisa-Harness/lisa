@@ -240,7 +240,7 @@ async def test_approval_keeps_pending_batch_and_context(
             )
         return SimpleNamespace(content="finished", tool_calls=[])
 
-    def forbidden_replay() -> list[dict[str, Any]]:
+    def forbidden_rehydrate() -> list[dict[str, Any]]:
         raise AssertionError("resume reconstructed the turn")
 
     def forbidden_context(*_: Any) -> str:
@@ -260,7 +260,7 @@ async def test_approval_keeps_pending_batch_and_context(
         await service.approve(result.pending_approval.request_id, result.pending_approval.identity)
         saved = TurnContinuation.model_validate_json(result.continuation.model_dump_json())
         hooks.context = ContextHooks(
-            prior_messages=forbidden_replay,
+            prior_messages=forbidden_rehydrate,
             assemble_user_context=forbidden_context,
         )
 
@@ -359,7 +359,15 @@ async def test_request_sink_keeps_only_refs_and_exact_snapshots() -> None:
         query="do it",
         hooks=TurnHooks(models=ModelHooks(complete=complete, record_request=record)),
     )
-    assert result.model_requests == [{"iteration": 1, "ref": "result://snapshot-1"}]
+    # Each entry keeps the ref-only posture (the sink never receives prompt
+    # content) and now also carries the call identity from Evidence Envelope
+    # §2, so a token row can join back to the call that produced it.
+    assert len(result.model_requests) == 1
+    entry = result.model_requests[0]
+    assert entry["iteration"] == 1
+    assert entry["ref"] == "result://snapshot-1"
+    assert entry["attempt"] == "primary"
+    assert entry["call_id"]
     assert snapshots[0]["messages"] == requests[0]["messages"]
     assert snapshots[0]["tools"] == requests[0]["tools"]
 
@@ -429,7 +437,7 @@ async def test_cap_pause_resumes_in_place_with_a_bounded_new_allowance(
             tool_calls=[{"id": call_id, "function": {"name": "read", "arguments": "{}"}}],
         )
 
-    def forbidden_replay() -> list[dict[str, Any]]:
+    def forbidden_rehydrate() -> list[dict[str, Any]]:
         raise AssertionError("resume reconstructed the turn")
 
     hooks = TurnHooks(
@@ -443,7 +451,7 @@ async def test_cap_pause_resumes_in_place_with_a_bounded_new_allowance(
     assert paused.continuation.reason == "cap"
     assert not paused.continuation.requires_approval
 
-    hooks.context = ContextHooks(prior_messages=forbidden_replay)
+    hooks.context = ContextHooks(prior_messages=forbidden_rehydrate)
     saved = resume_after_pause(
         TurnContinuation.model_validate_json(paused.continuation.model_dump_json()),
         "keep going",
@@ -497,7 +505,7 @@ async def test_stuck_cap_pause_persists_a_resumable_continuation(
             tool_calls=[{"id": call_id, "function": {"name": "read", "arguments": "{}"}}],
         )
 
-    def forbidden_replay() -> list[dict[str, Any]]:
+    def forbidden_rehydrate() -> list[dict[str, Any]]:
         raise AssertionError("resume reconstructed the turn")
 
     hooks = TurnHooks(
@@ -511,7 +519,7 @@ async def test_stuck_cap_pause_persists_a_resumable_continuation(
     assert paused.continuation.reason == "cap"
     assert paused.continuation.requires_approval is False
 
-    hooks.context = ContextHooks(prior_messages=forbidden_replay)
+    hooks.context = ContextHooks(prior_messages=forbidden_rehydrate)
     saved = TurnContinuation.model_validate_json(paused.continuation.model_dump_json())
     resumed = await run_turn(mode_id="default", query="do it", hooks=hooks, continuation=saved)
     # The pause fired again on the resumed turn's first pass (before any model
@@ -569,7 +577,7 @@ async def test_cap_resume_grants_a_fresh_stage_budget(
             ],
         )
 
-    def forbidden_replay() -> list[dict[str, Any]]:
+    def forbidden_rehydrate() -> list[dict[str, Any]]:
         raise AssertionError("resume reconstructed the turn")
 
     hooks = TurnHooks(
@@ -583,7 +591,7 @@ async def test_cap_resume_grants_a_fresh_stage_budget(
     assert paused.continuation.reason == "cap"
     assert len(requests) == 2
 
-    hooks.context = ContextHooks(prior_messages=forbidden_replay)
+    hooks.context = ContextHooks(prior_messages=forbidden_rehydrate)
     saved = resume_after_pause(
         TurnContinuation.model_validate_json(paused.continuation.model_dump_json()),
         "keep going",
@@ -594,3 +602,75 @@ async def test_cap_resume_grants_a_fresh_stage_budget(
     assert resumed.response_text == "finished"
     assert requests[2][-1] == {"role": "user", "content": "keep going"}
     assert len(requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_pause_and_resume_keep_one_turn_id_for_the_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One execution keeps one ``turn_id`` across every pause of it (§4, F1).
+
+    A pause saves a checkpoint and a resume loads it back; if either half minted
+    its own id, one execution would appear as two unrelated ones and no ledger
+    row could join them. Driven through the real ``run_turn`` pause/resume path
+    instead of building a continuation here: deleting the identity copy from
+    ``_save_dispatch_continuation`` has to fail this test.
+    """
+
+    async def execute(ctx: Any) -> ToolResult:
+        return ToolResult(output_text=f"result:{ctx.tool_id}")
+
+    monkeypatch.setattr(
+        "kernel.tools.registry._TOOL_CATALOG",
+        {
+            "read": ToolDefinition(
+                tool_id="read",
+                pack_id="test",
+                effect="read",
+                implementation_module=SimpleNamespace(execute=execute),
+            )
+        },
+    )
+
+    async def complete(**kwargs: Any) -> Any:
+        # Never finishes on its own, so each run reaches the tool-call cap and
+        # saves a continuation: the resumed turn pauses a second time.
+        return SimpleNamespace(
+            content="",
+            tool_calls=[{"id": "read-1", "function": {"name": "read", "arguments": "{}"}}],
+        )
+
+    hooks = TurnHooks(
+        models=ModelHooks(complete=complete),
+        identity=TurnIdentity(workspace_id="w", user_id="u", task_id="task", turn_id="turn-exec-1"),
+    )
+    paused = await run_turn(mode_id="default", query="do it", hooks=hooks, max_tool_iterations=3)
+    assert paused.operator_exit == "paused"
+    assert paused.continuation is not None
+    # The checkpoint carries the execution's own id instead of minting another.
+    assert paused.continuation.turn_id == "turn-exec-1"
+
+    saved = resume_after_pause(
+        TurnContinuation.model_validate_json(paused.continuation.model_dump_json()),
+        "keep going",
+    )
+    # The id survives the durable checkpoint round trip and the resume transform.
+    assert saved.turn_id == "turn-exec-1"
+
+    resumed = await run_turn(mode_id="default", query="do it", hooks=hooks, continuation=saved)
+    assert resumed.operator_exit == "paused"
+    assert resumed.continuation is not None
+    # The second pause is still the same execution, not a third identity.
+    assert resumed.continuation.turn_id == "turn-exec-1"
+
+
+def test_a_bare_continuation_mints_a_turn_prefixed_id() -> None:
+    """A checkpoint's own default is the ``turn-`` mint, not bare hex (§4, F5).
+
+    A continuation built without an identity still has to look like a
+    ``turn_id`` beside the ``call-``/``disp-``/``toolcall-`` family, so the
+    retired ``uuid4().hex`` default must not come back.
+    """
+    factory = TurnContinuation.model_fields["turn_id"].default_factory
+    assert factory is not None
+    assert factory().startswith("turn-")

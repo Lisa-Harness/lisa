@@ -14,9 +14,11 @@ from kernel.sandbox_floor import (
     SandboxFloorContext,
     SandboxFloorContributionEntry,
     SandboxImplementation,
+    SandboxRunRequest,
     collect_pack_floor,
     merge_sandbox_floor,
     resolve_sandbox_owner,
+    resolve_sandbox_runner,
 )
 
 
@@ -384,3 +386,144 @@ def test_merge_skips_missing_path_warning_for_hidden_paths(
         )
 
     assert "never-there" not in caplog.text
+
+
+# --- Runner declaration -------------------------------------------------------
+
+
+class _Runner:
+    """A minimal runner: consumers only read these members."""
+
+    path_attestation = "result"
+
+    def __init__(self, tool_id: str = "bwrap_run") -> None:
+        self.tool_id = tool_id
+
+    def build_request(self, request: SandboxRunRequest, *, floor: object = None) -> dict:
+        return {"argv": list(request.argv), "cwd": request.cwd}
+
+    def interpret_result(self, request: SandboxRunRequest, envelope: object) -> object:
+        raise AssertionError("not exercised here")
+
+
+def test_implementation_without_runner_declares_no_runner_tool() -> None:
+    # An implementation registered only for floor validation composes
+    # nothing; consumers must fail closed rather than guess a tool id.
+    assert _impl().runner is None
+    assert _impl().runner_tool_id == ""
+
+
+def test_runner_resolves_when_owner_declares_one() -> None:
+    runner = _Runner()
+    impl = SandboxImplementation(
+        pack_name="lisa-pack-bwrap", validate_floor=lambda floor: None, runner=runner
+    )
+    assert resolve_sandbox_runner(impl) is runner
+
+
+def test_runner_resolution_rejects_a_tool_absent_from_the_catalog() -> None:
+    # A pack's sandbox entry point can load while its run tool fails to
+    # import (the kernel drops unimportable tools); dispatching to that id
+    # would be a dead call, so resolution refuses it at assembly time.
+    impl = SandboxImplementation(
+        pack_name="lisa-pack-bwrap",
+        validate_floor=lambda floor: None,
+        runner=_Runner("bwrap_run"),
+    )
+    assert resolve_sandbox_runner(impl, available_tool_ids={"something_else"}) is None
+    assert resolve_sandbox_runner(impl, available_tool_ids={"bwrap_run"}) is impl.runner
+
+
+def test_runner_resolution_without_an_owner_is_none() -> None:
+    assert resolve_sandbox_runner(None) is None
+
+
+def test_run_request_defaults_to_direct_write() -> None:
+    # Direct-write is the posture a durable-workflow consumer needs; the
+    # default must not be a stricter posture that silently discards fixes.
+    request = SandboxRunRequest(argv=("git", "status"), cwd="/wt", timeout_seconds=30)
+    assert request.persistence == "direct-write"
+    assert request.paths == {}
+
+
+# --- Entry-point discovery ----------------------------------------------------
+
+
+class _FakeEntryPoint:
+    """Minimal ``importlib.metadata.EntryPoint`` stand-in."""
+
+    def __init__(self, name: str, value: object) -> None:
+        self.name = name
+        self.value = value
+        self.dist = None
+
+    def load(self) -> object:
+        return lambda: self.value
+
+
+def _discovery(monkeypatch: pytest.MonkeyPatch, entries: list[_FakeEntryPoint]) -> None:
+    import importlib.metadata
+
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda **_kwargs: list(entries),
+    )
+
+
+def test_discovery_skips_a_host_scoped_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A Windows sandbox pack on Linux returns None instead of raising; that
+    # must read as "not applicable", never as a broken entry point.
+    from kernel.sandbox_floor import discover_sandbox_implementations
+
+    _discovery(monkeypatch, [_FakeEntryPoint("powershell", None)])
+    assert discover_sandbox_implementations() == []
+
+
+def test_discovery_accepts_a_mapping_with_a_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kernel.sandbox_floor import discover_sandbox_implementations
+
+    runner = _Runner("pwsh_argv_run")
+    _discovery(
+        monkeypatch,
+        [
+            _FakeEntryPoint(
+                "powershell",
+                {
+                    "pack_name": "lisa-pack-powershell",
+                    "validate_floor": lambda floor: None,
+                    "runner": runner,
+                },
+            )
+        ],
+    )
+    (impl,) = discover_sandbox_implementations()
+    assert impl.runner is runner
+    assert impl.runner_tool_id == "pwsh_argv_run"
+
+
+def test_discovery_drops_a_malformed_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The floor half still works; consumers needing containment fail closed.
+    from kernel.sandbox_floor import discover_sandbox_implementations
+
+    _discovery(
+        monkeypatch,
+        [
+            _FakeEntryPoint(
+                "broken",
+                {
+                    "pack_name": "lisa-pack-broken",
+                    "validate_floor": lambda floor: None,
+                    "runner": object(),
+                },
+            )
+        ],
+    )
+    (impl,) = discover_sandbox_implementations()
+    assert impl.runner is None

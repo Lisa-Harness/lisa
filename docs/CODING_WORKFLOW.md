@@ -36,9 +36,10 @@ command. A released CLI also does not automatically run your local changes.
    Never assume a check in an owned worktree also updates the CLI environment.
 
 3. Follow [getting started](GETTING_STARTED.md) to discover/apply models and
-   verify the host. Coding checks require the bwrap pack and working Linux
-   bubblewrap containment; an IDE can be used on other platforms without
-   weakening that requirement or substituting host execution.
+   verify the host. Coding checks require a working sandbox implementation:
+   bubblewrap on Linux (`lisa-pack-bwrap`) or Job Objects on Windows
+   (`lisa-pack-powershell`). An IDE can be used on other platforms, but the
+   checks themselves never substitute host execution.
 
 4. Add the following configuration to a Markdown session plan, preserving its
    model/provider and identity settings. Replace `/absolute/path/to/...` with
@@ -118,9 +119,12 @@ request creation. They share the host-owned `WorkProduct` contract.
 1. Inspect the configured workspace with bounded read tools.
 2. Create an isolated worktree on an owned feature branch.
 3. Apply a validated unified diff in that worktree.
-4. Run named, session-configured checks inside the bwrap sandbox with the owned
-   worktree bound writable (`direct-write`). Missing or degraded containment
-   fails the check; it never falls back to host execution.
+4. Run named, session-configured checks inside the sandbox with the owned
+   worktree bound writable (`direct-write`). Containment comes from whichever
+   sandbox implementation the session selects (bubblewrap on Linux, the
+   powershell pack's Job Objects on Windows) through a provider-neutral
+   runner; missing or unverifiable containment fails the check, and it never
+   falls back to host execution.
 5. Commit only after every required check passes for the current revision and
    candidate Git tree. The host verifies a real changed commit at `HEAD`, the
    required check fingerprints, the task-owned artifact, and a clean worktree
@@ -181,10 +185,13 @@ resources:
 ```
 
 The GitHub token and repository remain extension-owned settings (`GITHUB_TOKEN`
-and `GITHUB_REPO`); they are not session-plan values. Point the bwrap `rw`
-grant at the resolved data-dir worktree parent (or the configured
+and `GITHUB_REPO`); they are not session-plan values. Point the sandbox
+owner's `rw` grant at the resolved data-dir worktree parent (or the configured
 `worktree_dir`) so checks can write into owned worktrees; a narrower `ro`
-bind on one worktree takes precedence and prevents checks from running.
+grant on one worktree takes precedence and prevents checks from running.
+On Windows, swap `lisa-pack-bwrap` for `lisa-pack-powershell` and select it
+with `providers.capabilities.sandbox: lisa-pack-powershell`; the coding
+configuration itself does not change.
 
 ## Test Assurances
 

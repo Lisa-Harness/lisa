@@ -458,6 +458,176 @@ class TestHandleMessage:
         assert "/models discover" in result.text
 
     @pytest.mark.asyncio
+    async def test_models_reload_failure_and_catalog_migration_branches(
+        self, tmp_path: Path
+    ) -> None:
+        from runtime.commands import _models
+
+        operator = {
+            "version": 1,
+            "mode_models": {"default": "m"},
+            "models": [{"model_id": "m", "provider": "ollama"}],
+        }
+        catalog_file = tmp_path / "models.catalog.yaml"
+        catalog_file.write_text(
+            """
+schema_version: 1
+providers:
+  ollama:
+    models:
+      - id: m
+        fields:
+          context_window:
+            source: provider
+            observed_at: 2026-11-13T00:00:00Z
+            value: 128000
+""",
+            encoding="utf-8",
+        )
+        report = _models._render_migration_report(operator, catalog_file)
+        assert any("composed_from_catalog" in line for line in report)
+        assert _models._render_migration_report(operator, tmp_path / "missing.yaml") == []
+
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        runtime.resources._mcp_tool_pool = SimpleNamespace(
+            call_tool=lambda *_args, **_kwargs: None,
+        )
+        runtime.resources._mcp_started = True
+        result = await handle_message(runtime, "/models reload")
+        assert "Failed to reload models" in result.text
+
+    @pytest.mark.asyncio
+    async def test_models_unknown_subcommand_and_help(self, tmp_path: Path) -> None:
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+
+        help_result = await handle_message(runtime, "/models")
+        assert "## /models" in help_result.text
+
+        unknown_result = await handle_message(runtime, "/models unknown")
+        assert "Unknown /models command" in unknown_result.text
+
+    @pytest.mark.asyncio
+    async def test_models_reload_composes_catalog_and_refreshes_runtime(
+        self, tmp_path: Path
+    ) -> None:
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        active = tmp_path / "config" / "models.yaml"
+        active.parent.mkdir(parents=True)
+        active_text = (
+            "version: 1\n"
+            "mode_models:\n"
+            "  default: m\n"
+            "models:\n"
+            "  - model_id: m\n"
+            "    provider: ollama\n"
+        )
+        active.write_text(active_text, encoding="utf-8")
+        (tmp_path / "models.catalog.yaml").write_text(
+            "schema_version: 1\n"
+            "providers:\n"
+            "  ollama:\n"
+            "    models:\n"
+            "      - id: m\n"
+            "        fields:\n"
+            "          context_window:\n"
+            "            source: provider\n"
+            "            observed_at: 2026-11-13T00:00:00Z\n"
+            "            value: 128000\n",
+            encoding="utf-8",
+        )
+
+        class _StoragePool:
+            configs: ClassVar[list[object]] = []
+
+            async def call_tool(
+                self,
+                tool_id: str,
+                arguments: dict[str, object],
+                *,
+                server_id: str | None = None,
+            ) -> SimpleNamespace:
+                del arguments, server_id
+                if tool_id == "read_model_manifest":
+                    return SimpleNamespace(output_text=active_text, is_error=False)
+                return SimpleNamespace(
+                    output_text=json.dumps({"error": "unexpected tool"}),
+                    is_error=True,
+                )
+
+        runtime.resources._mcp_tool_pool = _StoragePool()
+        runtime.resources._mcp_started = True
+        result = await handle_message(runtime, "/models reload")
+
+        assert "## Models" in result.text
+        assert runtime.session.manifest is not None
+
+    @pytest.mark.asyncio
+    async def test_models_apply_success_renders_migration_report(self, tmp_path: Path) -> None:
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        proposal_text = (
+            "version: 1\n"
+            "mode_models:\n"
+            "  default: m\n"
+            "models:\n"
+            "  - model_id: m\n"
+            "    provider: ollama\n"
+        )
+        (tmp_path / "models.catalog.yaml").write_text(
+            "schema_version: 1\n"
+            "providers:\n"
+            "  ollama:\n"
+            "    models:\n"
+            "      - id: m\n"
+            "        fields:\n"
+            "          context_window:\n"
+            "            source: provider\n"
+            "            observed_at: 2026-11-13T00:00:00Z\n"
+            "            value: 128000\n",
+            encoding="utf-8",
+        )
+
+        class _StoragePool:
+            configs: ClassVar[list[object]] = []
+
+            async def call_tool(
+                self,
+                tool_id: str,
+                arguments: dict[str, object],
+                *,
+                server_id: str | None = None,
+            ) -> SimpleNamespace:
+                del server_id
+                if tool_id == "read_model_manifest":
+                    return SimpleNamespace(output_text=proposal_text, is_error=False)
+                if tool_id == "write_model_manifest":
+                    which = str(arguments.get("which"))
+                    content = str(arguments.get("content"))
+                    if which == "active":
+                        runtime.paths.models_path.parent.mkdir(parents=True, exist_ok=True)
+                        runtime.paths.models_path.write_text(content, encoding="utf-8")
+                    else:
+                        runtime.paths.models_proposal_path.write_text(content, encoding="utf-8")
+                    return SimpleNamespace(
+                        output_text=json.dumps({"ok": True, "bytes": len(content.encode("utf-8"))}),
+                        is_error=False,
+                    )
+                return SimpleNamespace(
+                    output_text=json.dumps({"error": "unexpected tool"}),
+                    is_error=True,
+                )
+
+        runtime.resources._mcp_tool_pool = _StoragePool()
+        runtime.resources._mcp_started = True
+        result = await handle_message(runtime, "/models apply")
+
+        assert "Applied models proposal." in result.text
+        assert "migration_report" in result.text
+
+    @pytest.mark.asyncio
     async def test_help_mcp_subcommand(self, tmp_path: Path) -> None:
         """/help mcp returns the MCP introspection guidance."""
         config = HostConfig.from_env(data_dir=str(tmp_path))
@@ -827,7 +997,7 @@ def test_task_goal_marker_is_detected_and_stripped() -> None:
     """``[task_goal: diagnostic]`` declares intent and then leaves the request.
 
     The marker is an operator directive: it must set the task goal for this
-    turn and then be removed, so it is neither replayed to the model as part
+    turn and then be removed, so it is neither rehydrated to the model as part
     of the request nor persisted in the thread entry's query.
     """
     from runtime.handle_message import _resolve_task_goal, _strip_task_goal_marker

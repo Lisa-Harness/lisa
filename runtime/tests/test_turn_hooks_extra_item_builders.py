@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from kernel.models import ContextItem
 from runtime.testing import build_test_runtime
+from runtime.turn_context_identity import NO_TURN_IDENTITY
 from runtime.turn_hooks_builder import _build_item_builder_context, build_turn_hooks
 from sdk.context.composite_item_builder import CompositeExtensionItemBuilder
 from sdk.context.extension_item_builder import EntryPointExtensionItemBuilder
@@ -116,7 +117,7 @@ def test_build_turn_hooks_composes_extras_into_context_seams(tmp_path: Path) -> 
     runtime = _make_runtime(tmp_path)
     host_builder = _RecordingBuilder()
 
-    hooks = build_turn_hooks(runtime, context=None, extra_item_builders=[host_builder])
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY, extra_item_builders=[host_builder])
     seams = hooks.context_seams
     assert isinstance(seams.extension_item_builder, CompositeExtensionItemBuilder)
     builders: list[Any] = seams.extension_item_builder._builders  # ordered composition

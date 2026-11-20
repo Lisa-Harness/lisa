@@ -98,22 +98,81 @@ The example requests tighter limits. Exhaustion can pause, yield, terminate,
 or force a closing completion according to lifecycle/policy. Approval
 continuation retains consumed counters; approval does not reset budgets.
 
+### Mode handoffs and stage guards
+
+The session/global execution envelope remains the outer whole-turn ceiling,
+but a mode-scoped capability-call ceiling is refreshed when a turn hands off
+to another mode. A low-capacity entry mode therefore does not consume the
+downstream coding mode's call allowance.
+
+`STAGE_NUDGE_THRESHOLD` is an advisory threshold: it adds lifecycle guidance
+but does not stop the model. `STAGE_NUDGE_CAP` is the hard same-stage pause;
+it must be greater than the threshold. A productive action mode with a
+verified write receipt is exempt from this no-transition cap and remains
+bounded by the whole-turn call/token/wall budgets. Read-only and pre-write
+loops remain subject to the cap. Very high values defer both protection
+mechanisms until the whole-turn resource budget is likely to fire first,
+allowing long read loops. For interactive coding, `9` / `30` is a reasonable
+starting pair; use the stricter code defaults (`7` / `10`) for short,
+highly-bounded workflows and measure before raising them.
+
 ## Intra-turn compaction
 
 The mid-turn governor (`kernel.turn_phases._compaction`) bounds the live
 provider message array inside one turn — the dimension the request-fit
-allocator only sees at call time. An incremental estimator is evaluated at
-every dispatch boundary; crossing `intra_turn_soft_trigger_share` of the
-window runs ONE batched ref-out epoch per crossing (hysteresis — between
-epochs the array is append-only, so normal dispatches extend the provider
-prefix cache instead of rewriting it). Large tool results are spilled to the
-thread store at delivery (preview + `r<sha256>` ref) before they ever enter
-the cached prefix; eviction is one-way and recovery is a dereference. At
-`intra_turn_hard_ceiling_share` the governor refuses new large dispatches and
-forces a clean finish at the next dispatch boundary; the first output
-truncation trips a one-way circuit-breaker for the rest of the turn.
-Disable the whole mechanism with `INTRA_TURN_COMPACTION_ENABLED=false`
-(falls back to the reactive request-fit reduction alone).
+allocator only sees at call time. An incremental estimator is evaluated
+before every model request, including the first request of a resumed turn.
+Thresholds apply to the effective window: the model window, capped at
+`intra_turn_envelope_window_share` (default `0.8`) of the turn's
+processed-token envelope (`max_total_tokens`, host default 1M) when one is
+set. The cap is **dynamic**: it uses the *unspent* portion of the envelope,
+with the same processed-token accounting as the turn budget rail
+(`kernel.turn_phases._token_accounting`), so the effective window tightens
+as the turn spends uncached input and output. At turn start the static and
+remaining caps are equal; a high-output or cache-cold turn compacts (and
+then finishes) instead of dispatching past its envelope. Cached prefixes
+are already excluded from processed tokens, so high actual cache hits
+naturally leave more remaining envelope — no cache-hit-rate multiplier is
+applied, and the cap never rises above the model window or the static share.
+Every cache-cold request — a resume, a mid-turn model switch, or an epoch
+rewrite — re-processes the whole prompt against that envelope, so a
+1M-token window must not license residency the turn cannot afford to
+resend. With the defaults at turn start, the effective residency window is 800K,
+the soft trigger is 400K tokens, and the hard ceiling is 680K. As the
+turn spends its envelope both thresholds tighten, while cached prefixes
+continue to reduce processed-token spend.
+The trigger is the smaller of `intra_turn_soft_trigger_share` of the
+effective window and the mode's optional `working_set_tokens`. An epoch
+projects tool results newest-first to a residency budget (the working set,
+or half the trigger when the mode declares none), turning older results
+into previews and ref-backed evidence inventories while checking the real
+model window and completion reserve; it never shrinks required non-tool
+input by pretending the model has a smaller window. A later epoch waits
+for 10% estimate growth or a fall below the trigger followed by a new
+crossing, so normal dispatches extend the provider prefix cache instead
+of rewriting it. Once pressure reaches the same soft-trigger threshold,
+large tool results spill to the thread store at delivery (preview +
+`r<sha256>` ref); below that threshold they stay inline and are compacted
+reactively only when request fitting requires it. Eviction is one-way and
+recovery is a dereference. At `intra_turn_hard_ceiling_share` the governor
+fits the exact proposed provider request, including the current tool-call
+arguments and completion reserve, before allowing a non-read dispatch. A
+request at the ceiling is refused with a clean-finish instruction;
+read-only dispatches remain available so the model can inspect results it
+already holds. The first output truncation trips a one-way circuit-breaker
+for the rest of the turn. Independently, repeated
+dereference churn is bounded by `max_dereference_calls_per_turn` plus
+`max_dereference_repeats_per_turn`: after the cap is exceeded with
+repeated ref expansions, further dereference calls are refused and the
+turn is steered to synthesize from gathered evidence. A numeric-only
+DEBUG diagnostics record (raw/effective window, envelope, processed,
+remaining, cached, prompt, cache hit rate, share) is emitted once per
+runner invocation and in epoch INFO logs; it never contains message
+content or user data. Disable the whole mechanism with
+`INTRA_TURN_COMPACTION_ENABLED=false` (falls back to the reactive
+request-fit reduction alone). Hosts omitting `max_total_tokens` get the
+raw model window and no turn-envelope protection; set an explicit envelope
+for long turns.
 
 ## Accounting and cost
 

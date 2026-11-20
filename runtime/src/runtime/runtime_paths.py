@@ -46,6 +46,12 @@ class HostPaths:
     models_path: Path
     models_proposal_path: Path
     ephemeral_results_path: Path | None
+    #: Workstream 1 cache measurement (report-time only). The checkpoint
+    #: is diagnostic reader state; the measured store only ever holds
+    #: qualified observations. ``None`` keeps them derived from the
+    #: ledger path for hand-built ``HostPaths`` values.
+    cache_checkpoint_path: Path | None = None
+    cache_measured_store_path: Path | None = None
 
     # ── Category directories (sdk.layout naming) ────────────────────
     @property
@@ -104,6 +110,7 @@ class HostPaths:
         ephemeral_results_path: Path | None = None
         if config.no_thread:
             ephemeral_results_path = config.data_dir / CACHE_DIR / "thread-results"
+        cache_state_dir = config.data_dir / STATE_DIR / "cache-measurement"
         return cls(
             data_dir=config.data_dir,
             overlays_dir=config.resolved_overlays_dir,
@@ -114,6 +121,8 @@ class HostPaths:
             host_log_path=config.resolved_host_log_path,
             token_usage_path=config.data_dir / LOGS_DIR / "token-usage.jsonl",
             decisions_path=config.data_dir / LOGS_DIR / "decisions.jsonl",
+            cache_checkpoint_path=cache_state_dir / "token-usage-checkpoint.json",
+            cache_measured_store_path=cache_state_dir / "measured.json",
             models_path=models_path_override or config.resolved_models_path,
             models_proposal_path=config.resolved_models_proposal_path,
         )

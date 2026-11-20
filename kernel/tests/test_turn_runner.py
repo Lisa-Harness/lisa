@@ -17,6 +17,7 @@ from kernel.models import (
     ForkTarget,
     OperationExecutionContext,
     OperationResult,
+    TurnBudget,
     WorkflowModeConfig,
     YieldPolicy,
 )
@@ -2921,6 +2922,48 @@ async def test_run_turn_mode_handoff_via_transition_stage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mode_handoff_refreshes_capability_call_budget() -> None:
+    """A handoff replaces the active mode's scoped call ceiling."""
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": (
+                                '{"target_stage_id": "markdown", '
+                                '"rationale": "user wants to write a doc"}'
+                            ),
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done in markdown mode.")
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.execution.resolve_capability_limit_for_mode = lambda mode_id: (
+        2 if mode_id == "markdown" else 1
+    )
+    result = await run_turn(
+        mode_id="default",
+        query="write a markdown doc",
+        hooks=hooks,
+        turn_budget=TurnBudget(max_tool_calls=1),
+    )
+
+    assert call_count >= 2
+    assert result.block_origin == "no_tools"
+    assert "turn budget exhausted" not in result.response_text
+
+
+@pytest.mark.asyncio
 async def test_run_turn_fork_transition_basic() -> None:
     """When the model calls transition_stage with a fork: target, the loop
     fans out child turns in parallel and collects results into fork_results.
@@ -3248,6 +3291,207 @@ async def test_fork_model_alias_reaches_every_child(
 
 
 @pytest.mark.asyncio
+async def test_fork_spent_parent_wall_returns_honest_timeouts() -> None:
+    """A fork fan-out under a spent parent wall returns per-target timeouts.
+
+    Regression for the 2026-11-18 review finding: the fork path armed only
+    the operation timeout, so fork children could outlive the parent turn's
+    wall budget. A spent parent (no time beyond the grace window) must not
+    launch doomed children into the registry's hard cancel — every target
+    gets an honest ``timeout`` result without any model call.
+    """
+    seen_models: list[str] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        seen_models.append(kwargs["model_def"].model_id)
+        return _StubCompletion(content="Done.")
+
+    def resolve_model(ref: str) -> Any:
+        return SimpleNamespace(model_id=f"{ref}-model", reasoning_model=False)
+
+    catalog = {
+        mode: _mode_config(mode_id=mode, fork_allowed=True) for mode in ("default", "search")
+    }
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("kernel.turn_runner.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.turn_runner.get_mode_system_intro", lambda mid: mid)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_mode_system_intro", lambda mid: mid)
+    try:
+        hooks = _build_minimal_hooks(complete)
+        hooks.models.resolve_model = resolve_model
+        monkeypatch.setattr(
+            "kernel.turn_runner._defaults.remaining_wall_ms",
+            lambda **_kwargs: 0,
+        )
+        monkeypatch.setattr(
+            "kernel.turn_phases._fork.remaining_wall_ms",
+            lambda **_kwargs: 0,
+        )
+        # Parent wall budget spent: 600s budget, 600s elapsed, 30s grace.
+        budget = TurnBudget(
+            max_tool_calls=0,
+            max_total_tokens=0,
+            max_completion_tokens=0,
+            max_wall_ms=600_000,
+        )
+        result = await _default_fork_fn(
+            ForkSpec(
+                targets=[ForkTarget(mode_id=mode, query="hello") for mode in catalog],
+            ),
+            hooks=hooks,
+            pool=MCPToolPool([]),
+            resolve_model=resolve_model,
+            complete=complete,
+            exec_op=_stub_execute_operation,
+            turn_budget=budget,
+            execution_policy=None,
+            turn_start_mono=1000.0,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert len(result.children) == 2
+    assert result.succeeded == 0
+    assert all(child.status == "timeout" for child in result.children)
+    assert all("parent wall budget is spent" in child.error_message for child in result.children)
+    # No child launched: the spent-parent check fires before any model call.
+    assert seen_models == []
+
+
+@pytest.mark.asyncio
+async def test_fork_child_wall_tightened_by_parent_remaining() -> None:
+    """Each fork child's wall is tightened by the parent's remaining wall.
+
+    Parity with the delegate path: a parent with 90s remaining and a 30s
+    grace arms each child at 60s (not the full 300s operation timeout), so
+    the child's ``budget_forces_final`` fires before the parent's wall
+    expires. Children run in parallel, so the deadline applies per child.
+    """
+    seen_budgets: list[TurnBudget | None] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done.")
+
+    def resolve_model(ref: str) -> Any:
+        return SimpleNamespace(model_id=f"{ref}-model", reasoning_model=False)
+
+    catalog = {"default": _mode_config(mode_id="default", fork_allowed=True)}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("kernel.turn_runner.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_workflow_catalog", lambda: catalog)
+    monkeypatch.setattr("kernel.turn_runner.get_mode_system_intro", lambda mid: mid)
+    monkeypatch.setattr("kernel.ipsar_fsm.get_mode_system_intro", lambda mid: mid)
+    try:
+        # Capture the budget each child actually runs under by wrapping the
+        # child turn entry: patch ``run_turn`` to record ``turn_budget``.
+        import kernel.turn_runner as _engine_pkg
+
+        async def _capture_run_turn(**kwargs: Any) -> Any:
+            seen_budgets.append(kwargs.get("turn_budget"))
+            return SimpleNamespace(
+                response_text="Done.",
+                tool_call_count=0,
+                called_tool_names=[],
+                per_model_usage=[],
+                per_mode_usage=[],
+                effect_receipts=[],
+                status="complete",
+                blocked=False,
+                block_origin="",
+                block_diagnostic=None,
+                pending_approval=None,
+                operator_exit=None,
+                yielded=None,
+                yield_action=None,
+            )
+
+        monkeypatch.setattr(_engine_pkg, "run_turn", _capture_run_turn)
+        hooks = _build_minimal_hooks(complete)
+        hooks.models.resolve_model = resolve_model
+        monkeypatch.setattr(
+            "kernel.turn_runner._defaults.remaining_wall_ms",
+            lambda **_kwargs: 90_000,
+        )
+        monkeypatch.setattr(
+            "kernel.turn_phases._fork.remaining_wall_ms",
+            lambda **_kwargs: 90_000,
+        )
+        # Parent: 600s budget, 510s elapsed → 90s remaining; 300s spec
+        # timeout with 30s grace → armed deadline 270s. The parent's
+        # remaining (90s − 30s grace = 60s) must win.
+        budget = TurnBudget(
+            max_tool_calls=0,
+            max_total_tokens=0,
+            max_completion_tokens=0,
+            max_wall_ms=600_000,
+        )
+        result = await _default_fork_fn(
+            ForkSpec(
+                targets=[ForkTarget(mode_id="default", query="hello")],
+                timeout_seconds=300,
+            ),
+            hooks=hooks,
+            pool=MCPToolPool([]),
+            resolve_model=resolve_model,
+            complete=complete,
+            exec_op=_stub_execute_operation,
+            turn_budget=budget,
+            execution_policy=None,
+            turn_start_mono=1090.0,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert len(result.children) == 1
+    assert result.children[0].status == "ok"
+    assert len(seen_budgets) == 1
+    child_budget = seen_budgets[0]
+    assert child_budget is not None
+    assert child_budget.max_wall_ms == 60_000
+
+
+def test_wall_budget_helpers_contract() -> None:
+    """The shared wall helpers are the one arithmetic both child kinds use."""
+    from kernel.turn_phases._wall_budget import child_wall_ms, remaining_wall_ms
+
+    budget = TurnBudget(
+        max_tool_calls=0,
+        max_total_tokens=0,
+        max_completion_tokens=0,
+        max_wall_ms=1_800_000,
+    )
+    # Unanchored / unlimited: None, never spent.
+    assert remaining_wall_ms(turn_budget=None, turn_start_mono=100.0) is None
+    assert remaining_wall_ms(turn_budget=budget, turn_start_mono=0.0) is None
+    assert remaining_wall_ms(turn_budget=budget, turn_start_mono=None) is None
+    unlimited = TurnBudget(max_tool_calls=0, max_total_tokens=0, max_completion_tokens=0)
+    assert remaining_wall_ms(turn_budget=unlimited, turn_start_mono=100.0) is None
+    # Anchored: remaining decays with elapsed time.
+    assert remaining_wall_ms(turn_budget=budget, turn_start_mono=100.0, now=100.5) == 1_799_500
+    assert remaining_wall_ms(turn_budget=budget, turn_start_mono=100.0, now=1_900.0) == 0
+    # Child ceiling: min(armed deadline, parent remaining − grace),
+    # tighten-only. The spent-parent check (remaining <= grace) is the
+    # caller's job before consulting this helper, so a spent parent with
+    # a positive armed deadline still yields the deadline — the caller
+    # never launches in that shape.
+    assert (
+        child_wall_ms(armed_deadline_ms=270_000, parent_remaining_ms=90_000, grace_ms=30_000)
+        == 60_000
+    )
+    assert child_wall_ms(armed_deadline_ms=0, parent_remaining_ms=90_000, grace_ms=30_000) == 60_000
+    assert (
+        child_wall_ms(armed_deadline_ms=270_000, parent_remaining_ms=None, grace_ms=30_000)
+        == 270_000
+    )
+    assert child_wall_ms(armed_deadline_ms=0, parent_remaining_ms=None, grace_ms=30_000) == 0
+    assert (
+        child_wall_ms(armed_deadline_ms=270_000, parent_remaining_ms=20_000, grace_ms=30_000)
+        == 270_000
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
     """A fork child the harness force-yielded (iteration cap) is classified
     ``status="yielded"``, not ``no_tools``.
@@ -3449,9 +3693,12 @@ async def test_model_call_complete_payload_carries_cache_counters_and_cost() -> 
 
     _label, data = next(e for e in events if e[0] == "model_call_complete")
     assert data["cached_tokens"] == 800
+    # A stub-reported 0 is a measured zero and survives as 0 (v2 honesty).
     assert data["cache_creation_tokens"] == 0
     assert data["provider_cost_usd"] == pytest.approx(0.0042)
-    assert data["cost_usd"] == 0.0
+    # The stub model def declares no prices, so the canonical estimate is
+    # unknown (``None``) rather than a fabricated 0.0.
+    assert data["cost_usd"] is None
 
 
 @pytest.mark.asyncio
@@ -5068,6 +5315,52 @@ def test_routing_hint_does_not_re_escalate_to_plan_after_plan_ran() -> None:
     # Must name markdown for the residual write gap.
     assert "markdown" in hint
     assert "transition_stage" in hint
+
+
+def test_routing_hint_skips_planner_when_one_mode_covers_fast_path_tags() -> None:
+    """A multi-tag fast path for one mode is still a single-mode request."""
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
+
+    planner_cfg = _mode_config(
+        mode_id="planner",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+        routing_intent_keywords={"plan": ["plan"]},
+    )
+    researcher_cfg = _mode_config(
+        mode_id="researcher",
+        satisfies_intents=["research", "gather", "learn"],
+        routing_intent_tags=["research", "gather", "learn"],
+        routing_intent_keywords={
+            "research": ["research"],
+            "gather": ["research"],
+            "learn": ["research"],
+        },
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {
+        "planner": planner_cfg,
+        "researcher": researcher_cfg,
+        "default": default_cfg,
+    }
+
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog",
+        return_value=patched_catalog,
+    ):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="Research who operates Python.org.",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["planner", "researcher"],
+            mode_config=default_cfg,
+            planner_model_id="gpt-live",
+        )
+
+    assert "planner" not in hint
+    assert "target_stage_id `researcher`" in hint
 
 
 def test_single_handoff_target_for_gap_names_markdown_for_write_gap() -> None:
@@ -7306,10 +7599,154 @@ async def test_no_tools_fork_child_read_only_calls_surfaces_fork_failure_not_yie
     child = result.fork_results[0]
     assert child.status == "no_tools"
     assert child.called_tool_names == ["fetch_page"]
-    # The parent must surface the fork-failure framing, not the generic
-    # iteration-budget yield question that masked the abort.
-    assert "read-only calls" in result.response_text or "never wrote" in result.response_text
+    # The parent surfaces the fork-outcome digest (per-child status + the
+    # hallucinated output), not the generic iteration-budget yield question
+    # that masked the abort. The digest names the failing child and quotes
+    # its unverified prose so the operator sees what was claimed.
+    assert "## Fork fan-out outcome" in result.response_text
+    assert "markdown — status: `no_tools`" in result.response_text
+    assert "Done — wrote it to disk." in result.response_text
     assert "iteration budget" not in result.response_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_fork_partial_success_surfaces_verified_writes_and_output() -> None:
+    """A mixed fan-out surfaces every child's status, verified writes, and
+    output — the canned failure line must not erase successful work.
+
+    Regression for the 2026-11-13 turn 1258 incident: a 3/5 fan-out (one
+    child landed verified write receipts, one was interrupted by its own
+    budget, one provider-timed-out) surfaced only "Fork child turns failed
+    or were interrupted after read-only calls: coding_execute, coding_execute.
+    Their results are unverified." — the successful child's report and its
+    write receipt were discarded before the model (or the operator) could
+    see them, and "unverified" was false for the receipt-carrying child.
+    """
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        msgs = kwargs.get("messages", [])
+        user_texts = [str(m.get("content", "")) for m in msgs if m.get("role") == "user"]
+        # The parent turn's user message names the task; the per-child
+        # scoped queries name their slice. The tool messages mark a
+        # dispatched call already made.
+        has_tool_result = any(m.get("role") == "tool" for m in msgs)
+        if not has_tool_result and not any("slice" in t for t in user_texts[1:]):
+            # Parent's first completion: fan out two scoped workers.
+            parent_user = user_texts[0] if user_texts else ""
+            if "apply the patch slices" in parent_user:
+                return _StubCompletion(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "function": {
+                                "name": "fork",
+                                "arguments": (
+                                    '{"targets": ['
+                                    '{"mode_id": "markdown", "query": "slice A: apply"}, '
+                                    '{"mode_id": "markdown", "query": "slice B fetch_page docs"}'
+                                    "]}"
+                                ),
+                            },
+                        }
+                    ],
+                )
+        # Child A (slice A): apply one write, then report.
+        joined = "\n".join(user_texts)
+        if "slice A" in joined and "slice B" not in joined:
+            if not has_tool_result:
+                return _StubCompletion(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_a",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": '{"path": "a.md", "content": "A"}',
+                            },
+                        }
+                    ],
+                )
+            return _StubCompletion(content="Section A applied cleanly.")
+        # Child B (slice B): read once (honest read receipt), then burn
+        # the completion cap on reasoning with NO tool calls — the exact
+        # production shape from the 2026-11-13 incident (c1/c2: a couple
+        # of reads, then "reached its token cap before emitting a tool
+        # call"). The truncation-abort path ends the child with a
+        # reasoning-tail caveat; the classifier must mark it interrupted.
+        if not has_tool_result:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_b",
+                        "function": {"name": "fetch_page", "arguments": '{"url": "https://a"}'},
+                    }
+                ],
+            )
+        return _StubCompletion(
+            content="",
+            reasoning_content="deliberating over the diff hunks at length",
+            finish_reason="length",
+        )
+
+    hooks = _build_minimal_hooks(two_step)
+
+    # Register a write-effect catalog tool mirroring the production
+    # storage write shape: a successful call reports its artifact via
+    # output_json so the receipt carries artifact_id (the digest's
+    # "Verified writes" line reads that field).
+    from kernel.models import ToolDefinition, ToolExecutionContext, ToolResult
+    from kernel.tools.registry import get_tool_catalog
+
+    async def _write_file_tool(ctx: ToolExecutionContext) -> ToolResult:
+        params = ctx.parameters or {}
+        return ToolResult(
+            tool_id=ctx.tool_id,
+            output_text="Wrote doc.md",
+            output_json={"artifact_id": str(params.get("path") or "")},
+        )
+
+    class _SimpleNamespace:
+        pass
+
+    import types as _types
+
+    impl = _types.SimpleNamespace(execute=_write_file_tool)
+    _write_tool_def = ToolDefinition(
+        tool_id="write_file",
+        description="Test write tool.",
+        effect="write",
+        implementation_module=impl,
+    )
+    original_catalogs = dict(get_tool_catalog())
+    get_tool_catalog()["write_file"] = _write_tool_def
+    try:
+        result = await run_turn(mode_id="default", query="apply the patch slices", hooks=hooks)
+    finally:
+        get_tool_catalog().clear()
+        get_tool_catalog().update(original_catalogs)
+
+    # One child ok (with its write receipt), one interrupted: it burned the
+    # completion cap on reasoning after one honest read — the classifier's
+    # reasoning-tail gate marks it interrupted, not a verified "ok" (the
+    # pre-fix behavior accepted both c1 and c2 of the incident as "ok").
+    assert result.fork_results is not None
+    statuses = sorted(c.status for c in result.fork_results)
+    assert statuses == ["interrupted", "ok"]
+    ok_child = next(c for c in result.fork_results if c.status == "ok")
+    assert any(
+        r.get("effect") == "write" and r.get("artifact_id") for r in ok_child.effect_receipts
+    )
+    interrupted_child = next(c for c in result.fork_results if c.status == "interrupted")
+    assert "reasoning" in interrupted_child.error_message.lower()
+
+    # The digest carries the failing child's status AND the successful
+    # child's verified write + output — the old canned line dropped both.
+    text = result.response_text
+    assert "## Fork fan-out outcome" in text
+    assert "status: `ok`" in text
+    assert "Section A applied cleanly." in text
 
 
 def test_max_handoffs_per_turn_setting_is_bound() -> None:
@@ -7911,6 +8348,7 @@ async def test_run_turn_model_yield_tool_terminates_with_question() -> None:
 async def test_tool_calls_preserve_prior_yield_state() -> None:
     tool_calls = [{"id": "call_after_yield"}]
     result = await _resolve_empty_completion_for_dispatch(
+        hooks=TurnHooks(),
         tool_calls=tool_calls,
         synthesized_forced=False,
         yielded=True,

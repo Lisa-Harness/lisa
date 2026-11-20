@@ -896,7 +896,7 @@ def test_write_rescue_targets_planned_writer_when_available() -> None:
 
 def test_write_rescue_skipped_when_receipt_present() -> None:
     """A mode that has already produced a write receipt does not trigger
-    the rescue — the turn can complete normally."""
+    the rescue or same-stage cap — the turn can complete normally."""
     action = resolve_lifecycle_action(
         state=_State(
             turns_in_stage=6,
@@ -907,8 +907,7 @@ def test_write_rescue_skipped_when_receipt_present() -> None:
         mode_yield_policy=YieldPolicy(),
         settings=_settings(stage_nudge_cap=6, write_rescue_mode="explainer"),
     )
-    # Should NOT be a forced transition — falls through to the cap path.
-    assert not isinstance(action, TransitionAction)
+    assert isinstance(action, ContinueAction)
 
 
 def test_write_rescue_skipped_when_no_action_tools() -> None:

@@ -18,6 +18,7 @@ from runtime.handle_message import _resumable_task_id
 from runtime.runtime import HostRuntime
 from runtime.testing import build_test_runtime
 from runtime.thread import append_thread_entry, load_thread_range, next_turn_index
+from runtime.turn_context_identity import TurnContextIdentity
 from runtime.turn_hooks_builder import _derive_view
 from sdk.workproducts import WorkProduct, WorkProductCheck, WorkProductPreparation
 
@@ -215,6 +216,102 @@ async def test_checked_commit_requires_this_task_and_clean_checked_tree(tmp_path
     moved = await _verify_after_commit_amendment(repo, worktree, artifact, verify)
     assert moved.verified is False
     assert moved.reason is not None and "does not match its recorded commit" in moved.reason
+
+
+@pytest.mark.asyncio
+async def test_checked_commit_refuses_when_a_required_check_never_passed(tmp_path: Path) -> None:
+    """Every _unchecked_required refusal surface blocks completion by check id."""
+    repo = await git_repo(tmp_path, with_remote=False)
+    worktree = tmp_path / "owned-worktree"
+    await repo._run("worktree", "add", "-b", "lisa/task", str(worktree))
+    (worktree / "app.txt").write_text("changed\n", encoding="utf-8")
+    await repo._run("add", "app.txt", cwd=worktree)
+    await repo._run("commit", "-m", "implement", cwd=worktree)
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(worktree), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    commit_sha = git("rev-parse", "HEAD")
+    tree_sha = git("rev-parse", "HEAD^{tree}")
+    store = FileCodeChangeArtifactStore(tmp_path / "code-changes.json")
+    artifact = WorkProduct(
+        task_id="task-one",
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+        session_plan_digest="plan",
+        source_root=str(repo.root),
+        worktree_path=str(worktree),
+        base_sha=git("rev-parse", "HEAD^"),
+        head_sha=commit_sha,
+        commit_sha=commit_sha,
+        branch="lisa/task",
+        status="committed",
+        revision=1,
+        changed_paths=["app.txt"],
+        required_check_ids=["unit"],
+        checks={
+            "unit": WorkProductCheck(
+                check_id="unit", revision=1, status="passed", checked_tree_sha=tree_sha
+            )
+        },
+    )
+    await store.create(artifact)
+    identity = SimpleNamespace(
+        workspace_id="workspace",
+        user_id="user",
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+        session_plan_digest="plan",
+    )
+
+    async def verify(task_id: str):
+        return await verify_checked_commit(
+            TaskCompletionRequest(task_id=task_id, origin_tool_id="create_worktree"),
+            store=store,
+            identity=identity,
+        )
+
+    assert (await verify("task-one")).verified is True
+
+    # A required check missing from checks entirely is refused by id.
+    recorded = artifact.checks.pop("unit")
+    await store.save(artifact)
+    missing = await verify("task-one")
+    assert missing.verified is False
+    assert missing.reason == (
+        f"Required check 'unit' has not passed on the committed tree "
+        f"of worktree {artifact.artifact_id}."
+    )
+
+    # A check recorded at a stale revision is refused even though it passed.
+    recorded.revision = 2
+    artifact.checks["unit"] = recorded
+    await store.save(artifact)
+    stale = await verify("task-one")
+    assert stale.verified is False
+    assert stale.reason is not None and "'unit'" in stale.reason
+
+    # A failed check is refused even on the right revision and tree.
+    recorded.revision = 1
+    recorded.status = "failed"
+    await store.save(artifact)
+    failed = await verify("task-one")
+    assert failed.verified is False
+    assert failed.reason is not None and "'unit'" in failed.reason
+
+    # Restoring the passing check restores verification.
+    recorded.status = "passed"
+    await store.save(artifact)
+    assert (await verify("task-one")).verified is True
 
 
 @pytest.mark.asyncio
@@ -620,6 +717,31 @@ def _host_with_declared_bwrap(data_dir: Path) -> HostRuntime:
     return runtime
 
 
+class _StubRunner:
+    """Minimal ``SandboxRunner`` double for the host-side coding tests."""
+
+    tool_id = "bwrap_run"
+    path_attestation = "result"
+
+    def build_request(self, request: Any, *, floor: Any = None) -> dict[str, Any]:
+        return {
+            "argv": list(request.argv),
+            "cwd": request.cwd,
+            "timeout_seconds": request.timeout_seconds,
+            "overrides": {"persistence": request.persistence, "paths": dict(request.paths)},
+        }
+
+    def interpret_result(self, request: Any, envelope: Any) -> Any:
+        from kernel.sandbox_floor import SandboxRunResult
+
+        payload = dict(envelope.output_json or {})
+        return SandboxRunResult(
+            return_code=int(payload.get("return_code", 0)),
+            stdout=envelope.output_text or "",
+            stderr=str(payload.get("stderr", "")),
+        )
+
+
 def _coding_factory_for_host(runtime: HostRuntime, repo: object, *, data_dir: Path | None = None):
     from kernel.capability_binding import ExecutionFloorView
     from kernel.models import ToolResult
@@ -655,7 +777,7 @@ def _coding_factory_for_host(runtime: HostRuntime, repo: object, *, data_dir: Pa
     )
 
     async def contained(tool_id: str, parameters: object) -> ToolResult:
-        assert tool_id == "bwrap_run" and parameters["argv"] == ["true"]
+        assert tool_id == _StubRunner.tool_id and parameters["argv"] == ["true"]
         worktree = str(parameters["cwd"])
         return ToolResult(
             output_json={
@@ -667,6 +789,10 @@ def _coding_factory_for_host(runtime: HostRuntime, repo: object, *, data_dir: Pa
             }
         )
 
+    # The coding pack never names a sandbox tool: it dispatches to whatever
+    # runner the session's sandbox implementation declares. This stub stands in
+    # for that implementation at the contract boundary.
+    factory.sandbox_runner = _StubRunner()
     factory.delegated_tool_dispatch = contained
     return factory
 
@@ -787,7 +913,7 @@ async def _restart_edited_candidate(
     patch = "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@\n-hello\n+fixed\n"
     for tool_id, parameters in (
         ("coding_apply_patch", {"artifact_id": artifact_id, "patch": patch}),
-        ("coding_run_check", {"artifact_id": artifact_id, "check_id": "smoke"}),
+        ("coding_verify", {"artifact_id": artifact_id, "check_ids": ["smoke"]}),
     ):
         step = await run_tool(catalog, tool_id, prior_factory, parameters)
         assert step.result.error == "", step.result.error
@@ -806,10 +932,6 @@ async def _restart_edited_candidate(
     assert read.result.output_json["scope"] == "worktree"
     assert read.result.output_json["artifact_id"] == artifact_id
     assert read.result.output_json["content_sha256"]
-    blocked = await run_tool(
-        catalog, "coding_commit", factory, {"artifact_id": artifact_id, "message": "unchecked"}
-    )
-    assert "Every required check must pass" in blocked.result.error
     factory.identity["session_plan_digest"] = "changed-session-plan"
     survived = await run_tool(
         catalog, "coding_read_file", factory, {"artifact_id": artifact_id, "path": "app.txt"}
@@ -889,7 +1011,17 @@ async def test_approval_restart_checks_and_commits_only_its_worktree(
             end_turn=next_turn_index(thread_path=restarted.paths.thread_path),
         )[-1]
         committed_artifact_id = approved["effect_receipts"][0]["artifact_id"]
-        hooks = build_turn_hooks(restarted, {"task_id": task_id})
+        hooks = build_turn_hooks(
+            restarted,
+            identity=TurnContextIdentity(
+                turn_id="",
+                turn_index=None,
+                task_id=task_id,
+                task_goal="",
+                parent_turn_id="",
+                parent_dispatch_id="",
+            ),
+        )
         request = TaskCompletionRequest(task_id=task_id, origin_tool_id="coding_create_worktree")
         verify = hooks.services.verify_task_completion
         assert verify is not None and not (await verify(request)).verified
@@ -897,12 +1029,19 @@ async def test_approval_restart_checks_and_commits_only_its_worktree(
         resumed_factory = await _restart_edited_candidate(
             host_dir, repo, catalog, committed_artifact_id, prior_factory=factory
         )
-        for tool_id, parameters in (
-            ("coding_run_check", {"artifact_id": committed_artifact_id, "check_id": "smoke"}),
-            ("coding_commit", {"artifact_id": committed_artifact_id, "message": "Fix bug"}),
-        ):
-            step = await run_tool(catalog, tool_id, resumed_factory, parameters)
-            assert step.result.error == "", step.result.error
+        steps = [
+            await run_tool(catalog, tool_id, resumed_factory, parameters)
+            for tool_id, parameters in (
+                ("coding_verify", {"artifact_id": committed_artifact_id, "check_ids": ["smoke"]}),
+                ("coding_commit", {"artifact_id": committed_artifact_id, "message": "Fix bug"}),
+            )
+        ]
+        # Both succeed, and the post-restart edit does not ride on the
+        # pre-restart check.
+        assert (
+            [step.result.error for step in steps],
+            [item["reused"] for item in steps[0].result.output_json["checks"]],
+        ) == (["", ""], [False])
 
         assert (await verify(request)).verified is True
         assert (

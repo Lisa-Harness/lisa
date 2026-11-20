@@ -22,6 +22,7 @@ from kernel.approval import (
     ApprovalInvocation,
     build_approval_invocation,
 )
+from runtime.approval_ledger import ApprovalLedger
 
 
 def _identity() -> ApprovalIdentity:
@@ -195,3 +196,40 @@ async def test_ledger_append_failure_never_blocks_transition(
         recorded = await store.request(inv)
     assert recorded.request_id
     assert any("approval ledger append failed" in r.message for r in caplog.records)
+
+
+def _execution_invocation(turn_id: str) -> ApprovalInvocation:
+    """Return an invocation stamped with one execution id (§4)."""
+    return _invocation(turn_index=7).model_copy(
+        update={"turn_id": turn_id, "tool_call_id": "toolu-1", "dispatch_id": "disp-1"}
+    )
+
+
+def test_ledger_row_carries_the_requesting_execution_id(tmp_path: Path) -> None:
+    """The durable row names the execution that asked, not just its position.
+
+    ``turn_index`` is a position in one thread, so it cannot separate two
+    overlapping executions; the row needs the id for the ledger to be joinable
+    to the same execution's decision rows and thread entry.
+    """
+    ledger = ApprovalLedger(tmp_path / "approvals.jsonl")
+    ledger.record_transition(invocation=_execution_invocation("turn-exec-1"), state="pending")
+
+    rows = _ledger_rows(tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["state"] == "pending"
+    assert row["turn_id"] == "turn-exec-1"
+    # The pre-existing attribution keys still land beside the new one.
+    assert row["turn_index"] == 7
+    assert row["tool_call_id"] == "toolu-1"
+    assert row["dispatch_id"] == "disp-1"
+
+
+def test_an_off_turn_row_records_an_empty_execution_id(tmp_path: Path) -> None:
+    """A request from no execution records the empty id rather than inventing one."""
+    ledger = ApprovalLedger(tmp_path / "approvals.jsonl")
+    ledger.record_transition(invocation=_execution_invocation(""), state="pending")
+
+    rows = _ledger_rows(tmp_path)
+    assert rows[0]["turn_id"] == ""

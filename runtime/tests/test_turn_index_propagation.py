@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 from kernel.turn_hooks import TurnIdentity
 from kernel.turn_phases._post_turn import _to_tool_context
+from runtime.turn_context_identity import NO_TURN_IDENTITY, TurnContextIdentity
 
 from runtime import turn_hooks_builder
 
@@ -50,8 +51,17 @@ def hooks_runtime(tmp_path_factory: pytest.TempPathFactory):
 def test_build_turn_hooks_threads_turn_index_from_context(hooks_runtime) -> None:
     """``build_turn_hooks`` copies ``turn_index`` off the turn context."""
     hooks = turn_hooks_builder.build_turn_hooks(
-        hooks_runtime, {"mode_id": "default", "task_id": "task-7", "turn_index": 31}
+        hooks_runtime,
+        identity=TurnContextIdentity(
+            turn_id="turn-abc",
+            turn_index=31,
+            task_id="task-7",
+            task_goal="",
+            parent_turn_id="",
+            parent_dispatch_id="",
+        ),
     )
+    assert hooks.identity.turn_id == "turn-abc"
     assert hooks.identity.turn_index == 31
     assert hooks.identity.task_id == "task-7"
 
@@ -59,32 +69,35 @@ def test_build_turn_hooks_threads_turn_index_from_context(hooks_runtime) -> None
 def test_build_turn_hooks_threads_first_turn_zero(hooks_runtime) -> None:
     """Turn 0 is a real turn index and must not be confused with 'unset'."""
     hooks = turn_hooks_builder.build_turn_hooks(
-        hooks_runtime, {"mode_id": "default", "turn_index": 0}
+        hooks_runtime,
+        identity=TurnContextIdentity(
+            turn_id="",
+            turn_index=0,
+            task_id="",
+            task_goal="",
+            parent_turn_id="",
+            parent_dispatch_id="",
+        ),
     )
     assert hooks.identity.turn_index == 0
 
 
 def test_build_turn_hooks_coerces_missing_turn_index(hooks_runtime) -> None:
     """A context without ``turn_index`` is unattributed, not turn 0."""
-    hooks = turn_hooks_builder.build_turn_hooks(hooks_runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(hooks_runtime, identity=NO_TURN_IDENTITY)
     assert hooks.identity.turn_index is None
 
 
 def test_build_turn_hooks_coerces_garbage_turn_index(hooks_runtime) -> None:
-    """A non-numeric or negative turn index cannot be stamped on telemetry."""
-    for raw in ("not-a-number", -3, None, {}):
-        hooks = turn_hooks_builder.build_turn_hooks(
-            hooks_runtime, {"mode_id": "default", "turn_index": raw}
-        )
-        assert hooks.identity.turn_index is None
+    """Omitting the identity is a ``TypeError``, never a blank one.
 
-
-def test_coerce_turn_index_accepts_string_ordinals() -> None:
-    """A string ordinal from a JSON-ish context is coerced, not dropped."""
-    assert turn_hooks_builder._coerce_turn_index("12") == 12
-    assert turn_hooks_builder._coerce_turn_index(0) == 0
-    assert turn_hooks_builder._coerce_turn_index("0") == 0
-    assert turn_hooks_builder._coerce_turn_index(None) is None
+    This is the whole point of the typed carrier: the old free-form dict let a
+    caller forget ``turn_id`` and receive ``""``, which typechecked all the way
+    to a null on the ledger. The identity is now a required keyword, so the
+    ``build_turn_hooks`` call below fails at the call site instead.
+    """
+    with pytest.raises(TypeError):
+        turn_hooks_builder.build_turn_hooks(hooks_runtime)  # type: ignore[call-arg]
 
 
 def test_to_tool_context_carries_turn_index() -> None:

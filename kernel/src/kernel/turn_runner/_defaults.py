@@ -36,9 +36,11 @@ from kernel.recovery import RecoveryIdentity
 from kernel.slice import SliceOutcome, SlicePolicy
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.turn_hooks import TurnHooks
+from kernel.turn_lineage import child_identity
 from kernel.turn_phases._child_turn import classify_child_turn
 from kernel.turn_phases._fork import _execute_fork_fanout
 from kernel.turn_phases._routing_hint import emit_transition_hint
+from kernel.turn_phases._wall_budget import remaining_wall_ms
 from kernel.turn_runner._helpers import _StubModelDef
 
 logger = logging.getLogger(__name__)
@@ -92,6 +94,8 @@ def _child_wall_deadline_ms(timeout_seconds: int) -> int:
 def _arm_child_wall_budget(
     turn_budget: TurnBudget | None,
     timeout_seconds: int,
+    *,
+    remaining_wall_ms: int | None = None,
 ) -> TurnBudget | None:
     """Tighten a child sub-turn budget so it beats the operation's hard cancel.
 
@@ -115,6 +119,19 @@ def _arm_child_wall_budget(
     unset (0) or the armed deadline is non-positive.
     """
     armed_ms = _child_wall_deadline_ms(timeout_seconds)
+    if remaining_wall_ms is not None:
+        remaining_child_ms = max(
+            0,
+            remaining_wall_ms - (_kernel_settings.delegation_grace_seconds * 1000),
+        )
+        if remaining_child_ms <= 0:
+            return TurnBudget(
+                max_tool_calls=0,
+                max_total_tokens=0,
+                max_completion_tokens=0,
+                max_wall_ms=1,
+            )
+        armed_ms = min(armed_ms or remaining_child_ms, remaining_child_ms)
     if armed_ms <= 0:
         return turn_budget
     if turn_budget is None:
@@ -136,6 +153,7 @@ async def _default_delegate_fn(
     turn_budget: TurnBudget | None,
     execution_policy: ExecutionPolicy | None,
     depth: int,
+    turn_start_mono: float | None = None,
     logger_override: logging.Logger | None = None,
 ) -> DelegationResult:
     """Run one delegate sub-turn by recursing into ``run_turn``.
@@ -195,11 +213,33 @@ async def _default_delegate_fn(
         )
 
     started = time.monotonic()
+    # Parent wall parity: the shared ``_wall_budget`` helper owns the
+    # remaining-wall arithmetic for both child kinds. ``None`` means no
+    # bound applies (no budget, unlimited wall, or unanchored start).
+    parent_remaining_ms = remaining_wall_ms(
+        turn_budget=turn_budget,
+        turn_start_mono=turn_start_mono,
+        now=started,
+    )
+    if parent_remaining_ms is not None and parent_remaining_ms <= (
+        _kernel_settings.delegation_grace_seconds * 1000
+    ):
+        return DelegationResult(
+            target_mode_id=spec.target_mode_id,
+            status="timeout",
+            error_message="Delegate child skipped: parent wall budget is spent.",
+            duration_ms=0,
+            depth=depth + 1,
+        )
     # Arm the child's wall budget so it force-completes gracefully just
     # before the registry's hard ``asyncio.wait_for`` cancel would discard
     # all child work (spec.timeout_seconds is threaded from the delegate
     # operation's own ``timeout_seconds``).
-    child_budget = _arm_child_wall_budget(turn_budget, spec.timeout_seconds)
+    child_budget = _arm_child_wall_budget(
+        turn_budget,
+        spec.timeout_seconds,
+        remaining_wall_ms=parent_remaining_ms,
+    )
     child_max_iters = (
         spec.max_tool_iterations or _kernel_settings.delegate_child_max_tool_iterations
     )
@@ -218,9 +258,14 @@ async def _default_delegate_fn(
             # hooks (which would make a diagnostic probe inside an
             # implementation turn inherit the promise of a commit, and a
             # diagnostic parent silently bless every implementation child).
+            # Lineage (Evidence Envelope §4): ``child_identity`` names the child,
+            # records the dispatch that spawned it, and inherits ``turn_index``
+            # deliberately — the child belongs to the parent's thread turn, so
+            # it renders as a child under that turn. The fork site calls the
+            # same helper, so the two shapes cannot drift.
             hooks=dataclasses.replace(
                 hooks,
-                identity=dataclasses.replace(hooks.identity, task_goal=spec.task_goal),
+                identity=child_identity(hooks.identity, spec.dispatch_id, task_goal=spec.task_goal),
             ),
             max_tool_iterations=child_max_iters,
             turn_budget=child_budget,
@@ -382,6 +427,38 @@ async def _default_fork_fn(
     if not spec.targets:
         return ForkResult(children=[], succeeded=0)
 
+    # Parent wall parity (the 2026-11-18 review finding): the fork path
+    # must honor the parent turn's remaining wall budget exactly like the
+    # delegate path. A spent parent (or one with no time beyond the grace
+    # window) returns honest per-target timeout results without launching
+    # doomed children into the registry's hard cancel.
+    parent_remaining_ms = remaining_wall_ms(
+        turn_budget=turn_budget,
+        turn_start_mono=turn_start_mono,
+    )
+    if parent_remaining_ms is not None and parent_remaining_ms <= (
+        _kernel_settings.delegation_grace_seconds * 1000
+    ):
+        _flog.warning(
+            "fork fan-out skipped: parent wall budget is spent "
+            "(remaining=%dms, grace=%ds, targets=%d)",
+            parent_remaining_ms,
+            _kernel_settings.delegation_grace_seconds,
+            len(spec.targets),
+        )
+        return ForkResult(
+            children=[
+                ForkChildResult(
+                    target=t,
+                    status="timeout",
+                    error_message="Fork child skipped: parent wall budget is spent.",
+                    duration_ms=0,
+                )
+                for t in spec.targets
+            ],
+            succeeded=0,
+        )
+
     # Apply the per-child iteration cap. Precedence: explicit override
     # (parent turn cap) > spec > kernel default. A non-zero override
     # always wins so a fork child cannot exceed the parent's envelope.
@@ -411,8 +488,13 @@ async def _default_fork_fn(
             # ``asyncio.wait_for`` cancel would discard the fan-out
             # (spec.timeout_seconds is threaded from the fork operation's
             # own ``timeout_seconds``). Children run in parallel, so the
-            # deadline applies per child, not divided.
+            # deadline applies per child, not divided. The parent's
+            # remaining wall tightens the same ceiling (parity with the
+            # delegate path).
             wall_deadline_ms=_child_wall_deadline_ms(spec.timeout_seconds),
+            # Lineage (Evidence Envelope §4): each child records the dispatch
+            # that spawned this fan-out as its ``parent_dispatch_id``.
+            parent_dispatch_id=spec.dispatch_id,
         )
     except TimeoutError:
         # ``_execute_fork_fanout`` catches per-child timeouts and maps

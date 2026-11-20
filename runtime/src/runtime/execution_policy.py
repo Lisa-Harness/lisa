@@ -2,12 +2,29 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from kernel.execution_policy import (
     CapabilityExecutionPolicy,
     ExecutionPolicy,
     tighten_limit,
 )
 from kernel.session_plan import SessionExecutionLimits, SessionExecutionRequest
+
+
+def mode_scope_ids(mode: Any) -> tuple[str, ...]:
+    """Return the provider and provider/mode scope ids for one mode."""
+
+    provider_id = str(getattr(mode, "mode_provider_id", "") or "")
+    mode_id = str(getattr(mode, "mode_id", "") or "")
+    return tuple(
+        scope_id
+        for scope_id in (
+            provider_id,
+            f"{provider_id}:{mode_id}" if provider_id else mode_id,
+        )
+        if scope_id
+    )
 
 
 def default_interactive_execution_policy() -> ExecutionPolicy:

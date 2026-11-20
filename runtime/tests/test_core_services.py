@@ -41,6 +41,7 @@ from runtime.handle_message import handle_message
 from runtime.model_runtime import StubModelDefinition, resolve_model
 from runtime.runtime import HostRuntime
 from runtime.token_accounting import apply_turn_usage, format_session_exit_summary_lines
+from runtime.turn_context_identity import NO_TURN_IDENTITY, TurnContextIdentity
 
 from runtime import (
     commands,
@@ -457,7 +458,7 @@ async def test_last_no_prior_turns(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_last_replays_previous_model_response_verbatim(tmp_path: Path) -> None:
+async def test_last_reprints_previous_model_response_verbatim(tmp_path: Path) -> None:
     from runtime.thread import append_thread_entry
 
     runtime = _make_runtime(tmp_path)
@@ -496,7 +497,7 @@ async def test_last_skips_host_command_turns(tmp_path: Path) -> None:
     )
     transport = NullTransport()
     # A host-command turn lands on the thread between the model turn and
-    # the /last replay; the default walk must skip it and find turn 0.
+    # the /last reprint; the default walk must skip it and find turn 0.
     output = await handle_message(runtime, "/settings", transport)
     assert "## Runtime Settings" in output.text
     output = await handle_message(runtime, "/last", transport)
@@ -571,10 +572,10 @@ async def test_last_bad_argument_usage_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_last_turn_reports_replayed_turn_index(tmp_path: Path) -> None:
-    """``resolve_last_turn`` returns the replayed entry's turn stamp.
+async def test_resolve_last_turn_reports_reprinted_turn_index(tmp_path: Path) -> None:
+    """``resolve_last_turn`` returns the reprinted entry's turn stamp.
 
-    Hosts surface this number so a replayed response is addressable — the
+    Hosts surface this number so a reprinted response is addressable — the
     same global turn index the prompt output and thread entry carry.
     """
     from runtime.commands import resolve_last_turn
@@ -2239,12 +2240,24 @@ def test_format_token_stats_appends_lifetime_section(tmp_path: Path) -> None:
     assert "### Lifetime (all sessions)" in output
     assert "- Events: 2" in output
     assert "- Span: 2026-08-20T10:00:00Z → 2026-08-22T18:30:00Z" in output
-    assert "- Estimated cost: $0.0110" in output
-    # Totals row: 400 prompt | 250 completion | 650 total | 120 cached | 40 reasoning | 530 billed
-    assert "| 400 | 250 | 650 | 120 | 40 | 530 |" in output
+    # Both legacy rows carry a nonzero cost_usd, so both count as priced.
+    assert "- Estimated cost (canonical): $0.0110" in output
+    # 120 cached of the 400-token normalized prompt (prompt already
+    # includes cache reads; adding them back double-counted).
+    assert "- Prompt cache: 120 read (30.0% of input), 0 created" in output
+    # Legacy rows carry no turn_index, so attribution coverage is honest 0/2.
+    assert "- Attribution: 0/2 rows turn-attributed" in output
+    # v2 reporting: every metric carries known/total coverage, and the
+    # legacy rows' absent cache_creation_tokens reads unknown (0/2), not zero.
+    assert "| Prompt tokens | 400 | 2/2 |" in output
+    assert "| Completion tokens | 250 | 2/2 |" in output
+    assert "| Total tokens | 650 | 2/2 |" in output
+    assert "| Cached read | 120 | 2/2 |" in output
+    assert "| Reasoning | 40 | 2/2 |" in output
+    assert "| Cache creation | 0 | 0/2 |" in output
     assert "#### Lifetime by Model" in output
-    assert "| deepseek-r1:latest | 300 | 200 | 500 | 100 | 40 | 400 |" in output
-    assert "| gemma3:latest | 100 | 50 | 150 | 20 | 0 | 130 |" in output
+    assert "| deepseek-r1:latest | 300 | 200 | 500 | 100 | 40 | 0 |" in output
+    assert "| gemma3:latest | 100 | 50 | 150 | 20 | 0 | 0 |" in output
 
 
 def test_format_token_stats_lifetime_absent_without_log(tmp_path: Path) -> None:
@@ -2295,7 +2308,15 @@ async def test_build_turn_hooks_wires_recall_hook(
     # setup_framework wires the content registry so content_loader(runtime) works.
     mcp_pool.setup_framework(runtime)
     hooks = turn_hooks_builder.build_turn_hooks(
-        runtime, {"mode_id": "default", "task_id": "task-7"}
+        runtime,
+        identity=TurnContextIdentity(
+            turn_id="",
+            turn_index=None,
+            task_id="task-7",
+            task_goal="",
+            parent_turn_id="",
+            parent_dispatch_id="",
+        ),
     )
     assert hooks.identity.task_id == "task-7"
     assert hooks.services.verify_task_completion is not None
@@ -2326,21 +2347,21 @@ def _make_hooks_runtime(tmp_path: Path, **config_kwargs: object) -> HostRuntime:
 def test_build_turn_hooks_wires_complete_stream_for_text_mode(tmp_path: Path) -> None:
     """When streaming mode is text/hybrid, complete_stream is wired on the hooks."""
     runtime = _make_hooks_runtime(tmp_path, streaming="text:30")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks.models.complete_stream is not None
 
 
 def test_build_turn_hooks_wires_complete_stream_for_hybrid_mode(tmp_path: Path) -> None:
     """Hybrid streaming also wires complete_stream."""
     runtime = _make_hooks_runtime(tmp_path, streaming="hybrid")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks.models.complete_stream is not None
 
 
 def test_build_turn_hooks_omits_complete_stream_for_stage_mode(tmp_path: Path) -> None:
     """Stage-only streaming does NOT wire complete_stream (stage uses on_stage, not chunks)."""
     runtime = _make_hooks_runtime(tmp_path, streaming="stage")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks.models.complete_stream is None
 
 
@@ -2353,7 +2374,7 @@ def test_build_turn_hooks_carries_the_conversation_scoped_thread_store(tmp_path:
     slug — one value cannot serve both.
     """
     runtime = _make_hooks_runtime(tmp_path, user_slug="u", conversation_id="conv-alpha")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
 
     assert hooks.identity.thread_store_slug == "u--conv-alpha"
     assert hooks.identity.user_slug == "u"
@@ -2362,7 +2383,7 @@ def test_build_turn_hooks_carries_the_conversation_scoped_thread_store(tmp_path:
 def test_build_turn_hooks_omits_complete_stream_when_disabled(tmp_path: Path) -> None:
     """With streaming disabled, complete_stream stays None (non-streaming path)."""
     runtime = _make_hooks_runtime(tmp_path, streaming="none")
-    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks.models.complete_stream is None
 
 

@@ -281,6 +281,12 @@ async def _execute_declarative_tool_call(
                     data_dir=ctx.data_dir,
                     thread_dir=ctx.thread_dir,
                     turn_index=ctx.turn_index,
+                    # Execution identity and lineage (Evidence Envelope §4): a
+                    # tool dispatched by a declarative operation still names
+                    # the execution and the parents it runs under.
+                    turn_id=ctx.turn_id,
+                    parent_turn_id=ctx.parent_turn_id,
+                    parent_dispatch_id=ctx.parent_dispatch_id,
                 ),
             )
             if tool_name and tool_name not in used_tools:

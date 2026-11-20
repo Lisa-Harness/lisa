@@ -19,6 +19,7 @@ from kernel.provider_contracts import (
 )
 from sdk.providers.anthropic_gateway import (
     AnthropicGateway,
+    _base_messages_payload,
     _build_anthropic_messages,
 )
 from sdk.providers.openai_gateway import (
@@ -139,8 +140,9 @@ def test_anthropic_usage_maps_cache_creation_to_dedicated_counter() -> None:
     assert usage.cached_tokens == 800
     assert usage.prompt_tokens == 1150
     assert usage.total_tokens == 1190
-    # Cache creation is a write-rate cost, not reasoning output.
-    assert usage.reasoning_tokens == 0
+    # Cache creation is a write-rate cost, not reasoning output. Anthropic
+    # publishes no reasoning counter at all, so it stays unknown (v2).
+    assert usage.reasoning_tokens is None
 
 
 # ── Cache-aware system prompt segmentation ────────────────────────────
@@ -203,6 +205,132 @@ async def test_segments_without_ephemeral_tail_cache_the_single_stable_block() -
     system = captured["json"]["system"]
     assert isinstance(system, list)
     assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_factored_stable_segments_keep_single_last_stable_breakpoint() -> None:
+    """S0/S1 factored base: one breakpoint, on the final stable block.
+
+    Pins the wire shape the W3 factoring produces on the Anthropic
+    gateway: the invariant head (S0) and the mode tail (S1) ride as
+    separate text blocks, both stable, with exactly one explicit
+    ``cache_control`` — on the last stable block (S1). This asserts
+    request shape only; whether a provider serves the S0 prefix from
+    cache behind that single breakpoint is provider behavior no unit
+    test can establish.
+    """
+    from kernel.provider_contracts import SystemPromptSegment
+
+    captured: dict[str, Any] = {}
+    gateway = _gateway(_response([_text_block("ok")]), captured)
+    request = CompletionRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=_model_def(),
+        max_tokens=1024,
+        temperature=0.0,
+        system_prompt_segments=(
+            SystemPromptSegment(text="INVARIANT harness + session", stability="stable"),
+            SystemPromptSegment(text="MODE A tail", stability="stable"),
+        ),
+    )
+    await gateway.complete(request)
+    system = captured["json"]["system"]
+    assert isinstance(system, list)
+    assert [block["text"] for block in system] == [
+        "INVARIANT harness + session",
+        "MODE A tail",
+    ]
+    assert system[1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in system[0]
+
+
+@pytest.mark.asyncio
+async def test_factored_segment_tail_swap_keeps_prefix_stable() -> None:
+    """An S1 swap changes only the tail block; S0 bytes and tools are stable.
+
+    Two sequential requests — mode tail A then mode tail B — with an
+    unchanged tool surface. The W3 factoring pays only if the wire
+    prefix ahead of the swapped block is byte-identical: same S0 text,
+    same translated tools payload, and the single breakpoint stays on
+    the last stable block across the swap. Request-shape guarantee
+    only; this measures nothing about what a provider caches.
+    """
+    from kernel.provider_contracts import SystemPromptSegment
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file.",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+    async def _send(tail_text: str, captured: dict[str, Any]) -> list[dict[str, Any]]:
+        gateway = _gateway(_response([_text_block("ok")]), captured)
+        request = CompletionRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            model_def=_model_def(),
+            max_tokens=1024,
+            temperature=0.0,
+            tools=list(tools),
+            system_prompt_segments=(
+                SystemPromptSegment(text="INVARIANT harness + session", stability="stable"),
+                SystemPromptSegment(text=tail_text, stability="stable"),
+            ),
+        )
+        await gateway.complete(request)
+        return captured["json"]["system"]
+
+    captured_a: dict[str, Any] = {}
+    captured_b: dict[str, Any] = {}
+    system_a = await _send("MODE A tail", captured_a)
+    system_b = await _send("MODE B tail", captured_b)
+
+    assert system_a[0]["text"] == system_b[0]["text"]  # S0 byte-identical
+    assert system_a[1]["text"] != system_b[1]["text"]  # S1 really swapped
+    assert system_a[1]["cache_control"] == {"type": "ephemeral"}
+    assert system_b[1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in system_a[0]
+    assert "cache_control" not in system_b[0]
+    assert captured_a["json"]["tools"] == captured_b["json"]["tools"]
+
+
+@pytest.mark.asyncio
+async def test_blank_mode_tail_breakpoint_falls_back_to_invariant_head() -> None:
+    """A blank S1 placeholder must not anchor the breakpoint.
+
+    ``SystemPromptSegments.from_parts`` stores a blank placeholder tail
+    for intro-less modes; the gateway skips blank segments, so the
+    single breakpoint lands on the last non-empty stable block — the
+    invariant head — instead of an empty block.
+    """
+    from kernel.provider_contracts import SystemPromptSegment
+
+    captured: dict[str, Any] = {}
+    gateway = _gateway(_response([_text_block("ok")]), captured)
+    request = CompletionRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=_model_def(),
+        max_tokens=1024,
+        temperature=0.0,
+        system_prompt_segments=(
+            SystemPromptSegment(text="INVARIANT harness + session", stability="stable"),
+            SystemPromptSegment(text="", stability="stable"),
+        ),
+    )
+    await gateway.complete(request)
+    system = captured["json"]["system"]
+    assert isinstance(system, list)
+    assert system == [
+        {
+            "type": "text",
+            "text": "INVARIANT harness + session",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -733,13 +861,13 @@ def test_normalize_no_trailing_nudge_when_require_thought_signature_false() -> N
 
 
 def test_normalize_repairs_unparseable_tool_call_arguments() -> None:
-    """A tool call whose arguments never parsed is replayed as ``{}``.
+    """A tool call whose arguments never parsed is rehydrated as ``{}``.
 
     Regression for the 2026-10-19 MiniMax M3.1 Flash turn failure: three
     parallel tool calls were stitched into one call whose arguments were
     three JSON objects glued end to end. The kernel refused to dispatch
     it, but the broken call stayed in the message history and the next
-    request replayed it. Ollama validates the arguments of every
+    request rehydrated it. Ollama validates the arguments of every
     assistant ``tool_calls`` entry in the history and answered
     ``400 invalid tool call arguments``, which killed the whole turn.
 
@@ -777,7 +905,7 @@ def test_normalize_repairs_length_cut_tool_call_arguments() -> None:
     The 2026-09-23 finances incident produced the same shape from a
     different cause: ``finish_reason='length'`` cut the arguments
     mid-payload. The kernel refuses to dispatch such a call, so the
-    replay must not kill the turn either.
+    rehydrate must not kill the turn either.
     """
 
     messages: list[dict[str, Any]] = [
@@ -831,7 +959,7 @@ def test_normalize_repairs_empty_tool_call_arguments_string() -> None:
 
 
 def test_normalize_keeps_parseable_tool_call_arguments_untouched() -> None:
-    """A well-formed payload is replayed byte-for-byte."""
+    """A well-formed payload is rehydrated byte-for-byte."""
 
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": "go"},
@@ -1062,3 +1190,31 @@ def test_repair_degrades_a_too_deeply_nested_payload() -> None:
     deep = '{"a":' * 20000 + "1" + "}" * 20000
     assert _repair_openai_tool_arguments(deep) == "{}"
     assert _coerce_tool_arguments_object(deep) == {}
+
+
+# ── Manual-thinking budget ────────────────────────────────────────────
+
+
+def _thinking_request(max_tokens: int) -> CompletionRequest:
+    model_def = _model_def()
+    model_def.thinking_model = True
+    return _request([{"role": "user", "content": "hi"}], max_tokens=max_tokens, model_def=model_def)
+
+
+def test_thinking_budget_stays_below_max_tokens() -> None:
+    """The Messages API rejects ``budget_tokens >= max_tokens``."""
+    payload = _base_messages_payload(_thinking_request(16384), "")
+    assert payload["thinking"] == {"type": "enabled", "budget_tokens": 12288}
+    assert payload["thinking"]["budget_tokens"] < payload["max_tokens"]
+
+
+def test_thinking_omitted_when_call_too_small_for_minimum_budget() -> None:
+    payload = _base_messages_payload(_thinking_request(1200), "")
+    assert "thinking" not in payload
+
+
+def test_non_thinking_model_sends_no_thinking_block() -> None:
+    payload = _base_messages_payload(
+        _request([{"role": "user", "content": "hi"}], max_tokens=16384), ""
+    )
+    assert "thinking" not in payload

@@ -1,0 +1,35 @@
+id: canary/direct-answer
+session_context: live_session_context.md
+packs:
+  - lisa-pack-memory
+  - lisa-pack-markdown
+  - lisa-pack-personas
+  - lisa-pack-serper
+turns:
+  - >-
+    Answer in one sentence with no tools: what is 6 multiplied by 7?
+budgets:
+  max_messages: 2
+  max_continues: 0
+  max_yield_replies: 0
+  wall_clock_s: 90
+env:
+  MAX_TOOL_ITERATIONS: "4"
+  STAGE_NUDGE_THRESHOLD: "2"
+  STAGE_NUDGE_CAP: "4"
+oracles:
+  hygiene:
+    - not_aborted: {}
+    - no_turn_errors: {}
+    - no_operator_exit: {}
+    - no_unanswered_yield: {}
+    - no_runtime_errors: {}
+  answer:
+    - exchange_contains: {text: "42"}
+  efficiency:
+    - usage_within:
+        min_calls: 1
+        max_calls: 2
+        max_prompt_tokens: 30000
+        max_completion_tokens: 1024
+        max_total_tokens: 31024

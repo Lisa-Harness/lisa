@@ -33,7 +33,7 @@ from kernel.provider_contracts import (
     is_pydantic_model_class,
     provider_gateway_error_from_exception,
 )
-from kernel.token_usage import coerce_non_negative_int
+from kernel.token_usage import nullable_float, nullable_int
 from openai import AsyncOpenAI
 from openai.lib._parsing import type_to_response_format_param
 from pydantic import BaseModel as PydanticBaseModel
@@ -1090,23 +1090,25 @@ def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
         raw_usage = response.get("usage")
     if raw_usage is None:
         return None
-    prompt_tokens = coerce_non_negative_int(
+    prompt_tokens = nullable_int(
         getattr(raw_usage, "prompt_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("prompt_tokens")
     )
-    completion_tokens = coerce_non_negative_int(
+    completion_tokens = nullable_int(
         getattr(raw_usage, "completion_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("completion_tokens")
     )
-    total_tokens = coerce_non_negative_int(
+    total_tokens = nullable_int(
         getattr(raw_usage, "total_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("total_tokens")
     )
-    if total_tokens <= 0:
+    origins: dict[str, str] = {}
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
         total_tokens = prompt_tokens + completion_tokens
+        origins["total_tokens"] = "derived"
 
     prompt_details = (
         getattr(raw_usage, "prompt_tokens_details", None)
@@ -1121,15 +1123,15 @@ def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
         if not isinstance(raw_usage, dict)
         else raw_usage.get("completion_tokens_details")
     )
-    reasoning_tokens = 0
+    reasoning_tokens: int | None = None
     if completion_details is not None:
-        reasoning_tokens = coerce_non_negative_int(
+        reasoning_tokens = nullable_int(
             getattr(completion_details, "reasoning_tokens", None)
             if not isinstance(completion_details, dict)
             else completion_details.get("reasoning_tokens")
         )
 
-    if prompt_tokens == 0 and completion_tokens == 0 and total_tokens == 0:
+    if prompt_tokens is None and completion_tokens is None and total_tokens is None:
         return None
     return CompletionUsage(
         prompt_tokens=prompt_tokens,
@@ -1139,10 +1141,11 @@ def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
         reasoning_tokens=reasoning_tokens,
         cache_creation_tokens=cache_write_tokens,
         provider_cost_usd=_provider_cost(raw_usage),
+        metric_origins=origins,
     )
 
 
-def _provider_cost(raw_usage: Any) -> float:
+def _provider_cost(raw_usage: Any) -> float | None:
     """Read the provider's own reported charge for one call, when present.
 
     OpenRouter returns ``usage.cost`` (USD) on the usage object — including
@@ -1150,26 +1153,26 @@ def _provider_cost(raw_usage: Any) -> float:
     charge, not a list-price estimate. The OpenAI SDK parses unknown usage
     fields into ``model_extra`` (``extra="allow"``), so ``getattr`` finds
     ``cost`` on the SDK model; plain dicts and providers that omit the field
-    fall through to 0.0, which callers read as "not reported".
+    fall through to ``None`` (cache-efficiency v2: unreported is unknown,
+    not a measured zero).
     """
 
     value = (
         raw_usage.get("cost") if isinstance(raw_usage, dict) else getattr(raw_usage, "cost", None)
     )
-    try:
-        return max(0.0, float(value or 0.0))
-    except (TypeError, ValueError):
-        return 0.0
+    return nullable_float(value)
 
 
-def _detail_tokens(details: Any, field: str) -> int:
-    """Read one token counter from a usage ``*_details`` object or dict."""
+def _detail_tokens(details: Any, field: str) -> int | None:
+    """Read one token counter from a usage ``*_details`` object or dict.
+
+    Absent details or a missing field is ``None`` (unknown), not zero.
+    """
 
     if details is None:
-        return 0
-    return coerce_non_negative_int(
-        details.get(field) if isinstance(details, dict) else getattr(details, field, None)
-    )
+        return None
+    raw = details.get(field) if isinstance(details, dict) else getattr(details, field, None)
+    return nullable_int(raw)
 
 
 def extract_responses_usage(response: Any) -> CompletionUsage | None:
@@ -1181,22 +1184,23 @@ def extract_responses_usage(response: Any) -> CompletionUsage | None:
     if raw_usage is None:
         return None
 
-    prompt_tokens = coerce_non_negative_int(
+    prompt_tokens = nullable_int(
         getattr(raw_usage, "input_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("input_tokens")
     )
-    completion_tokens = coerce_non_negative_int(
+    completion_tokens = nullable_int(
         getattr(raw_usage, "output_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("output_tokens")
     )
-    total_tokens = coerce_non_negative_int(
+    total_tokens = nullable_int(
         getattr(raw_usage, "total_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("total_tokens")
     )
-    if total_tokens <= 0:
+    origins = {"total_tokens": "derived"}
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
         total_tokens = prompt_tokens + completion_tokens
 
     input_details = (
@@ -1212,15 +1216,15 @@ def extract_responses_usage(response: Any) -> CompletionUsage | None:
         if not isinstance(raw_usage, dict)
         else raw_usage.get("output_tokens_details")
     )
-    reasoning_tokens = 0
+    reasoning_tokens: int | None = None
     if output_details is not None:
-        reasoning_tokens = coerce_non_negative_int(
+        reasoning_tokens = nullable_int(
             getattr(output_details, "reasoning_tokens", None)
             if not isinstance(output_details, dict)
             else output_details.get("reasoning_tokens")
         )
 
-    if prompt_tokens == 0 and completion_tokens == 0 and total_tokens == 0:
+    if prompt_tokens is None and completion_tokens is None and total_tokens is None:
         return None
     return CompletionUsage(
         prompt_tokens=prompt_tokens,
@@ -1230,6 +1234,7 @@ def extract_responses_usage(response: Any) -> CompletionUsage | None:
         reasoning_tokens=reasoning_tokens,
         cache_creation_tokens=cache_write_tokens,
         provider_cost_usd=_provider_cost(raw_usage),
+        metric_origins=origins,
     )
 
 
@@ -1241,24 +1246,25 @@ def extract_openai_embedding_usage(response: Any) -> CompletionUsage | None:
         raw_usage = response.get("usage")
     if raw_usage is None:
         return None
-    prompt_tokens = coerce_non_negative_int(
+    prompt_tokens = nullable_int(
         getattr(raw_usage, "prompt_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("prompt_tokens")
     )
-    total_tokens = coerce_non_negative_int(
+    total_tokens = nullable_int(
         getattr(raw_usage, "total_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("total_tokens")
     )
-    if prompt_tokens == 0 and total_tokens == 0:
+    if prompt_tokens is None and total_tokens is None:
         return None
     return CompletionUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=0,
-        total_tokens=total_tokens or prompt_tokens,
+        total_tokens=total_tokens if total_tokens is not None else prompt_tokens,
         cached_tokens=0,
-        reasoning_tokens=0,
+        reasoning_tokens=None,
+        metric_origins={"total_tokens": "derived"} if total_tokens is None else {},
     )
 
 
@@ -1268,7 +1274,7 @@ def extract_openai_embedding_usage(response: Any) -> CompletionUsage | None:
 #: JSON numbers as float64, so an integer beyond this range is not
 #: representable and its decoder rejects it — Python's ``int`` is
 #: unbounded, so ``json`` accepts and re-emits it happily. The boundary
-#: was observed live: a 309-digit integer replayed, a 310-digit one
+#: was observed live: a 309-digit integer rehydrated, a 310-digit one
 #: answered ``400 invalid tool call arguments``.
 _MAX_FINITE_FLOAT = 1.7976931348623157e308
 
@@ -1402,10 +1408,10 @@ def _is_parseable_tool_arguments(raw_arguments: Any) -> bool:
     Backends validate the arguments string of every assistant ``tool_calls``
     entry they receive in the history and answer ``400 invalid tool call
     arguments`` when it does not parse as a JSON object. That check applies
-    to REPLAYED history too, not only to the call the backend just
+    to rehydrated history too, not only to the call the backend just
     produced: a call the kernel refused (a length-cut payload, or a call
     whose parallel siblings were stitched together) stays in the message
-    history, and the next request replays it and dies on the 400.
+    history, and the next request rehydrates it and dies on the 400.
 
     An empty argument string is NOT acceptable on the wire even though the
     kernel reads it as a legitimate "no parameters" call — the backend
@@ -1426,19 +1432,19 @@ def _normalize_openai_tool_arguments(raw_arguments: Any) -> str:
 
 
 def _repair_openai_tool_arguments(raw_arguments: Any, *, tool_name: str = "") -> str:
-    """Return an argument payload a strict backend will accept on replay.
+    """Return an argument payload a strict backend will accept on rehydration.
 
     A tool call whose arguments never parsed — because the completion was
     cut mid-payload, or because parallel calls were stitched together —
     cannot be repaired into its original values; those values do not
-    exist. Replaying it verbatim is what turns a recoverable turn into a
+    exist. Rehydrating it verbatim is what turns a recoverable turn into a
     dead one: the backend answers ``400 invalid tool call arguments`` and
     the whole turn fails. The empty object is the honest repair — it
     states "this call carried no usable arguments" and keeps the history
     well-formed, so the model can re-issue the call.
 
     The kernel already refused to dispatch such a call and fed the model
-    an error; this only makes the REPLAY of that refusal survivable. The
+    an error; this only makes rehydration of that refusal survivable. The
     discarded payload is logged so the incident stays diagnosable.
     """
     payload_type = type(raw_arguments).__name__
@@ -1451,7 +1457,7 @@ def _repair_openai_tool_arguments(raw_arguments: Any, *, tool_name: str = "") ->
             # invalid JSON. The conversion is routine, so it is logged at
             # debug level and does not dilute a real incident's warning.
             logger.debug(
-                "replaying a zero-parameter tool call with an empty argument "
+                "rehydrating a zero-parameter tool call with an empty argument "
                 "string as an empty object (tool=%r)",
                 tool_name or "?",
             )
@@ -1461,7 +1467,7 @@ def _repair_openai_tool_arguments(raw_arguments: Any, *, tool_name: str = "") ->
     ):
         return json.dumps(raw_arguments, allow_nan=False)
     logger.warning(
-        "replaying a tool call with unusable arguments as an empty object "
+        "rehydrating a tool call with unusable arguments as an empty object "
         "(tool=%r, payload=%s); the backend rejects the original payload "
         "with 400 invalid tool call arguments",
         tool_name or "?",

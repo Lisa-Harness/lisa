@@ -105,15 +105,20 @@ def _model(
     cost_tier: str = "",
     latency_tier: str = "",
     context_window: int = 0,
-    prompt_price: float = 0.0,
-    completion_price: float = 0.0,
-    cache_read_price: float = 0.0,
-    cache_write_price: float = 0.0,
+    max_completion_tokens: int = 0,
+    prompt_price: float | None = None,
+    completion_price: float | None = None,
+    cache_read_price: float | None = None,
+    cache_write_price: float | None = None,
     pricing_currency: str = "USD",
     description: str = "",
     structured_reliability: float = 0.0,
     completion_api: str = "chat_completions",
     expires_at: date | None = None,
+    supported_parameters: tuple[str, ...] = (),
+    modalities: tuple[str, ...] = (),
+    lifecycle: str = "",
+    deprecated_at: date | None = None,
 ) -> DiscoveredModel:
     """Construct a :class:`DiscoveredModel` with the shared heuristic.
 
@@ -126,9 +131,7 @@ def _model(
     model the heuristic flags as reasoning-capable is always routable via
     ``'"reasoning" in route.required_capabilities'`` — even when a probe
     (e.g. ollama) does not explicitly add it. Probes that already include
-    ``"reasoning"`` are unaffected; the static registry override in
-    ``known_models.yaml`` still wins because each probe applies it before
-    calling this constructor.
+    ``"reasoning"`` are unaffected.
     """
 
     reasoning = is_reasoning_model(model_id)
@@ -145,6 +148,7 @@ def _model(
         cost_tier=cost_tier,
         latency_tier=latency_tier,
         context_window=context_window,
+        max_completion_tokens=max_completion_tokens,
         prompt_price=prompt_price,
         completion_price=completion_price,
         cache_read_price=cache_read_price,
@@ -155,6 +159,10 @@ def _model(
         completion_api=completion_api,
         prompt_cache_breakpoints=uses_prompt_cache_breakpoints(provider, model_id),
         expires_at=expires_at,
+        supported_parameters=supported_parameters,
+        modalities=modalities,
+        lifecycle=lifecycle,
+        deprecated_at=deprecated_at,
     )
 
 

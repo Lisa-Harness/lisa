@@ -162,6 +162,23 @@ class Settings(BaseSettings):
     # ``DELEGATION_GRACE_SECONDS``.
     delegation_grace_seconds: int = 30
 
+    # ── Turn runner: fork child budget floors ─────────────────────────
+    # ``_fork_child_budget`` divides the parent's ``TurnBudget`` across
+    # N children. A large fan-out (the 2026-11-13 turn 1258 incident:
+    # 5 slices of one diff) shrinks each child's share below the
+    # envelope one honest attempt needs — 150/5 = 30 tool calls and
+    # 1M/5 = 200K tokens starved a test-slice worker into "turn budget
+    # exhausted" after 31 read calls. These floors raise the divided
+    # share when a finite parent field divides that far. Set 0 to keep
+    # raw division with no floor. A floor never loosens an unlimited (0)
+    # parent field, and each child stays individually bounded — the sum
+    # of children's shares exceeds the parent's envelope under a floor;
+    # that is the accepted trade for not starving honest workers.
+    # Override via ``FORK_CHILD_MIN_TOOL_CALLS`` /
+    # ``FORK_CHILD_MIN_TOTAL_TOKENS``.
+    fork_child_min_tool_calls: int = Field(default=75, ge=0)
+    fork_child_min_total_tokens: int = Field(default=300_000, ge=0)
+
     # ── Turn runner: per-step sub-budgets ─────────────────────────────────
     # Per-step iteration sub-budget. Each workflow step (the span between
     # two ``transition_stage`` handoffs) gets its own iteration allowance
@@ -227,7 +244,9 @@ class Settings(BaseSettings):
     # refuses to call the expected tool (``fork`` / ``transition_stage``),
     # burning iterations instead on read-only tools or empty completions,
     # this bounds how many non-compliant dispatches pass before the
-    # kernel synthesizes the required call itself. 2 bounds the
+    # kernel synthesizes the required call itself. The counter advances once
+    # per model completion whose tool batch omits the expected call; sibling
+    # calls in one batch cannot consume the cap independently. 2 bounds the
     # pre-handoff token burn to roughly ``2 × per-iteration tokens``
     # instead of the full ``max_tool_iterations`` budget (the 2026-07-27
     # fork incident; the 2026-07-30 400k-token pre-plan burn). Override
@@ -315,6 +334,18 @@ class Settings(BaseSettings):
     # thread_read_recent + thread_search pair 33 times.
     # Override via ``MAX_IDENTICAL_TOOL_BATCH_REPEATS``.
     max_identical_tool_batch_repeats: int = 3
+    # Dereference expansion ceiling. Once a turn has expanded this many
+    # read-tool refs (``ref=...``), the kernel starts guarding repeated
+    # expansion churn; broad retrieval with mostly distinct refs is still
+    # allowed. 0 disables this guard.
+    # Override via ``MAX_DEREFERENCE_CALLS_PER_TURN``.
+    max_dereference_calls_per_turn: int = 20
+    # Repeated-dereference tolerance paired with
+    # ``max_dereference_calls_per_turn``. A turn over the dereference-call
+    # cap is refused only after this many expansions are repeats of refs it
+    # already expanded. 0 means "no repeated expansions once over the cap."
+    # Override via ``MAX_DEREFERENCE_REPEATS_PER_TURN``.
+    max_dereference_repeats_per_turn: int = 6
 
     # ── Derived workflow view ─────────────────────────────────────────────
     # A ``## Plan`` stays active only while it makes progress. After this
@@ -377,43 +408,61 @@ class Settings(BaseSettings):
 
     # ── Intra-turn compaction (turn-1116) ────────────────────────────
     # Master flag for the mid-turn context governor: an incremental live
-    # -array estimator, ONE batched ref-out epoch per soft-trigger
-    # crossing (hysteresis), a hard ceiling that denies new large
+    # -array estimator, growth-hysteresis batched ref-out epochs, a hard
+    # ceiling that denies new large
     # dispatches, and a one-truncation output circuit-breaker. Default
     # ON with conservative thresholds; set
     # ``INTRA_TURN_COMPACTION_ENABLED=false`` to disable the whole
     # mechanism and fall back to the reactive request-fit reduction
     # alone.
     intra_turn_compaction_enabled: bool = Field(default=True)
-    # Soft trigger: at/above this share of the model context window, the
-    # governor runs ONE batched ref-out epoch (spilling large tool
-    # results to the thread store and leaving previews + refs). Between
+    # Soft trigger: at/above this share of the model context window (or a
+    # mode's lower working-set trigger), the governor runs a batched ref-out
+    # epoch (spilling large tool results to the thread store and leaving
+    # previews + refs). Between
     # epochs the live array is append-only, which is also what keeps
     # normal dispatches cache-hits instead of prefix rewrites. Chosen
     # conservatively low: an early epoch costs one rewrite; a late one
     # risks the truncation spiral it exists to prevent.
     intra_turn_soft_trigger_share: float = Field(default=0.5, gt=0, lt=1)
-    # Hard ceiling: at/above this share, new large tool dispatches are
-    # refused (model-visible message) and the loop is pointed at a clean
-    # finish at the next dispatch boundary instead of relying on
-    # mid-dispatch loop breaks.
-    intra_turn_hard_ceiling_share: float = Field(default=0.65, gt=0, le=1)
-    # Minimum serialized tool-call arguments (characters) the hard
-    # ceiling treats as a "large" dispatch. Read-only tools are never
-    # gated, so the model can still inspect results it already holds.
-    intra_turn_large_dispatch_min_chars: int = Field(default=2000)
-    # Spill-on-arrival: previews use the first/last excerpt of a large
-    # tool result; only fresh (non-ref, non-preview) content counts.
-    # Pending dedupes collapse to a single line when one preview has
-    # appeared this many times in the current result.
+    # Hard ceiling: at/above this share, non-read tool dispatches whose
+    # fitted proposed request still crosses the threshold are refused
+    # (model-visible message) and the loop is pointed at a clean finish.
+    intra_turn_hard_ceiling_share: float = Field(default=0.85, gt=0, le=1)
+    # Affordable window: when the turn has a processed-token envelope
+    # (``TurnBudget.max_total_tokens``), the soft/hard shares apply to
+    # ``min(model window, envelope * share)`` instead of the raw window.
+    # Every cache-cold request (resume, model switch, epoch rewrite)
+    # re-processes the whole prompt against that envelope, so a large
+    # window must not license residency the turn cannot afford to resend.
+    intra_turn_envelope_window_share: float = Field(default=0.8, gt=0, le=1)
+    # Spill-on-arrival (pressure path): once the live-array estimate is
+    # at/above the soft trigger, large fresh (non-ref, non-preview) tool
+    # results are replaced by a preview + ref at delivery. Pending dedupes
+    # collapse to a single line when one preview has appeared this many
+    # times in the current result.
     intra_turn_spill_preview_repeat_limit: int = Field(default=3)
-    # Cache economics constants for bust accounting/logging (0.0 =
-    # use the manifest's per-model prices). Provider-standard defaults:
-    # cache reads bill at roughly 0.1x base input and cache creation at
-    # roughly 1.25x, so rewriting a cached suffix re-pays it at about
-    # 12.5x the read rate. Accounting only — they never hard-gate.
+    # Cache economics fallback: cached-read and cache-write prices as a
+    # share of the uncached input price, used when the model manifest
+    # does not publish ``cache_read_price``. Provider-standard defaults:
+    # reads bill at roughly 0.1x base input and 5-minute cache creation
+    # at roughly 1.25x. The supersession epoch folds only when the
+    # rewrite this costs is repaid by later requests (see
+    # ``kernel.turn_phases._history.fold_pays_off``). 1.0/1.0 models a
+    # provider without prompt caching, where every fold pays off.
     intra_turn_cache_read_share: float = Field(default=0.1, ge=0, le=1)
     intra_turn_cache_write_share: float = Field(default=1.25, ge=0)
+    # Pack-declared history (``kernel.history``): floor of stale resident
+    # tokens before the supersession epoch evaluates a fold at all. Above
+    # the floor the cache-cost model decides; the floor only skips
+    # rewrites too small to matter. Sized from the 2026-11 coding turns,
+    # where stale reads/verify reports reached ~30K tokens and the
+    # 2K-floor interim shipped with the first history-semantics commit
+    # fired the epoch eight times in
+    # one turn, each rewrite re-purchasing the cached prefix at full input
+    # price for a net loss. 0 disables the in-turn epoch; the turn-start
+    # rehydrate still folds stale and turn-scoped results.
+    history_epoch_min_tokens: int = Field(default=12_000, ge=0)
 
     # ── Context mapper: scoring weights ────────────────────────────────
     # Per-provenance authority multiplier, applied in the mapper's
@@ -499,6 +548,8 @@ class Settings(BaseSettings):
         "max_tool_iterations",
         "max_auto_approved_actions",
         "fork_child_max_tool_iterations",
+        "fork_child_min_tool_calls",
+        "fork_child_min_total_tokens",
         "delegate_child_max_tool_iterations",
         "delegate_max_depth",
         "delegation_grace_seconds",
@@ -515,6 +566,8 @@ class Settings(BaseSettings):
         "hint_cycle_min_len",
         "hint_override_limit",
         "max_identical_tool_batch_repeats",
+        "max_dereference_calls_per_turn",
+        "max_dereference_repeats_per_turn",
         "workflow_plan_idle_turn_limit",
         "chat_mode_dense_content_min_chars",
         "context_budget_token_char_ratio",
@@ -523,10 +576,11 @@ class Settings(BaseSettings):
         "context_reduction_target_share",
         "intra_turn_soft_trigger_share",
         "intra_turn_hard_ceiling_share",
-        "intra_turn_large_dispatch_min_chars",
+        "intra_turn_envelope_window_share",
         "intra_turn_spill_preview_repeat_limit",
         "intra_turn_cache_read_share",
         "intra_turn_cache_write_share",
+        "history_epoch_min_tokens",
         mode="before",
     )
     @classmethod

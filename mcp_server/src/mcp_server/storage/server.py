@@ -6,21 +6,32 @@ resolution, deny-glob policy, and model-manifest read/write. Hosts or
 tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (11 total):
+Tools (18 total):
 
-- File I/O (9): ``read_file``, ``read_file_range``, ``write_file``,
+- File I/O (16): ``read_file``, ``read_file_range``, ``write_file``,
   ``append_file``, ``edit_file``, ``list_files``, ``delete_file``,
-  ``stat_file``, ``make_dir`` — scoped to ``data_dir / "files"``.
+  ``delete_files``, ``move_file``, ``move_directory``, ``move_files``,
+  ``delete_directory``, ``purge_trash``, ``stat_file``, ``make_dir``,
+  ``make_dirs`` — scoped to ``data_dir / "files"``.
   ``read_file_range`` returns a char-bounded slice (never splits
   multibyte codepoints); ``append_file`` creates parent dirs and the
   file if absent; ``edit_file`` replaces one exact substring in place,
-  so changing a line never requires reconstructing the whole document.
+  so changing a line never requires reconstructing the whole document;
+  ``move_directory`` moves a whole subtree as one atomic no-overwrite
+  rename; ``delete_directory`` is rmdir-only by default and trashes
+  the subtree when recursion is explicitly named; ``purge_trash``
+  hard-deletes the oldest trash sessions in bounded slices; the batch
+  tools (``delete_files``, ``make_dirs``, ``move_files``) take explicit
+  path or pair lists (no glob expansion), execute in order with
+  per-item receipts, never abort mid-batch, and cap at 100 items.
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
   ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
 
-``--readonly`` disables writes, deletes, and manifest writes.
+``--readonly`` disables writes, deletes, moves, and manifest writes.
 ``--deny-glob`` (repeatable) + ``LISA_STORAGE_DENY_GLOBS`` env add
-glob patterns to the file-sandbox denylist.
+glob patterns to the file-sandbox denylist. ``.trash/**`` is always
+denied: the trash subtree is hidden from every routine operation
+(restore moves and purges are the sanctioned exceptions).
 
 Error contract: the SDK backend returns ``json.dumps({"error": ...})``
 strings on failure (its contract is locked by ``sdk/storage/tests``). This
@@ -329,10 +340,161 @@ async def delete_file(
 ) -> str:
     """Delete a file from the files sandbox.
 
-    Fails on directories (delete is files-only). Respects ``--readonly``.
-    Raises :class:`ToolError` on readonly, not-found, or delete failure.
+    Fails on directories (delete is files-only). Does not follow
+    symlinks: a leaf symlink is deleted itself, never its target.
+    Respects ``--readonly``. Raises :class:`ToolError` on readonly,
+    not-found, or delete failure.
     """
     return _raise_on_error(_resolve_deps(ctx).backend.delete_file(path))
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def delete_files(
+    paths: list[str],
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Delete files in list order with per-item receipts.
+
+    A batch is a queue of independent atomic operations with one
+    receipt, not a transaction: each item is validated (existence,
+    policy, type) and executed in list order, a failing item records
+    its own error, and the batch never aborts mid-way. No glob
+    expansion — explicit path lists only. The summary carries ``ok``
+    (True only when every item succeeded), ``count``, ``succeeded``,
+    ``failed``, and per-item ``results``; batches cap at 100 items.
+    Raises :class:`ToolError` only on batch-level refusals (readonly,
+    empty list, over-cap) — per-item failures are data in the summary,
+    not tool errors.
+    """
+    return _raise_on_error(_resolve_deps(ctx).backend.delete_files(paths))
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def move_file(
+    source: str,
+    destination: str,
+    expected_sha256: str = "",
+    create_parents: bool = False,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Move one regular file inside the files sandbox without overwrite.
+
+    The operation is atomic on supported Linux filesystems. Source and
+    destination paths must stay inside ``data_dir/files``. Symlinks,
+    hard links, and directories are refused, as are moves across
+    filesystems. ``expected_sha256`` can bind the move to a revision
+    reported by ``stat_file``. Set ``create_parents`` to create a missing
+    destination directory chain.
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.move_file(
+            source,
+            destination,
+            expected_sha256=expected_sha256,
+            create_parents=create_parents,
+        )
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def move_directory(
+    source: str,
+    destination: str,
+    create_parents: bool = False,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Move one directory inside the files sandbox without overwrite.
+
+    The whole subtree moves as one atomic rename on supported Linux
+    filesystems — the same descriptor-relative, no-overwrite machinery
+    as ``move_file``. The source must be a real directory: symlinks are
+    refused, and a destination inside the source subtree is an error.
+    A missing destination directory chain is created only when
+    ``create_parents`` is true.
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.move_directory(
+            source,
+            destination,
+            create_parents=create_parents,
+        )
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def move_files(
+    pairs: list[dict[str, str]],
+    create_parents: bool = False,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Move regular files in list order with per-pair receipts.
+
+    Same batch contract as ``delete_files``: validate-then-execute in
+    list order, per-pair receipts, never a mid-batch abort, no glob
+    expansion, 100-pair cap. Each pair is ``{"source": ...,
+    "destination": ..., "expected_sha256"?: ...}`` — the hash is
+    optional per pair and binds that move to a revision reported by
+    ``stat_file``. Set ``create_parents`` to create missing
+    destination directory chains. Raises :class:`ToolError` only on
+    batch-level refusals (readonly, empty list, over-cap); per-pair
+    failures are summary data.
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.move_files(pairs, create_parents=create_parents)
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def delete_directory(
+    path: str,
+    recursive: bool = False,
+    trash: bool = True,
+    expected_empty: bool = False,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Delete one directory inside the files sandbox.
+
+    The default is rmdir-only: the directory must be empty, or the
+    call fails with a clear error instead of touching anything.
+    ``recursive=True`` is the explicitly-named blast-radius mode — by
+    default it renames the subtree into a timestamped ``.trash/``
+    session first (reversible; the receipt carries ``trashed_to``),
+    and ``trash=False`` is the hard delete. Symlinks inside the tree
+    are never followed: each link is removed itself, its target
+    survives. ``expected_empty`` refuses a non-empty directory even
+    under ``recursive=True`` (staleness guard).
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.delete_directory(
+            path,
+            recursive=recursive,
+            trash=trash,
+            expected_empty=expected_empty,
+        )
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+async def purge_trash(
+    older_than: str | None = None,
+    limit: int = 100,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Hard-delete the oldest trash sessions, bounded per call.
+
+    The sanctioned purge path: each call removes at most ``limit``
+    oldest timestamped ``.trash/`` sessions and returns
+    ``{purged, has_more}``, so a large trash is drained across
+    bounded calls rather than one unbounded sweep. ``older_than``
+    (RFC 3339) is an optional age cutoff — only sessions strictly
+    older than it are removed. Purge only ever runs when explicitly
+    called; there is no background sweeper, and delete never
+    auto-purges (that would destroy the safety window the trash
+    substrate exists to provide).
+    """
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.purge_trash(older_than=older_than, limit=limit)
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
@@ -352,7 +514,7 @@ async def stat_file(
     return _raise_on_error(_resolve_deps(ctx).backend.stat_file(path))
 
 
-@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=False))
 async def make_dir(
     path: str,
     ctx: Context[StorageDeps, Any] | None = None,
@@ -363,6 +525,21 @@ async def make_dir(
     make_dir failure.
     """
     return _raise_on_error(_resolve_deps(ctx).backend.make_dir(path))
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=False))
+async def make_dirs(
+    paths: list[str],
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Create directories (and parents) in list order, per-item receipts.
+
+    Same batch contract as ``delete_files``: validate-then-execute in
+    list order, per-item receipts, never a mid-batch abort, no glob
+    expansion, 100-item cap. Raises :class:`ToolError` only on
+    batch-level refusals (readonly, empty list, over-cap).
+    """
+    return _raise_on_error(_resolve_deps(ctx).backend.make_dirs(paths))
 
 
 # ── Model manifest tools ────────────────────────────────────────────────────

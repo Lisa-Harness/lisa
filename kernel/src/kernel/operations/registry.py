@@ -746,8 +746,14 @@ def _build_completion_audit(
     recorder = ctx.request_recorder
     if recorder is None:
         return None
+    from kernel.call_identity import mint_call_id
     from kernel.seams.host_adapter import CompletionAuditContext
 
+    # One off-turn completion is one call, so it gets its own ``call_id``
+    # (Evidence Envelope §2). Minting here rather than reusing the context's
+    # field means two completions made by one operation dispatch stay
+    # distinguishable, which is the same reason the turn loop mints per call.
+    off_turn_call_id = mint_call_id()
     return CompletionAuditContext(
         record_request=recorder,
         event_bus=ctx.event_bus,
@@ -755,6 +761,9 @@ def _build_completion_audit(
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
         user_slug=str(getattr(ctx, "user_slug", "") or ""),
         thread_store_slug=str(getattr(ctx, "thread_store_slug", "") or ""),
+        call_id=off_turn_call_id,
+        dispatch_id=str(getattr(ctx, "dispatch_id", "") or ""),
+        record_response=ctx.response_recorder,
     )
 
 
@@ -842,6 +851,13 @@ def _emit_operation_telemetry(
             duration_ms=duration_ms,
             error_message=err_msg,
             turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+            # Execution identity and lineage (Evidence Envelope §4), stamped
+            # exactly like ``turn_index``: an operation's dispatch row must
+            # name the execution it belonged to and, for a child turn, the
+            # turn and dispatch that spawned it.
+            turn_id=getattr(ctx, "turn_id", "") or None,
+            parent_turn_id=getattr(ctx, "parent_turn_id", "") or None,
+            parent_dispatch_id=getattr(ctx, "parent_dispatch_id", "") or None,
             user_slug=ctx.user_slug,
             thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
             normalized_fields=list(ctx.normalized_fields) if ctx.normalized_fields else None,
@@ -1140,9 +1156,20 @@ def _publish_rejection_telemetry(
         duration_ms=0,
         error_message=error_message,
         turn_index=resolve_turn_index(getattr(ctx, "turn_index", None)),
+        turn_id=getattr(ctx, "turn_id", "") or None,
+        parent_turn_id=getattr(ctx, "parent_turn_id", "") or None,
+        parent_dispatch_id=getattr(ctx, "parent_dispatch_id", "") or None,
         user_slug=ctx.user_slug,
         thread_store_slug=getattr(ctx, "thread_store_slug", "") or None,
         normalized_fields=normalized_fields,
+        # Dispatch-level join keys (Evidence Envelope §2). A rejected operation
+        # dispatch is a dispatch: it carries the same identity the
+        # post-execution publish stamps, so the rejection row and the
+        # transcript's tool result address each other by tool_call_id.
+        dispatch_id=getattr(ctx, "dispatch_id", "") or None,
+        tool_call_id=getattr(ctx, "tool_call_id", "") or None,
+        call_id=getattr(ctx, "call_id", "") or None,
+        iteration=getattr(ctx, "iteration", None),
     )
     schedule_telemetry_publish(
         ctx.event_bus,
@@ -1189,6 +1216,14 @@ async def _require_approval(
         update={
             "turn_index": resolve_turn_index(ctx.turn_index),
             "thread_store_slug": getattr(ctx, "thread_store_slug", "") or "",
+            # Dispatch-level join keys (Evidence Envelope §2), stamped like
+            # ``turn_index`` and likewise excluded from ``action_digest``.
+            "tool_call_id": getattr(ctx, "tool_call_id", "") or "",
+            "dispatch_id": getattr(ctx, "dispatch_id", "") or "",
+            # Execution identity (Evidence Envelope §4): the durable approval
+            # row must join the execution that requested the action, not only
+            # its turn position. Excluded from ``action_digest`` too.
+            "turn_id": getattr(ctx, "turn_id", "") or "",
         }
     )
     if ctx.approval_request_id:

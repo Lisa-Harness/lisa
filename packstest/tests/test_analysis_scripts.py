@@ -93,3 +93,18 @@ def test_direct_io_policy_allowlist_carve_out(tmp_path: Path) -> None:
     carve_out = tmp_path / "carve.py"
     carve_out.write_text(snippets[0] + "\n", encoding="utf-8")
     assert policy._check_file(carve_out, rel_path, scan_reads=False, allowlist_enabled=True) == []
+
+
+def test_direct_io_policy_flags_ffi_rename_and_path_rename(tmp_path: Path) -> None:
+    policy = _load_script("check_direct_io_policy")
+    dirty = tmp_path / "dirty.py"
+    dirty.write_text(
+        "result = renameat2(src_fd, b'a', dst_fd, b'b', 1)\nos.rename(a, b)\n",
+        encoding="utf-8",
+    )
+
+    violations = policy._check_file(dirty, "dirty.py", scan_reads=False, allowlist_enabled=True)
+
+    assert len(violations) == 2
+    assert any("renameat2" in snippet for _path, _line, snippet in violations)
+    assert any("os.rename" in snippet for _path, _line, snippet in violations)

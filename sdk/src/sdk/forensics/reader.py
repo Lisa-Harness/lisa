@@ -41,6 +41,7 @@ from sdk.forensics._join import build_bundle, turn_from_entry
 from sdk.forensics._logrec import (
     DEFAULT_MAX_BYTES,
     JsonlTail,
+    check_schema_version,
     filter_owned,
     filter_window,
     parse_ts,
@@ -229,6 +230,7 @@ class ForensicReader:
         costs = self._read_costs(sources, notes, wanted, floor)
         approvals = self._read_approvals(sources, notes, wanted, floor, max_records)
         log_errors = self._read_log_errors(sources, now, notes, max_records)
+        self._note_schema_versions(sources, notes)
 
         bundle = build_bundle(
             generated_at=now.isoformat(),
@@ -425,6 +427,7 @@ class ForensicReader:
         sources.decisions_log = True
         records = self._owned(_since(tail, floor), _DECISIONS_FILENAME, notes)
         self._note_truncation(tail, _DECISIONS_FILENAME, "the selected turns", notes)
+        records = self._filter_schema_versions(records, sources)
         self._note_sequence_gaps(records, _DECISIONS_FILENAME, notes)
         decisions = _cap_unattributed(
             [r for r in records if r.get("topic") == "turn.decision"],
@@ -457,6 +460,7 @@ class ForensicReader:
         sources.token_usage_log = True
         self._note_truncation(tail, _TOKEN_USAGE_FILENAME, "the selected turns", notes)
         owned = self._owned(_since(tail, floor), _TOKEN_USAGE_FILENAME, notes)
+        owned = self._filter_schema_versions(owned, sources)
         self._note_sequence_gaps(owned, _TOKEN_USAGE_FILENAME, notes)
         return [r for r in owned if r.get("turn_index") in wanted]
 
@@ -486,6 +490,7 @@ class ForensicReader:
         sources.approvals_log = True
         self._note_truncation(tail, _APPROVALS_FILENAME, "the selected turns", notes)
         owned = self._owned(_since(tail, floor), _APPROVALS_FILENAME, notes)
+        owned = self._filter_schema_versions(owned, sources)
         self._note_sequence_gaps(owned, _APPROVALS_FILENAME, notes)
         return _cap_unattributed(owned, wanted, max_records, "approval", notes)
 
@@ -505,6 +510,44 @@ class ForensicReader:
                 "excluded; evidence for turns before the upgrade is incomplete"
             )
         return owned.records
+
+    def _filter_schema_versions(
+        self,
+        records: list[dict[str, Any]],
+        sources: BundleSources,
+    ) -> list[dict[str, Any]]:
+        """Apply the schema-version contract to one ledger's rows.
+
+        Rows newer than the reader understands are excluded from the join —
+        their shape is unknown, and parsing them anyway could fabricate
+        evidence — but they are counted, never silently dropped. Version-0
+        rows predate the stamp: they are read best-effort and counted. Both
+        totals are summarized once, by :meth:`_note_schema_versions`.
+        """
+        kept: list[dict[str, Any]] = []
+        for record in records:
+            version, unreadable = check_schema_version(record)
+            if unreadable:
+                sources.unreadable_row_count += 1
+                continue
+            if version == 0:
+                sources.legacy_row_count += 1
+            kept.append(record)
+        return kept
+
+    def _note_schema_versions(self, sources: BundleSources, notes: list[str]) -> None:
+        """Summarize the schema-version counts as one honest read note."""
+        if sources.legacy_row_count:
+            notes.append(
+                f"{sources.legacy_row_count} ledger row(s) predate schema_version stamping "
+                "and were read best-effort; forensic join keys may be absent on them"
+            )
+        if sources.unreadable_row_count:
+            notes.append(
+                f"{sources.unreadable_row_count} ledger row(s) carry a schema_version newer "
+                "than this reader understands and were excluded from the join — a newer "
+                "kernel may have written evidence this read cannot see"
+            )
 
     def _read_log_errors(
         self,

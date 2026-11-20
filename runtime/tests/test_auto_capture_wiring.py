@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 from kernel.capability_binding import CapabilityRef
 from kernel.models import OperationDefinition
+from runtime.turn_context_identity import NO_TURN_IDENTITY
 from runtime.turn_hooks_builder import build_turn_hooks
 
 from runtime import HostRuntime
@@ -100,7 +101,7 @@ def test_memory_provider_config_without_catalog_capabilities_builds_hooks(
         },
     )
 
-    hooks = build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
 
     assert hooks.services.capability_binding_provider is not None
     assert (
@@ -135,7 +136,7 @@ async def test_auto_capture_context_carries_pack_config_resolver_and_router(
             )
         },
     )
-    hooks = build_turn_hooks(runtime, {"mode_id": "default"})
+    hooks = build_turn_hooks(runtime, identity=NO_TURN_IDENTITY)
     assert hooks.lifecycle is not None
 
     captured: dict[str, Any] = {}

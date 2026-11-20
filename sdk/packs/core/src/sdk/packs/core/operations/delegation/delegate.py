@@ -201,6 +201,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         # Thread the operation's own wall-clock ceiling so the child
         # force-completes gracefully before the registry's hard cancel.
         timeout_seconds=int(getattr(ctx, "operation_timeout_seconds", 0) or 0),
+        # Lineage (Evidence Envelope §4): the child records the dispatch that
+        # spawned it, so its entry joins back to this delegate dispatch.
+        dispatch_id=str(getattr(ctx, "dispatch_id", "") or ""),
     )
 
     result = await host.delegate(spec)

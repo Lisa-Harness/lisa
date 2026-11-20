@@ -61,6 +61,26 @@ _TOOL = {
 # ── Unit: helpers ────────────────────────────────────────────────────
 
 
+def test_wire_kwargs_never_read_call_kind() -> None:
+    """FIX-2: routing metadata must never reach a provider wire payload.
+
+    ``CompletionRequest.call_kind`` is host-side routing metadata (the
+    replay gateway routes on it); the wire kwargs builders enumerate the
+    request fields they send, so the field stays off the wire. A builder
+    that started serializing it would leak host routing state to
+    providers.
+    """
+    import inspect
+
+    from sdk.providers import openai_gateway
+
+    for builder in (
+        openai_gateway.build_openai_completion_kwargs,
+        openai_gateway.build_openai_responses_kwargs,
+    ):
+        assert "call_kind" not in inspect.getsource(builder)
+
+
 class TestSanitizeChatToolNames:
     def test_dotted_name_sanitized_with_reverse_map(self) -> None:
         sanitized, name_map = sanitize_chat_tool_names([_TOOL])
@@ -552,8 +572,8 @@ def test_extract_usage_reads_cost_from_sdk_model_extra() -> None:
     assert usage.provider_cost_usd == pytest.approx(0.00042)
 
 
-def test_extract_usage_reports_zero_when_provider_omits_cost() -> None:
-    """Providers that publish no cost leave the field at 0.0 (not reported)."""
+def test_extract_usage_reports_unknown_when_provider_omits_cost() -> None:
+    """Providers that publish no cost leave the field unknown (``None``)."""
     from sdk.providers.openai_gateway import extract_openai_completion_usage
 
     response = SimpleNamespace(
@@ -561,7 +581,7 @@ def test_extract_usage_reports_zero_when_provider_omits_cost() -> None:
     )
     usage = extract_openai_completion_usage(response)
     assert usage is not None
-    assert usage.provider_cost_usd == 0.0
+    assert usage.provider_cost_usd is None
 
 
 @pytest.mark.asyncio

@@ -37,7 +37,7 @@ file extension). All derived file paths are computed from this base.
 | `<base>.dict.zstd` | Trained zstd dictionary (optional, immutable once created) |
 | `<base>.lock` | Cross-process advisory lock coordinating reads, appends, and segment seals |
 | `<base>.reservations.json` | In-flight turn reservations (`{token, pid, turn}`); present only while turns are running |
-| `<base>.results/r<sha256>.json` | Tool results, model request snapshots (turn loop **and** operation-dispatch calls — the latter addressed by `model.request` ledger rows), continuation objects |
+| `<base>.results/r<sha256>.json` | Tool results, model request snapshots (turn loop **and** operation-dispatch calls — the latter addressed by `model.request` ledger rows), model response snapshots (addressed by `turn_input.calls[].response_ref` and the `model.request` row's `response_ref`), continuation objects |
 
 Where `<base> = <thread_dir>/<user_slug>` (or
 `<thread_dir>/<user_slug>--<conversation_id>` when `LISA_CONVERSATION_ID` is
@@ -91,8 +91,8 @@ One JSON object per line in the active and sealed segments:
 | `departed_modes` | list[string] | no | Modes the turn handed off *out of*, in order, before it ended in `handoff_to`; lets the workflow view credit a plan step completed by an in-turn handoff chain |
 | `yielded` | bool | no | True when the turn paused to ask the user (YieldAction) |
 | `yield_question` | string | no | The question surfaced when `yielded` is true |
-| `turn_input` | object | no | Model request archive: runtime calls use `{"calls": [{"iteration": 1, "ref": "r<sha256>"}]}`; expand the result object to recover the exact request and `context_budget`. A kernel host without a recording hook can retain inline snapshots. Absent when no model call occurred. |
-| `transcript` | list[object] | no | Verbatim non-system messages the turn added: its user message, every assistant tool call (with arguments), and every tool result. Replayed messages from earlier turns are excluded. The latest turn and its unfinished task (paused, awaiting approval, host-approved) are replayed at full fidelity; `thread_read_range(include_transcript=true)` returns older ones. Redaction applies on read. |
+| `turn_input` | object | no | Model call archive: runtime calls use `{"calls": [{"call_id": "call-<hex>", "iteration": 1, "attempt": "primary", "ref": "r<sha256>", "response_ref": "r<sha256>"}]}`. Expand the `ref` object to recover the exact request and `context_budget`; expand `response_ref` to recover the response snapshot (outcome, content, tool calls, reasoning, finish reason, streaming facts). `attempt` is one of `primary`, `stream_tool_fallback`, `truncation_continuation`. `response_ref` is `null` when the response was not recorded (no hook, or a recording failure) and absent on entries written before the response archive existed; a reader reports either as an archive gap. A kernel host without a recording hook can retain inline snapshots. Absent when no model call occurred. |
+| `transcript` | list[object] | no | Verbatim non-system messages the turn added: its user message, every assistant tool call (with arguments), and every tool result. Rehydrated messages from earlier turns are excluded. The latest turn and its unfinished task (paused, awaiting approval, host-approved) are rehydrated at full fidelity; `thread_read_range(include_transcript=true)` returns older ones. Redaction applies on read. |
 | `memory_ids` | list[int] | no | Memory records minted from this turn (auto-capture or `synthesize_and_store_learning`). The thread → memory provenance link. |
 | `prev_entry_sha256` | string | no | SHA-256 of the previous stored entry's raw line (UTF-8, no newline): the tamper-evidence chain link. Absent on the first chained entry (the chain head) and on entries written before the chain existed. See [hash chain](#hash-chain). |
 
@@ -332,7 +332,7 @@ thread realignment (hard cutover, no compat shims).
 
 `LISA_THREAD_SEGMENT_TURNS` (256) controls how often the active segment
 is sealed. Session `context.history` configures recent-message selection,
-digest projection, and optional replay ceilings. Context windows and
+digest projection, and optional rehydration ceilings. Context windows and
 retrieval pages stay bounded even as durable history grows.
 
 ## Scaling notes

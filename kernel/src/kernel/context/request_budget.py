@@ -12,6 +12,16 @@ from kernel.config import settings
 from kernel.context.context_budget import RequiredContextBudgetError, model_context_window_tokens
 from kernel.provider_contracts import CompletionRequest, RequestContextBudget, RequestTokenCount
 
+# ``fit_request_context`` raises ``RequiredContextBudgetError``; the
+# re-export keeps the exception part of this module's public contract.
+__all__ = [
+    "RequiredContextBudgetError",
+    "ResultProjector",
+    "estimate_request_tokens",
+    "fit_request_context",
+    "request_input_text",
+]
+
 _PROJECTION_SEARCH_STEPS = 20
 
 
@@ -91,8 +101,12 @@ def fit_request_context(
     request: CompletionRequest,
     projector: ResultProjector | None,
     counter: Callable[[CompletionRequest], RequestTokenCount] = estimate_request_tokens,
+    *,
+    tool_budget_bytes: int | None = None,
 ) -> CompletionRequest:
-    """Keep full permitted evidence until the entire request reaches its window."""
+    """Fit the whole request, optionally applying an active tool-residency cap."""
+    if tool_budget_bytes is not None and tool_budget_bytes < 0:
+        raise ValueError("Tool-result budget must be non-negative.")
     window = model_context_window_tokens(request.model_def)
     margin = ceil(window * settings.context_request_margin_share)
     required_messages = [
@@ -114,14 +128,13 @@ def fit_request_context(
         for message in request.messages
         if message.get("role") == "tool"
     )
-    # Redaction still applies when no reduction is needed.
+    budget = payload_bytes if tool_budget_bytes is None else min(payload_bytes, tool_budget_bytes)
     candidate = (
-        replace(request, messages=projector(request.messages, budget_bytes=payload_bytes))
+        replace(request, messages=projector(request.messages, budget_bytes=budget))
         if projector is not None
         else request
     )
     counted = _count(candidate, counter)
-    budget = payload_bytes
     headroom = 0
     if counted.tokens > input_limit:
         if projector is None:
@@ -132,8 +145,9 @@ def fit_request_context(
         # unchanged prefix instead of reducing (and rewriting) every call.
         tool_room = max(0, input_limit - required.tokens)
         headroom = tool_room - int(tool_room * settings.context_reduction_target_share)
+        projection_high = payload_bytes if tool_budget_bytes is None else budget
         candidate, counted, budget = _fit_projection(
-            request, projector, counter, input_limit - headroom, payload_bytes
+            request, projector, counter, input_limit - headroom, projection_high
         )
     return replace(
         candidate,

@@ -1441,16 +1441,18 @@ def _compute_capability_routing_hint(
             covering_targets,
         )
 
-    # ── 3b. Planner-mode escalation for complex multi-step queries ─────
+    # ── 3b. Planner-mode escalation for genuinely multi-mode queries ──
     # When the request is complex (3+ remaining gap intents, or 2+ gap
     # intents in a sequential chain), hand off to the ``planner`` action
-    # mode first instead of routing directly to the first target or forking.
+    # mode first instead of routing directly to the first target or forking,
+    # but only when no single target already covers the complete gap.
     # ``planner`` runs ``plan_workflow`` (one cheap model call) to
     # disambiguate the routing target, then the model calls
-    # ``transition_stage`` with the returned target. Simple queries (1-2
-    # intents, non-sequential) still get direct hints below — zero extra
-    # model calls for the common case. This separates planning from
-    # execution without a separate mechanism.
+    # ``transition_stage`` with the returned target. A fast-path match may
+    # attribute several synonymous tags to one mode (for example
+    # researcher: research/gather/learn). Planning that single-mode work
+    # adds a structured-output dependency and extra model calls without
+    # improving routing, so complete single-target coverage stays direct.
     # Tag-blind: the kernel only checks whether ``planner`` is among the
     # routable targets and whether the gap is large/sequential; it does not
     # name any intent vocabulary. This runs BEFORE the sequential/fork
@@ -1482,7 +1484,7 @@ def _compute_capability_routing_hint(
     # single-handoff / fork branches instead. See
     # ``kernel.routing_vocabulary.is_plan_reliable_for_model``.
     # sequential rather than hand-rolling the first step.
-    if _plan_escalation_applies(
+    if not covering_targets and _plan_escalation_applies(
         routing_targets=routing_targets,
         current_satisfied=current_satisfied,
         gap_intents=gap_intents,

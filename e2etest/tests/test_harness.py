@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,8 +20,8 @@ from e2etest.driver import (
 from e2etest.environment import RunPaths
 from e2etest.oracles import Evidence, evaluate
 from e2etest.scenario import OracleSpec, ScenarioError, load_scenario
-from e2etest.scripted import ScriptError, ScriptTurn, load_script
 from kernel.provider_contracts import CompletionRequest
+from runtime.testing.scripted import ScriptError, ScriptTurn, load_script
 from runtime.types import HostCommandResult
 
 
@@ -129,6 +131,113 @@ def _write_memory_db(data_dir: Path, rows: list[tuple[str, str, str]]) -> None:
             "memory_scope TEXT, surface_id TEXT);"
         )
         conn.executemany("INSERT INTO memories VALUES ('episodic', 'active', ?, ?, ?)", rows)
+
+
+@pytest.mark.asyncio
+async def test_driver_distinguishes_close_timeout_from_close_failure() -> None:
+    from types import SimpleNamespace
+
+    from e2etest.driver import DriverOutcome, _drive
+
+    class FakeRuntime:
+        async def start(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            raise TimeoutError("close raised directly")
+
+    scenario = SimpleNamespace(
+        turns=[],
+        budgets=SimpleNamespace(wall_clock_s=1),
+    )
+    outcome = DriverOutcome()
+
+    await _drive(FakeRuntime(), scenario, outcome)
+
+    assert outcome.aborted == "runtime.aclose() failed: close raised directly"
+
+
+@pytest.mark.asyncio
+async def test_driver_suppresses_close_cancellation() -> None:
+    from types import SimpleNamespace
+
+    from e2etest.driver import DriverOutcome, _drive
+
+    class FakeRuntime:
+        async def start(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            raise asyncio.CancelledError
+
+    scenario = SimpleNamespace(
+        turns=[],
+        budgets=SimpleNamespace(wall_clock_s=1),
+    )
+    outcome = DriverOutcome()
+
+    await _drive(FakeRuntime(), scenario, outcome)
+
+    assert outcome.aborted == ""
+
+
+@pytest.mark.asyncio
+async def test_close_runtime_records_wait_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import e2etest.driver as driver_module
+
+    class FakeRuntime:
+        async def aclose(self) -> None:
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(driver_module, "_RUNTIME_ACLOSE_TIMEOUT_S", 0.0)
+    outcome = DriverOutcome()
+    await driver_module._close_runtime(FakeRuntime(), outcome)
+
+    assert outcome.aborted == "runtime.aclose() timed out"
+
+
+@pytest.mark.asyncio
+async def test_close_runtime_records_direct_base_exception_group() -> None:
+    from e2etest.driver import DriverOutcome, _close_runtime
+
+    class FakeRuntime:
+        async def aclose(self) -> None:
+            raise BaseExceptionGroup("close", [RuntimeError("cancel scope")])
+
+    outcome = DriverOutcome()
+    await _close_runtime(FakeRuntime(), outcome)
+
+    assert outcome.aborted == "runtime.aclose() interrupted"
+
+
+@pytest.mark.asyncio
+async def test_close_runtime_records_ordinary_close_exception() -> None:
+    from e2etest.driver import DriverOutcome, _close_runtime
+
+    class FakeRuntime:
+        async def aclose(self) -> None:
+            raise RuntimeError("close failed")
+
+    outcome = DriverOutcome()
+    await _close_runtime(FakeRuntime(), outcome)
+
+    assert outcome.aborted == "runtime.aclose() failed: close failed"
+
+
+@pytest.mark.asyncio
+async def test_close_runtime_records_direct_base_exception() -> None:
+    from e2etest.driver import DriverOutcome, _close_runtime
+
+    class FakeRuntime:
+        async def aclose(self) -> None:
+            raise BaseException("close interrupted")
+
+    outcome = DriverOutcome()
+    await _close_runtime(FakeRuntime(), outcome)
+
+    assert outcome.aborted == "runtime.aclose() interrupted: close interrupted"
 
 
 def test_driver_forwards_surface_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -374,6 +483,80 @@ def test_diff_allow_and_check_restore_judge_source_against_original_tests(
     assert "restored=['f.txt']" in results[3].detail
 
 
+def test_ledger_oracles_read_decisions_rows(committed_run: Evidence) -> None:
+    """``ledger_contains``/``ledger_error`` assert over the decisions ledger."""
+    ledger = committed_run.paths.data_dir / "logs"
+    ledger.mkdir(parents=True, exist_ok=True)
+    (ledger / "decisions.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "tool_telemetry",
+                "target_id": "coding_edit_files",
+                "status": "error",
+                "error_message": (
+                    "Tool 'coding_edit_files' received invalid parameters: "
+                    "`edits` must be one JSON array of edit records"
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    results = evaluate(
+        (
+            _spec("ledger_contains", text="must be one JSON array of edit records"),
+            _spec("ledger_error", target="coding_edit_files"),
+            _spec("ledger_error", target="coding_edit_files", text="array"),
+            _spec("ledger_contains", text="not in any row"),
+            _spec("ledger_error", target="coding_read_file"),
+        ),
+        committed_run,
+    )
+    assert [r.passed for r in results] == [True, True, True, False, False], [
+        (r.name, r.detail) for r in results
+    ]
+
+
+def test_usage_oracle_rejects_unknown_and_missing_arguments(committed_run: Evidence) -> None:
+    from e2etest.oracles import _usage_within
+
+    ok, detail = _usage_within(committed_run, {"unknown_limit": "1"})
+    assert ok is False
+    assert "unknown usage limits" in detail
+
+    ok, detail = _usage_within(committed_run, {})
+    assert ok is True
+
+
+def _ledger_error_details(ev: Evidence, args: dict[str, object]) -> tuple[bool, str]:
+    from e2etest.oracles import _ledger_error
+
+    return _ledger_error(ev, args)
+
+
+def test_ledger_error_oracle_validates_target_and_text(committed_run: Evidence) -> None:
+    ok, detail = _ledger_error_details(committed_run, {})
+    assert ok is False
+    assert "no 'target' arg" in detail
+    ok, detail = _ledger_error_details(
+        committed_run,
+        {"target": "coding_edit_files", "text": "must be present"},
+    )
+    assert isinstance(ok, bool)
+
+
+def test_ledger_oracles_pass_without_a_ledger_file(committed_run: Evidence) -> None:
+    """No decisions.jsonl on disk means zero rows: assertions fail with a count."""
+    results = evaluate(
+        (
+            _spec("ledger_contains", text="anything"),
+            _spec("ledger_error", target="coding_edit_files"),
+        ),
+        committed_run,
+    )
+    assert [r.passed for r in results] == [False, False]
+
+
 def test_checkout_oracles_expand_scenario_dir(committed_run: Evidence, tmp_path: Path) -> None:
     """Hidden acceptance checks live beside the scenario, outside the fixture."""
     scenario_dir = tmp_path / "scenario"
@@ -424,7 +607,7 @@ def _request(messages: list[dict[str, Any]], **kwargs: Any) -> CompletionRequest
 
 def _write_script(tmp_path: Path, body: str) -> Path:
     path = tmp_path / "model.py"
-    path.write_text("from e2etest.scripted import Reply\n" + body, encoding="utf-8")
+    path.write_text("from runtime.testing.scripted import Reply\n" + body, encoding="utf-8")
     return path
 
 
@@ -473,6 +656,23 @@ def test_load_script_requires_respond_and_scenario_resolves_script(tmp_path: Pat
     assert load_scenario(path).model_script == (tmp_path / "model.py").resolve()
 
 
+def test_scenario_parses_live_model_pin(tmp_path: Path) -> None:
+    path = _write_scenario(tmp_path, "session_context: ctx.md\nturns: [x]\nmodel: {id: gpt-live}\n")
+    scenario = load_scenario(path)
+    assert scenario.model_id == "gpt-live"
+    assert scenario.model_script is None
+
+
+def test_scenario_rejects_model_id_and_script_together(tmp_path: Path) -> None:
+    (tmp_path / "model.py").write_text("X = 1\n", encoding="utf-8")
+    path = _write_scenario(
+        tmp_path,
+        "session_context: ctx.md\nturns: [x]\nmodel: {id: gpt-live, script: model.py}\n",
+    )
+    with pytest.raises(ScenarioError, match="mutually exclusive"):
+        load_scenario(path)
+
+
 # ── offline base data + usage roll-up ────────────────────────────────
 
 
@@ -512,6 +712,99 @@ def test_prepare_run_seeds_overlays_from_base(tmp_path: Path) -> None:
     assert (paths.data_dir / "config" / "policy.yaml").is_file()
 
 
+def test_prepare_run_pins_one_live_model_and_removes_router_rules(tmp_path: Path) -> None:
+    from e2etest.environment import prepare_run
+
+    base = tmp_path / "base"
+    (base / "config").mkdir(parents=True)
+    (base / "config" / "models.yaml").write_text(
+        """
+mode_models: {default: first, researcher: second}
+router:
+  backend: lisa-router
+  rules:
+    - {when: route.mode_id == "researcher", use: second}
+models:
+  - model_id: first
+    provider: openai
+  - model_id: second
+    provider: openai
+""",
+        encoding="utf-8",
+    )
+    scenario = load_scenario(_smoke_scenario_path())
+    paths = prepare_run(
+        scenario,
+        tmp_path / "run",
+        tmp_path / "venv",
+        base=base,
+        model_id="second",
+    )
+    import yaml
+
+    manifest = yaml.safe_load(
+        (paths.data_dir / "config" / "models.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["mode_models"] == {"default": "second", "researcher": "second"}
+    assert manifest["router"]["rules"] == []
+
+
+def test_prepare_run_rejects_unknown_model_pin(tmp_path: Path) -> None:
+    from e2etest.environment import prepare_run
+
+    base = tmp_path / "base"
+    (base / "config").mkdir(parents=True)
+    (base / "config" / "models.yaml").write_text(
+        "mode_models: {default: first}\nmodels: [{model_id: first, provider: openai}]\n",
+        encoding="utf-8",
+    )
+    scenario = load_scenario(_smoke_scenario_path())
+    with pytest.raises(ValueError, match="not present"):
+        prepare_run(
+            scenario,
+            tmp_path / "run",
+            tmp_path / "venv",
+            base=base,
+            model_id="missing",
+        )
+
+
+def test_usage_within_oracle_uses_durable_token_log(tmp_path: Path) -> None:
+    logs = tmp_path / "data" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "token-usage.jsonl").write_text(
+        json.dumps(
+            {
+                "model_id": "m",
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "cost_usd": 0.01,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence = Evidence(RunPaths(tmp_path, tmp_path / "data", None, None, ""), DriverOutcome())
+    passed, failed = evaluate(
+        (
+            _spec(
+                "usage_within",
+                min_calls=1,
+                max_calls=2,
+                max_prompt_tokens=100,
+                max_completion_tokens=20,
+                max_total_tokens=120,
+                max_cost_usd=0.02,
+            ),
+            _spec("usage_within", max_calls=0),
+        ),
+        evidence,
+    )
+    assert passed.passed
+    assert not failed.passed and "calls=1 max_calls=0" in failed.detail
+
+
 def _smoke_scenario_path() -> Path:
     return Path(__file__).resolve().parent / "e2e" / "harness_smoke.scenario.yml"
 
@@ -525,6 +818,22 @@ def test_smoke_scenario_is_hermetic() -> None:
     _framework, sources = _manifest(Path(__file__).resolve().parents[1] / "packs.yml")
     unknown = [p for p in scenario.packs if p not in sources]
     assert not unknown, f"smoke packs must be registered: {unknown}"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "live_direct_answer.scenario.yml",
+        "live_web_research.scenario.yml",
+        "live_web_research_artifact.scenario.yml",
+    ],
+)
+def test_live_canary_scenarios_are_bounded(name: str) -> None:
+    scenario = load_scenario(Path(__file__).resolve().parent / "e2e" / name)
+    assert scenario.model_script is None, "live canaries must exercise a real provider"
+    assert scenario.budgets.max_continues == 0
+    assert scenario.budgets.max_yield_replies == 0
+    assert any(oracle.name == "usage_within" for oracle in scenario.oracles)
 
 
 def test_usage_summary_aggregates_the_durable_log(tmp_path: Path) -> None:
@@ -558,6 +867,43 @@ def test_usage_summary_aggregates_the_durable_log(tmp_path: Path) -> None:
     assert summary["by_model"]["glm-5"]["total_tokens"] == 13
 
 
+def test_replay_runner_wrong_arg_count_prints_usage(capsys: pytest.CaptureFixture[str]) -> None:
+    from e2etest.replay_runner import main
+
+    assert main(["only-one"]) == 2
+    assert "usage:" in capsys.readouterr().err
+
+
+def test_replay_runner_handles_asyncio_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from e2etest import replay_runner
+
+    async def _fail(**_kwargs: Any) -> None:
+        raise RuntimeError("replay failed")
+
+    monkeypatch.setattr(replay_runner, "replay_turn", _fail)
+    code = replay_runner.main(["thread.jsonl", "3", "scratch", "source", "session"])
+    assert code == 1
+    assert "replay runner failed" in capsys.readouterr().err
+
+
+def test_replay_runner_success_prints_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from runtime.replay import ReplayReport
+
+    from e2etest import replay_runner
+
+    async def _success(**_kwargs: Any) -> ReplayReport:
+        return ReplayReport(turn_index=3, turn_id="turn-3")
+
+    monkeypatch.setattr(replay_runner, "replay_turn", _success)
+    code = replay_runner.main(["thread.jsonl", "3", "scratch", "source", "session"])
+    assert code == 0
+    assert '"turn_index": 3' in capsys.readouterr().out
+
+
 def test_usage_summary_absent_log_is_zero(tmp_path: Path) -> None:
     """A run without usage evidence reports zero counters, not an error."""
     from e2etest.cli import _usage_for
@@ -583,6 +929,28 @@ def test_usage_summary_tolerates_torn_lines(tmp_path: Path) -> None:
     summary = usage_summary(log)
     assert summary["calls"] == 1
     assert summary["prompt_tokens"] == 5
+
+
+def test_pin_model_manifest_rejects_invalid_shapes(tmp_path: Path) -> None:
+    from e2etest.environment import _pin_model_manifest
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("- not-a-mapping\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="model manifest must be a mapping"):
+        _pin_model_manifest(bad, "m1")
+
+    no_models = tmp_path / "no-models.yaml"
+    no_models.write_text("version: 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="model manifest has no models list"):
+        _pin_model_manifest(no_models, "m1")
+
+    unknown = tmp_path / "unknown.yaml"
+    unknown.write_text(
+        "version: 1\nmodels:\n- model_id: m2\n  provider: ollama\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="is not present in the base manifest"):
+        _pin_model_manifest(unknown, "m1")
 
 
 def test_usage_summary_skips_blank_lines_and_unidentified_models(tmp_path: Path) -> None:
@@ -636,6 +1004,7 @@ def test_run_reports_setup_error_for_missing_scenario(
                 scenario=Path("/no/such/scenario.yml"),
                 runs_dir=Path("/tmp/runs"),
                 rebuild_venv=False,
+                model="",
             )
         )
         == 2
@@ -694,7 +1063,12 @@ def test_run_scenario_once_writes_verdict_bundle(
     import types
 
     scenario = types.SimpleNamespace(
-        scenario_id="probe/one", packs=[], model_script=None, oracles=[], surface=None
+        scenario_id="probe/one",
+        packs=[],
+        model_script=None,
+        model_id="gpt-live",
+        oracles=[],
+        surface=None,
     )
     outcome: Any = types.SimpleNamespace(aborted=None)
     bundle: dict[str, Any] = {
@@ -705,7 +1079,11 @@ def test_run_scenario_once_writes_verdict_bundle(
 
     monkeypatch.setattr(cli, "load_scenario", lambda _p: scenario)
     monkeypatch.setattr(cli, "ensure_packs_venv", lambda _packs, _cache, rebuild: tmp_path / "venv")
-    monkeypatch.setattr(cli, "prepare_run", lambda _s, _d, _v, base=None: run_paths)
+    monkeypatch.setattr(
+        cli,
+        "prepare_run",
+        lambda _s, _d, _v, base=None, model_id="": run_paths,
+    )
     monkeypatch.setattr(cli, "run_conversation", lambda _s, _paths, _v: outcome)
     monkeypatch.setattr(cli, "verdict", lambda _s, _e, _r: bundle)
     monkeypatch.setattr(
@@ -720,6 +1098,7 @@ def test_run_scenario_once_writes_verdict_bundle(
 
     assert code == 0
     out = capfd.readouterr().out
+    assert "model: gpt-live" in out
     assert "run dir:" in out and "PASS oracle.probe: ok" in out
     assert "usage: 1 model call(s)" in out and "verdict: PASS" in out
     assert written and written[0].name == "bundle.json"
@@ -800,6 +1179,7 @@ def _repeat_args(tmp_path: Path, runs: int, min_pass: int | None) -> Any:
         min_pass=min_pass,
         runs_dir=tmp_path / "runs",
         rebuild_venv=False,
+        model="",
     )
 
 
@@ -814,7 +1194,13 @@ def test_repeat_counts_passes_across_subprocesses(
     codes = [0, 1, 0]
 
     def fake_run(argv: Any, **kwargs: Any) -> Any:
-        return sp.CompletedProcess(argv, codes.pop(0), stdout="", stderr="")
+        code = codes.pop(0)
+        stdout = (
+            "model: m\nusage: 1 model call(s)\nverdict: PASS\n"
+            if code == 0
+            else "FAIL oracle.probe\n"
+        )
+        return sp.CompletedProcess(argv, code, stdout=stdout, stderr="")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     code = cli._repeat(_repeat_args(tmp_path, runs=3, min_pass=2))
@@ -822,6 +1208,38 @@ def test_repeat_counts_passes_across_subprocesses(
     out = capfd.readouterr().out
     assert "run 1/3: PASS" in out and "run 2/3: FAIL" in out
     assert "repeat verdict: 2/3 passed (required 2)" in out
+
+
+def test_repeat_forwards_model_pin_to_each_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess as sp
+
+    from e2etest import cli
+
+    argv_seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: Any) -> Any:
+        argv_seen.append(argv)
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    args = _repeat_args(tmp_path, runs=1, min_pass=1)
+    args.model = "gpt-live"
+    assert cli._repeat(args) == 0
+    assert argv_seen == [
+        [
+            sys.executable,
+            "-m",
+            "e2etest.cli",
+            "run",
+            "unused.yml",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--model",
+            "gpt-live",
+        ]
+    ]
 
 
 def test_repeat_fails_below_min_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1092,3 +1510,31 @@ async def test_recovery_open_id_expansion(tmp_path: Path, monkeypatch: pytest.Mo
     (state / "recovery-items.json").write_text("not-json{", encoding="utf-8")
     exchange = await conversation.send("turn", "/skip $RECOVERY_OPEN_ID")
     assert exchange.message == "/skip $RECOVERY_OPEN_ID"
+
+
+def test_history_folded_oracle_reads_thread_history(tmp_path: Path) -> None:
+    threads = tmp_path / "data" / "data" / "threads"
+    threads.mkdir(parents=True)
+    entry = {
+        "turn": 1,
+        "history": {
+            "records": [
+                {"call_id": "c1", "tool_id": "bash_run", "ref": "r" + "a" * 64},
+                {"call_id": "c2", "tool_id": "bash_run", "ref": "r" + "b" * 64},
+            ],
+            "snapshots": {"lisa-pack-bash": {"cwd": "/w"}},
+        },
+    }
+    (threads / "t.current.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    evidence = Evidence(RunPaths(tmp_path, tmp_path / "data", None, None, ""), DriverOutcome())
+
+    (ok,) = evaluate(
+        (_spec("history_folded", tool="bash_run", min=2, snapshot="lisa-pack-bash"),), evidence
+    )
+    assert ok.passed, ok.detail
+    (short,) = evaluate((_spec("history_folded", tool="bash_run", min=3),), evidence)
+    assert not short.passed
+    (no_snap,) = evaluate(
+        (_spec("history_folded", tool="bash_run", snapshot="lisa-pack-coding"),), evidence
+    )
+    assert not no_snap.passed and "lisa-pack-bash" in no_snap.detail

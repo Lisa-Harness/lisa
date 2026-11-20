@@ -76,6 +76,16 @@ class ModelHooks:
 
     #: Persist an exact request synchronously before dispatch; retain only its reference.
     record_request: Callable[[dict[str, Any]], str] | None = None
+
+    #: Persist an exact response synchronously after the call completes or
+    #: fails; retain only its reference. Same contract as ``record_request``:
+    #: accepts a snapshot dict, returns an ``r<sha256>`` ref persisted into
+    #: the same result-object store in the same record shape, so forensics
+    #: and replay can dereference both halves of one call. A recording
+    #: failure logs a WARNING and the call proceeds unrecorded — the
+    #: request-recording posture, mirrored. Optional so existing hosts
+    #: keep recording requests only until they opt in (Spec 2).
+    record_response: Callable[[dict[str, Any]], str] | None = None
     count_request_tokens: Callable[[CompletionRequest], RequestTokenCount] | None = None
 
 
@@ -105,6 +115,18 @@ class ContextHooks:
     #: returns the full system prompt. Default: ``mode_instruction`` only.
     assemble_system_prompt: Callable[[str, str | None], str] | None = None
 
+    #: Optional factored alternative to ``assemble_system_prompt``:
+    #: ``assemble_system_prompt_parts(mode_instruction, stage_instruction=None)``
+    #: returns ``(invariant, mode)`` where ``invariant`` is the
+    #: cross-mode stable prefix (harness + session + customizations) and
+    #: ``mode`` is the mode-variable tail. When wired, the turn loop
+    #: seeds a factored S0/S1 stable base and a mid-turn handoff swaps
+    #: only the mode tail — the invariant prefix bytes survive the
+    #: handoff, keeping the provider cache valid across mode switches
+    #: (docs/design-safe-handoff-prompt-layout.md). When absent, the
+    #: merged-base behavior is unchanged.
+    assemble_system_prompt_parts: Callable[[str, str | None], tuple[str, str]] | None = None
+
     #: ``assemble_user_context(mode_id, query, pre_turn_briefing,
     #: capability_manifest=None)`` returns extra user-context content injected
     #: before the query in the final user message. Default: empty string.
@@ -115,7 +137,7 @@ class ContextHooks:
     assemble_user_context: Callable[[str, str, str, CapabilityManifest | None], str] | None = None
 
     #: ``prior_messages()`` returns earlier turns' messages (user, assistant,
-    #: tool) to replay verbatim before this turn's user message. Parent turns
+    #: tool) to rehydrate verbatim before this turn's user message. Parent turns
     #: only. Default: none.
     prior_messages: Callable[[], list[dict[str, Any]]] | None = None
 
@@ -282,8 +304,22 @@ class HostServiceHandles:
     #: store uses this rather than re-deriving a path the host never used.
     thread_dir: str = ""
 
+    #: The session's selected sandbox runner
+    #: (``kernel.sandbox_floor.SandboxRunner``): the provider-neutral surface a
+    #: composing pack uses to run an argv contained. Typed ``Any`` for the same
+    #: reason as the floor callable — the kernel never imports a pack. ``None``
+    #: means no sandbox implementation is active, and a consumer requiring
+    #: containment fails closed.
+    sandbox_runner: Any = None
+
 
 # ── TurnIdentity ────────────────────────────────────────────────────────
+#: The goal a (sub-)turn declares. Named rather than inlined so the
+#: child-identity builder in :mod:`kernel.turn_lineage` cannot accept a value
+#: ``TurnIdentity`` rejects, or reject one it accepts.
+TurnTaskGoal = Literal["implementation", "diagnostic"]
+
+
 @dataclass
 class TurnIdentity:
     """Identity scope defaults for the active turn.
@@ -328,6 +364,23 @@ class TurnIdentity:
     #: slice work, or a bare/test host with no thread) — distinct from ``0``,
     #: which is the thread's first real turn.
     turn_index: int | None = None
+    #: Identity of this one execution (Evidence Envelope §4). Where
+    #: ``turn_index`` is a *position* in a thread and cannot tell two
+    #: overlapping turns apart, ``turn_id`` names the execution itself, so a
+    #: child turn and the rows it emits can point back at the parent that
+    #: spawned them. Minted once at turn start; empty means unassigned (a bare
+    #: or test host, or an off-turn unit of work).
+    turn_id: str = ""
+    #: The ``turn_id`` of the turn that spawned this one. Empty for a top-level
+    #: turn. Together with ``turn_id`` this forms the lineage edge a forensic
+    #: reader walks to render the delegation tree.
+    parent_turn_id: str = ""
+    #: The ``dispatch_id`` of the fork or delegate dispatch that spawned this
+    #: child turn (Evidence Envelope §2, §4). Empty for a top-level turn. This
+    #: is the key that joins a child turn back to the exact tool dispatch that
+    #: created it, which ``parent_turn_id`` alone cannot express when one turn
+    #: dispatches several children.
+    parent_dispatch_id: str = ""
     #: What this task is FOR, declared at task creation by the delegate-spec
     #: author or the operator. ``implementation`` (the default) means the task
     #: promises a committed change, so a checked-commit mode must verify one.
@@ -337,7 +390,7 @@ class TurnIdentity:
     #: per task, so it lives here rather than on the mode: a mode-level opt-out
     #: would silently false-pass every implementation task in that mode.
     #: Fail-closed default: an undeclared task is an implementation task.
-    task_goal: Literal["implementation", "diagnostic"] = "implementation"
+    task_goal: TurnTaskGoal = "implementation"
 
     def same_turn(self, other: TurnIdentity) -> bool:
         """Return whether ``other`` identifies the same turn as this one.
@@ -442,6 +495,18 @@ class ToolHooks:
     #: return typed results; neither is decorated.
     post_dispatch_result: Callable[[str, dict[str, Any], str, str], str] | None = None
 
+    #: Optional replacement for tool *execution*. When set, the dispatch path
+    #: calls ``answer_tool_call(tool_name, tool_arguments, tool_call_id)`` and
+    #: uses its return value as the tool output the model sees, instead of
+    #: executing the operation, pack tool, or MCP tool. Ledger recording,
+    #: effect-receipt capture, read-cache behavior, and error tracking still
+    #: run, so the loop behaves exactly as if the tool had executed. A raising
+    #: callable surfaces like a tool error. ``None`` (the default) is
+    #: ordinary production behavior: the tool executes normally. Turn replay
+    #: (``runtime.replay``) answers dispatches from a recording through this
+    #: seam; the kernel itself stays free of replay vocabulary.
+    answer_tool_call: Callable[[str, dict[str, Any], str], str] | None = None
+
     #: Optional persistence closure for spill-on-arrival (the cache-aware
     #: default for large tool results, ``kernel.turn_phases._spill``).
     #: ``persist_tool_result(record) -> ref`` persists one tool-result
@@ -451,6 +516,16 @@ class ToolHooks:
     #: When ``None``, large results stay inline and only the governor's
     #: epoch (which drives the projector) can evict them.
     persist_tool_result: Callable[[dict[str, Any]], str] | None = None
+
+
+@dataclass
+class ExecutionHooks:
+    """Host-owned execution policy seams used during a live turn."""
+
+    #: Resolve the effective capability-call ceiling for a mode entered by a
+    #: mid-turn handoff. Session/global policy remains the outer envelope;
+    #: this seam changes the active mode's scoped ceiling.
+    resolve_capability_limit_for_mode: Callable[[str], int | None] | None = None
 
 
 # ── TurnHooks — the composed container ──────────────────────────────────
@@ -474,6 +549,7 @@ class TurnHooks:
     identity: TurnIdentity = field(default_factory=TurnIdentity)
     recall: RecallHooks = field(default_factory=RecallHooks)
     tools: ToolHooks = field(default_factory=ToolHooks)
+    execution: ExecutionHooks = field(default_factory=ExecutionHooks)
     #: Context-layer seams (content registry, model policy, provider gateways,
     #: event bus). Kept as a direct field to preserve the
     #: existing ``kernel.context`` default wiring contract.
@@ -490,6 +566,7 @@ class TurnHooks:
 
 __all__ = [
     "ContextHooks",
+    "ExecutionHooks",
     "HostServiceHandles",
     "LifecycleHooks",
     "ModelHooks",

@@ -17,6 +17,14 @@ def _encoding(model_id: str) -> tiktoken.Encoding | None:
         return tiktoken.encoding_for_model(model)
     except KeyError:
         return None
+    except Exception:  # pylint: disable=broad-except
+        # A known encoding that cannot load right now — most commonly the
+        # first-use o200k_base download failing offline (ConnectionError,
+        # seen 2026-11-19). Token accounting must degrade to the estimate
+        # instead of raising: the turn loop calls this hook on every model
+        # request, and an offline host with a cold cache would otherwise
+        # crash the turn at accounting time.
+        return None
 
 
 def count_request_tokens(request: CompletionRequest) -> RequestTokenCount:

@@ -51,6 +51,18 @@ class Evidence:
         return [r for e in self.thread_entries for r in e.get("effect_receipts") or ()]
 
     @cached_property
+    def ledger_rows(self) -> list[dict[str, Any]]:
+        """Every row from the run's decisions ledger (tool telemetry)."""
+        path = self.paths.data_dir / "logs" / "decisions.jsonl"
+        if not path.is_file():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    @cached_property
     def artifacts(self) -> list[dict[str, Any]]:
         path = self.paths.data_dir / "state" / "code-change-artifacts.json"
         if not path.is_file():
@@ -185,6 +197,50 @@ def _no_runtime_errors(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
     return not hits, "\n".join(hits) or "no error-level runtime log records"
 
 
+@oracle("usage_within")
+def _usage_within(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """Assert durable token-usage evidence stays inside a scenario's budget."""
+    from e2etest.usage import usage_summary
+
+    fields = {
+        "min_calls": "calls",
+        "max_calls": "calls",
+        "max_prompt_tokens": "prompt_tokens",
+        "max_completion_tokens": "completion_tokens",
+        "max_total_tokens": "total_tokens",
+        "max_cost_usd": "cost_usd",
+    }
+    unknown = sorted(set(args) - set(fields))
+    if unknown:
+        return False, f"unknown usage limits: {unknown}"
+    path = ev.paths.data_dir / "logs" / "token-usage.jsonl"
+    if not path.is_file():
+        summary = {
+            "calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
+        }
+    else:
+        summary = usage_summary(path)
+    failures: list[str] = []
+    for arg, summary_field in fields.items():
+        if arg not in args:
+            continue
+        actual = float(summary[summary_field])
+        limit = float(args[arg])
+        failed = actual < limit if arg.startswith("min_") else actual > limit
+        if failed:
+            failures.append(f"{summary_field}={summary[summary_field]} {arg}={args[arg]}")
+    detail = (
+        f"calls={summary['calls']} prompt={summary['prompt_tokens']} "
+        f"completion={summary['completion_tokens']} total={summary['total_tokens']} "
+        f"cost={summary['cost_usd']}"
+    )
+    return not failures, "; ".join(failures) + " | " + detail if failures else detail
+
+
 # ── capability + knowledge evidence ─────────────────────────────────────
 
 
@@ -197,6 +253,26 @@ def _receipt(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
     need = int(args.get("min", 1))
     seen = sorted({str(r.get("capability_id")) for r in ev.receipts})
     return len(hits) >= need, f"{len(hits)} receipt(s) for {sorted(wanted)}; seen: {seen}"
+
+
+@oracle("history_folded")
+def _history_folded(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """Pack history semantics recorded foldable results for ``tool`` (each with a ref)."""
+    wanted = set(args["tool"]) if isinstance(args["tool"], list) else {args["tool"]}
+    records = [r for e in ev.thread_entries for r in (e.get("history") or {}).get("records") or ()]
+    hits = [r for r in records if r.get("tool_id") in wanted]
+    unrefd = [r.get("call_id") for r in hits if not r.get("ref")]
+    snapshots = sorted(
+        {o for e in ev.thread_entries for o in (e.get("history") or {}).get("snapshots") or {}}
+    )
+    need = int(args.get("min", 1))
+    want_snapshot = args.get("snapshot")
+    ok = len(hits) >= need and not unrefd and (not want_snapshot or want_snapshot in snapshots)
+    seen = sorted({str(r.get("tool_id")) for r in records})
+    return ok, (
+        f"{len(hits)} history record(s) for {sorted(wanted)}; unrefd={unrefd}; "
+        f"seen: {seen}; snapshots: {snapshots}"
+    )
 
 
 @oracle("memory_recorded")
@@ -432,6 +508,54 @@ def _exchange_contains(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
         if needle in exchange.text:
             return True, f"found in exchange[{exchange.index}] {exchange.kind}: {needle[:60]}..."
     return False, f"no exchange contains {needle[:80]!r}; {len(ev.outcome.exchanges)} exchange(s)"
+
+
+@oracle("ledger_contains")
+def _ledger_contains(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """Some decisions-ledger row contains the given ``text``.
+
+    The right evidence for pre-execution dispatch outcomes that never
+    surface in a turn's final text (a rejected tool call's recovery text,
+    an approval denial): the row is durable telemetry even when the model
+    silently recovers.
+    """
+    needle = str(args.get("text") or "")
+    if not needle:
+        return False, "no 'text' arg given"
+    for row in ev.ledger_rows:
+        if needle in json.dumps(row):
+            return True, f"found in ledger row {row.get('event_type', '?')}: {needle[:60]}..."
+    return False, f"no ledger row contains {needle[:80]!r}; {len(ev.ledger_rows)} row(s)"
+
+
+@oracle("ledger_error")
+def _ledger_error(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """At least ``min`` error-status ledger rows name the given target id.
+
+    Asserts a pre-execution rejection (or execution failure) was recorded
+    as dispatch telemetry — the Evidence Envelope contract that a rejected
+    dispatch is ledger evidence like any other failure. ``target`` is the
+    tool id; ``text`` optionally narrows the error message.
+    """
+    target = str(args.get("target") or "")
+    if not target:
+        return False, "no 'target' arg given"
+    needle = str(args.get("text") or "")
+    hits = [
+        row
+        for row in ev.ledger_rows
+        if row.get("target_id") == target
+        and row.get("status") == "error"
+        and (not needle or needle in str(row.get("error_message", "")))
+    ]
+    minimum = int(args.get("min", 1))
+    if len(hits) >= minimum:
+        return True, f"{len(hits)} error row(s) for {target}"
+    return (
+        False,
+        f"{len(hits)} matching error row(s) for {target} (need {minimum}); "
+        f"{len(ev.ledger_rows)} row(s) total",
+    )
 
 
 def evaluate(specs: tuple[OracleSpec, ...], evidence: Evidence) -> list[OracleResult]:

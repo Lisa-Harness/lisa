@@ -104,6 +104,104 @@ def test_remaining_wall_seconds_zero_when_spent() -> None:
     assert _remaining_wall_seconds(turn_budget=budget, turn_start_mono=0.0) is None
 
 
+def test_delegate_child_budget_uses_remaining_parent_wall_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nested delegates cannot re-arm the parent's full wall allowance."""
+    from kernel.config import settings as kernel_settings
+    from kernel.turn_runner import _arm_child_wall_budget
+
+    monkeypatch.setattr(kernel_settings, "delegation_grace_seconds", 30)
+    budget = TurnBudget(
+        max_tool_calls=0,
+        max_total_tokens=0,
+        max_completion_tokens=0,
+        max_wall_ms=1_800_000,
+    )
+
+    child = _arm_child_wall_budget(
+        budget,
+        1_800,
+        remaining_wall_ms=90_000,
+    )
+
+    assert child is not None
+    assert child.max_wall_ms == 60_000
+
+
+def test_arm_child_wall_budget_fail_closed_at_grace_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The defensive ``remaining_child_ms <= 0`` branch stays fail-closed.
+
+    The normal delegate prelaunch check normally prevents reaching this
+    branch, but direct callers and future call paths can: a child armed with
+    no time beyond the grace window must get a near-zero wall budget (1ms),
+    not the parent's full allowance. This is defense in depth, not dead code.
+    """
+    from kernel.config import settings as kernel_settings
+    from kernel.turn_runner import _arm_child_wall_budget
+
+    monkeypatch.setattr(kernel_settings, "delegation_grace_seconds", 30)
+    budget = TurnBudget(
+        max_tool_calls=0,
+        max_total_tokens=0,
+        max_completion_tokens=0,
+        max_wall_ms=1_800_000,
+    )
+
+    # remaining_wall_ms == grace (30_000ms) leaves exactly zero child time.
+    child = _arm_child_wall_budget(
+        budget,
+        1_800,
+        remaining_wall_ms=30_000,
+    )
+    assert child is not None
+    assert child.max_wall_ms == 1
+
+    # remaining_wall_ms < grace is the same fail-closed shape.
+    child_below = _arm_child_wall_budget(
+        budget,
+        1_800,
+        remaining_wall_ms=10_000,
+    )
+    assert child_below is not None
+    assert child_below.max_wall_ms == 1
+
+
+def test_remaining_wall_seconds_sentinel_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``turn_start_mono <= 0`` means unanchored, not spent.
+
+    Real turns always capture a positive ``time.monotonic()`` anchor. A
+    non-turn caller passing the default 0.0 must see an unbounded budget,
+    not a spent one. Removing the ``<= 0`` guard without migrating every
+    caller would silently flip unanchored calls to spent-budget behavior.
+    """
+    from kernel.turn_runner import _remaining_wall_seconds
+
+    budget = TurnBudget(
+        max_tool_calls=0,
+        max_total_tokens=0,
+        max_completion_tokens=0,
+        max_wall_ms=1_800_000,
+    )
+    # None and 0.0 are both unanchored: unbounded, never spent.
+    assert _remaining_wall_seconds(turn_budget=budget, turn_start_mono=0.0) is None
+    # A positive near-zero anchor with a controlled clock is spent only
+    # when the budget has actually elapsed.
+    start = 100.0
+    monkeypatch.setattr("kernel.turn_runner.time.monotonic", lambda: start + 0.001)
+    remaining = _remaining_wall_seconds(turn_budget=budget, turn_start_mono=start)
+    assert remaining is not None
+    assert remaining > 0
+    # A spent positive anchor returns zero, not None.
+    monkeypatch.setattr("kernel.turn_runner.time.monotonic", lambda: start + 2_000.0)
+    spent = _remaining_wall_seconds(turn_budget=budget, turn_start_mono=start)
+    assert spent == 0
+
+
 @pytest.mark.asyncio
 async def test_spent_wall_deadline_closes_unawaited_coroutine() -> None:
     """A spent deadline closes the never-started awaitable before raising.

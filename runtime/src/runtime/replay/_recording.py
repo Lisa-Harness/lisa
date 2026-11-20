@@ -1,0 +1,200 @@
+"""Load one recorded turn from the thread store into a replayable form.
+
+The loader is the read-only half of the replay engine: it dereferences the
+recorded turn's ``turn_input.calls`` into :class:`ArchivedCall` pairs via the
+slice-2 archive loader, walks the recorded transcript's ``role="tool"``
+messages into a ``tool_call_id -> output text`` map, and loads the
+off-turn auxiliary calls (planner, titles, distillers) from the decisions
+ledger. Nothing here touches a runtime; the engine (``_engine.py``)
+consumes the result.
+
+Archive gaps (a call with no ``response_ref``, or an unloadable ref) raise
+:class:`ReplayError` naming the turn: turns recorded before the model-call
+archive existed have no responses and are refused, per the spec's default.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from sdk.forensics import rotated_segments
+
+from runtime.testing.archive import ArchivedCall, archive_loader
+
+
+def _unwrap_envelope(snapshot: Any) -> dict[str, Any]:
+    """Unwrap a persisted result-object envelope into its snapshot dict.
+
+    Production persists model request/response snapshots as
+    ``{"content": json.dumps(snapshot)}`` (see ``runtime.turn_continuation.
+    persist_request``); ``load_result_object`` returns that envelope as-is.
+    The archive consumes the snapshot dict itself, so unwrap here. Objects
+    persisted without a ``content`` key are returned wrapped by
+    ``load_result_object`` already and pass through unchanged.
+    """
+    if not isinstance(snapshot, dict):
+        return {}
+    content = snapshot.get("content")
+    if not isinstance(content, str):
+        return snapshot
+    try:
+        unwrapped = json.loads(content)
+    except (TypeError, ValueError):
+        return snapshot
+    return unwrapped if isinstance(unwrapped, dict) else snapshot
+
+
+def _text(content: Any) -> str:
+    """Flatten message content (string or OpenAI-style parts) to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in content
+        )
+    return "" if content is None else str(content)
+
+
+@dataclass
+class RecordedTurn:
+    """One recorded turn, loaded and dereferenced for replay.
+
+    ``calls`` holds the archived request/response pairs in recorded order
+    (the archive gateway consumes them in that order). ``tool_results`` maps
+    each recorded ``tool_call_id`` to the transcript's tool-output text, so a
+    replayed dispatch can be answered from the recording. ``effect_receipts``
+    is the recorded receipt list the report compares against.
+    ``auxiliary_calls`` holds the off-turn calls (planner, titles, distillers)
+    the decisions ledger recorded for this thread, in ledger order; the
+    engine answers no-tools requests from this queue.
+    """
+
+    turn_index: int
+    turn_id: str
+    mode_id: str
+    query: str
+    response_text: str
+    calls: list[ArchivedCall] = field(default_factory=list)
+    tool_results: dict[str, str] = field(default_factory=dict)
+    effect_receipts: list[dict[str, Any]] = field(default_factory=list)
+    run_ref: str = ""
+    auxiliary_calls: list[ArchivedCall] = field(default_factory=list)
+
+
+def load_recorded_turn(store: Any, turn_index: int) -> RecordedTurn:
+    """Load the recorded turn at ``turn_index`` from ``store``.
+
+    ``store`` is a :class:`sdk.thread.ThreadStore` opened on the source
+    thread's base path. Raises :class:`ReplayError` when the turn is missing
+    or its archive has a gap (no ``response_ref``, or an unloadable ref).
+    """
+    from runtime.replay import ReplayError  # local: avoid a module-level cycle
+
+    entries = store.load_turns({turn_index})
+    entry = entries.get(turn_index)
+    if entry is None:
+        raise ReplayError(f"no recorded turn at index {turn_index}")
+
+    turn_input = entry.get("turn_input") or {}
+    if not isinstance(turn_input, dict):
+        turn_input = {}
+    try:
+        calls = ArchivedCall.from_turn_input(
+            turn_input.get("calls", []),
+            load=lambda ref: _unwrap_envelope(archive_loader(store.base_path)(ref)),
+        )
+    except Exception as exc:
+        raise ReplayError(f"turn {turn_index} cannot be replayed: archive gap: {exc}") from exc
+
+    tool_results: dict[str, str] = {}
+    for message in entry.get("transcript") or []:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        tool_call_id = str(message.get("tool_call_id", ""))
+        if tool_call_id:
+            tool_results[tool_call_id] = _text(message.get("content"))
+
+    return RecordedTurn(
+        turn_index=turn_index,
+        turn_id=str(entry.get("turn_id", "") or ""),
+        mode_id=str(entry.get("mode_id", "") or ""),
+        query=str(entry.get("query", "") or ""),
+        response_text=str(entry.get("response_text", "") or ""),
+        calls=calls,
+        tool_results=tool_results,
+        effect_receipts=list(entry.get("effect_receipts") or []),
+        run_ref=str(entry.get("run_ref", "") or ""),
+    )
+
+
+def load_auxiliary_calls(
+    source_data_dir: Path, thread_base_path: Path, user_slug: str
+) -> list[ArchivedCall]:
+    """Load this thread's off-turn model calls from the decisions ledger.
+
+    Off-turn calls (planner, titles, distillers) are archived by the
+    operation host, not the turn loop: their request/response pairs land in
+    the ``model.request`` rows of ``<data_dir>/logs/decisions.jsonl`` (and
+    its sealed ``.``-numbered segments), never in ``turn_input.calls``. A
+    replay re-runs those calls as production code, so the engine must
+    answer them from this queue or the archive desyncs.
+
+    Rows are scoped by ``user_slug`` and the thread's store slug, then
+    dereferenced through the same result-object store as the in-turn
+    calls. Ledger file order is the recorded order: sealed segments
+    numerically ascending (``.1`` oldest), active file last — exactly
+    :func:`sdk.forensics.rotated_segments`' documented append-only
+    contract, so the loader reuses it rather than a second sort. Rows
+    without a ``response_ref`` (an off-turn call that failed before
+    completing) are skipped: they cannot be answered, and the replayed
+    call that needs one surfaces the gap as an exhausted archive.
+    Post-turn rows (title, distill) trail the planner row harmlessly —
+    the engine consumes the queue from the front and never requires the
+    tail.
+    """
+    from runtime.replay import ReplayError  # local: avoid a module-level cycle
+
+    logs_dir = source_data_dir / "logs"
+    if not logs_dir.is_dir():
+        return []
+    segments = rotated_segments(logs_dir / "decisions.jsonl", backup_count=None)
+    load = archive_loader(thread_base_path)
+    calls: list[ArchivedCall] = []
+    for segment in segments:
+        try:
+            lines = segment.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("topic") != "model.request":
+                continue
+            if str(row.get("user_slug", "")) != user_slug:
+                continue
+            request_ref = row.get("request_ref")
+            response_ref = row.get("response_ref")
+            if not request_ref or not response_ref:
+                continue
+            try:
+                request = _unwrap_envelope(load(str(request_ref)))
+                response = _unwrap_envelope(load(str(response_ref)))
+            except Exception as exc:
+                raise ReplayError(
+                    f"auxiliary call {request_ref} failed to load from the ledger: {exc}"
+                ) from exc
+            calls.append(
+                ArchivedCall(
+                    call_id=str(row.get("call_id", "") or ""),
+                    iteration=0,
+                    attempt="auxiliary",
+                    request=request,
+                    response=response,
+                )
+            )
+    return calls

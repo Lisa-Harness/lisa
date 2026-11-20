@@ -130,12 +130,20 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev
 
-      - name: Run the offline scripted smoke scenario
+      - name: Run the offline scripted e2e scenarios
         env:
           # Isolate the run from any operator data dir (none exists on the
           # runner; the fixture path makes the intent explicit).
           LISA_E2E_BASE_DATA_DIR: ${{ github.workspace }}/e2etest/base_data
-        run: uv run --no-sync lisa-e2e run e2etest/tests/e2e/harness_smoke.scenario.yml
+        run: |
+          for scenario in \
+            e2etest/tests/e2e/harness_smoke.scenario.yml \
+            sdk/packs/memory/tests/e2e/dedup_recall.scenario.yml \
+            e2etest/tests/e2e/compaction_spill_low_pressure.scenario.yml \
+            e2etest/tests/e2e/compaction_spill_high_pressure.scenario.yml
+          do
+            uv run --no-sync lisa-e2e run "$scenario"
+          done
 
   changed-coverage:
     name: Changed-line coverage

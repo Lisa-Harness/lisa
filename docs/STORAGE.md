@@ -44,6 +44,23 @@ paths and deny-glob checks; [lisa-storage](../mcp_server/README.md) exposes
 that backend. This file sandbox is not an OS sandbox for arbitrary Python
 pack code or shell processes.
 
+The storage server is the model-facing implementation. Its tools publish as
+the implementation-independent `storage.*` capability. Routine read/write
+tools, including `storage.move_file`, are ambient for modes that accept the
+default capabilities. Destructive directory, delete, trash-purge, and batch
+tools remain opt-in: a mode or host must name their `storage.*` ids before
+the model can call them.
+
+| Operation | Availability | Success receipt |
+| --- | --- | --- |
+| `move_file(source, destination, expected_sha256="", create_parents=false)` | Ambient | `ok`, `source`, `destination`, `bytes`, `sha256`, `durable` |
+| `move_directory(source, destination, create_parents=false)` | Opt-in | `ok`, `source`, `destination`, `durable` |
+| `delete_directory(path, recursive=false, trash=true, expected_empty=false)` | Opt-in | `ok`, `path`, `removed_files`, `removed_dirs`, optional `trashed_to` |
+| `purge_trash(older_than=null, limit=100)` | Opt-in | `ok`, `purged`, `has_more` |
+| `delete_files(paths)` | Opt-in | `ok`, `count`, `succeeded`, `failed`, `results` |
+| `make_dirs(paths)` | Opt-in | `ok`, `count`, `succeeded`, `failed`, `results` |
+| `move_files(pairs, create_parents=false)` | Opt-in | `ok`, `count`, `succeeded`, `failed`, `results` |
+
 ### Write contract
 
 `write_file` stores **text** content newline-terminated. A POSIX text file
@@ -92,6 +109,96 @@ removes that reconstruction entirely.
 Passing `new_string` as empty deletes the matched region. `edit_file` adds
 no newline normalization: the fragment's edges are part of the match, so
 the stored bytes are exactly `new_string` in place of `old_string`.
+
+### File moves
+
+`move_file` renames one regular file inside `data/files` without replacing
+an existing destination. It refuses directories, symlinks, hard-linked
+files, denied paths, unsafe paths, and read-only storage. A missing
+destination directory chain is created only when `create_parents=true`.
+The optional `expected_sha256` must match the hash reported by
+`stat_file`; a mismatch leaves the source in place.
+
+On Linux, the operation opens every parent relative to the sandbox root
+without following symlinks and uses the kernel's atomic no-overwrite
+rename. If the platform, kernel, or filesystem cannot provide that
+primitive, the move fails without falling back to copy-and-delete or an
+overwriting rename. The first release therefore supports only Linux.
+The receipt reports `durable`; a directory `fsync` failure is surfaced as
+a warning on a completed move because the namespace change has already
+landed.
+
+`storage.move_file` is the direct model-facing tool. It is not wrapped by the
+core pack; the MCP capability is the single owner of its schema, validation,
+filesystem behavior, and receipt.
+
+`expected_sha256` is a revision check, not an inter-process lock. Another
+process can still modify an open inode concurrently; the backend rejects
+metadata changes observed while hashing, checks inode identity after the
+rename, and reports or rolls back an observed swap. Independent processes
+that bypass the storage seam remain outside those cooperative guarantees.
+
+### Directory operations and trash
+
+`move_directory` renames a whole subtree inside `data/files` as one atomic
+no-overwrite operation. It uses the same Linux-only, descriptor-relative
+rename machinery as `move_file`. It refuses a destination inside the source
+and symlinked path components; a missing destination chain is created only
+when `create_parents=true`. Its receipt has no content hash because a
+directory has no single content revision to pin.
+
+`delete_directory` is rmdir-only by default: a non-empty directory is
+refused unless `recursive=true` names the blast radius. The recursive
+default trashes first — the subtree is renamed into a timestamped
+`.trash/<ts>/` session and the receipt carries `trashed_to`, so the delete
+is reversible. `expected_empty` binds the call to the caller's belief that
+the directory is empty (the directory analogue of `expected_sha256`); the
+refusal lands before the trash rename. `trash=false` is the hard delete,
+and deleting a `.trash/...` path is always a hard delete. Symlinks are
+never followed anywhere in the delete surface: `delete_file` unlinks a
+leaf link itself, and hard deletes inside a tree unlink links rather
+than their targets. Recursive hard delete fails closed on platforms that do
+not support descriptor-relative unlink/rmdir operations.
+
+The `.trash/**` subtree — and the bare `.trash` root itself — is
+deny-glob hidden from every routine operation. Restore is the
+sanctioned exception — `move_directory` accepts a `.trash/...`
+source, so `move_directory(trashed_to, original_path)` undoes a
+trashed delete. `purge_trash` is the drain: each call hard-deletes at
+most `limit` (default 100) of the oldest sessions and returns
+`{purged, has_more}`, so a large trash empties across bounded calls;
+`delete_directory` refuses the bare `.trash` root so one unbounded
+call cannot drain every session at once (deleting a single
+`.trash/<ts>/...` session subtree remains the sanctioned per-session
+purge). `older_than` (RFC 3339; a naive value reads as UTC) skips
+newer sessions.
+Foreign entries and symlinked timestamp-shaped entries are ignored rather
+than followed or removed. A failed purge reports `error`, the completed
+`purged` count, and whether eligible sessions remain. Nothing auto-purges —
+the trash window exists to be drained explicitly.
+
+To restore, pass the exact `trashed_to` receipt value back to
+`move_directory`; the original destination must not already exist. To delete
+permanently, call `purge_trash` explicitly (or delete one trashed subtree
+with `delete_directory(..., recursive=true)`).
+
+### Batch operations
+
+`delete_files`, `make_dirs`, and `move_files` take explicit path or pair
+lists — no glob expansion, ever. Each item is validated and executed in
+list order; a failing item records its own error and the batch never
+aborts mid-way. Batches cap at 100 items per call. `delete_files` is a
+per-file hard-delete batch; it does not use the directory trash substrate.
+
+A batch is a queue of independent atomic operations with one receipt,
+not a transaction: `{ok, count, succeeded, failed, results}` with `ok`
+true only when every item succeeded. All-or-nothing deletes are not
+offered; trash-first (`delete_directory` with the default `trash=true`)
+is the reversible substrate when that shape is needed. Batch-level
+refusals (read-only storage, empty list, over-cap) fire before the first
+item executes and surface as tool errors; per-item failures are summary
+data. `move_files` pairs carry an optional `expected_sha256` that binds
+that pair's move to a revision reported by `stat_file`.
 
 Host-owned persistence and backend implementations sometimes need direct I/O.
 The repository's [direct-I/O check](../scripts/check_direct_io_policy.py) is

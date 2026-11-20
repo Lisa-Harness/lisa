@@ -251,7 +251,8 @@ async def test_default_fork_fn_arms_child_wall_budget(
 async def test_default_fork_fn_armed_deadline_tightens_divided_share(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A parent wall share smaller than the deadline passes through unchanged."""
+    """A parent wall share smaller than the deadline wins; the divided
+    tool-call share is floored, not reshaped by arming."""
     from kernel.models import TurnBudget
 
     captured: list[dict[str, Any]] = []
@@ -263,7 +264,8 @@ async def test_default_fork_fn_armed_deadline_tightens_divided_share(
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
 
     # Parent wall = 60s across 2 children → each share 30s, below the
-    # armed 90s deadline: the tighter divided share wins.
+    # armed 90s deadline: the tighter divided share wins. The divided
+    # tool-call share (10 // 2 = 5) is raised to the fork-child floor.
     spec = ForkSpec(
         targets=[
             ForkTarget(mode_id="default", query="test one"),
@@ -288,7 +290,10 @@ async def test_default_fork_fn_armed_deadline_tightens_divided_share(
         child_budget = kw["turn_budget"]
         assert child_budget is not None
         assert child_budget.max_wall_ms == 30_000  # min(60s/2, 120s-grace)
-        assert child_budget.max_tool_calls == 5  # divided field untouched by arming
+        # Arming never loosens the wall share, and _fork_child_budget
+        # floors the divided tool-call share (5 < 75) at
+        # fork_child_min_tool_calls — the turn-1258 starvation fix.
+        assert child_budget.max_tool_calls == 75
 
 
 @pytest.mark.asyncio
