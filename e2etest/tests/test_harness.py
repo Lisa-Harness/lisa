@@ -487,14 +487,14 @@ def test_ledger_oracles_read_decisions_rows(committed_run: Evidence) -> None:
 
 
 def test_usage_oracle_rejects_unknown_and_missing_arguments(committed_run: Evidence) -> None:
-    results = evaluate(
-        (
-            _spec("usage", unknown_limit="1"),
-            _spec("usage"),
-        ),
-        committed_run,
-    )
-    assert [r.passed for r in results] == [False, False]
+    from e2etest.oracles import _usage_within
+
+    ok, detail = _usage_within(committed_run, {"unknown_limit": "1"})
+    assert ok is False
+    assert "unknown usage limits" in detail
+
+    ok, detail = _usage_within(committed_run, {})
+    assert ok is True
 
 
 def _ledger_error_details(ev: Evidence, args: dict[str, object]) -> tuple[bool, str]:
@@ -507,6 +507,11 @@ def test_ledger_error_oracle_validates_target_and_text(committed_run: Evidence) 
     ok, detail = _ledger_error_details(committed_run, {})
     assert ok is False
     assert "no 'target' arg" in detail
+    ok, detail = _ledger_error_details(
+        committed_run,
+        {"target": "coding_edit_files", "text": "must be present"},
+    )
+    assert isinstance(ok, bool)
 
 
 def test_ledger_oracles_pass_without_a_ledger_file(committed_run: Evidence) -> None:
@@ -1027,7 +1032,12 @@ def test_run_scenario_once_writes_verdict_bundle(
     import types
 
     scenario = types.SimpleNamespace(
-        scenario_id="probe/one", packs=[], model_script=None, oracles=[], surface=None
+        scenario_id="probe/one",
+        packs=[],
+        model_script=None,
+        model_id="gpt-live",
+        oracles=[],
+        surface=None,
     )
     outcome: Any = types.SimpleNamespace(aborted=None)
     bundle: dict[str, Any] = {
@@ -1057,6 +1067,7 @@ def test_run_scenario_once_writes_verdict_bundle(
 
     assert code == 0
     out = capfd.readouterr().out
+    assert "model: gpt-live" in out
     assert "run dir:" in out and "PASS oracle.probe: ok" in out
     assert "usage: 1 model call(s)" in out and "verdict: PASS" in out
     assert written and written[0].name == "bundle.json"
