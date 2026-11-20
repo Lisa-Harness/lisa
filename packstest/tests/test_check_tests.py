@@ -477,32 +477,26 @@ class TestCommittedDelta:
         assert "sdk/src/sdk/config.py" in paths
         assert "kernel/pyproject.toml" not in paths
 
-    def test_advanced_dev_is_the_branch_point_for_a_worktree_branch(self, tmp_path: Path) -> None:
-        """``dev`` anchors the delta when it has advanced past ``main``.
-
-        Owned coding worktrees branch from ``dev``, so on a dev flow the branch
-        point is dev's tip, not main's merge-base. Without a dev candidate the
-        committed delta would include every commit dev gained over main,
-        escalating to the full suite on paths this branch never touched.
-        """
+    def test_legacy_dev_branch_is_not_an_implicit_base(self, tmp_path: Path) -> None:
+        """A feature branch built from a retired ``dev`` ref keeps that delta."""
         repo = tmp_path / "repo"
         git = _init_repo(repo)
         _commit(repo, git, "sdk/src/sdk/old.py", "x = 1\n", "main work")
-        # dev advances with someone else's runtime commit after main was cut.
+        main_tip = _head(repo, git)
         subprocess.run([*git, "checkout", "-q", "-b", "dev", "main"], check=True)
-        _commit(repo, git, "runtime/src/runtime/other.py", "y = 2\n", "dev work")
-        dev_tip = _head(repo, git)
-        # The feature branch (as a worktree branch would) carries only its own work.
+        _commit(repo, git, "runtime/src/runtime/other.py", "y = 2\n", "legacy dev work")
         subprocess.run([*git, "checkout", "-q", "-b", "feature", "dev"], check=True)
         _commit(repo, git, "sdk/src/sdk/config.py", "z = 3\n", "branch work")
 
         base = check_tests.resolve_base(cwd=repo)
-        assert base == dev_tip
+        assert base == main_tip
         paths = check_tests.committed_paths(cwd=repo, base=base)
-        assert paths == ["sdk/src/sdk/config.py"]
-        # And the selection is narrow, not escalated by dev's past work.
+        assert paths == ["runtime/src/runtime/other.py", "sdk/src/sdk/config.py"]
         testpaths, _ = check_tests.select_testpaths(paths)
-        assert testpaths == list(check_tests.PACKAGE_TESTPATHS["sdk"])
+        assert set(testpaths) == {
+            *check_tests.PACKAGE_TESTPATHS["runtime"],
+            *check_tests.PACKAGE_TESTPATHS["sdk"],
+        }
 
 
 class TestCommand:

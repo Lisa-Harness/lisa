@@ -116,6 +116,7 @@ _OWNED_PREFIXES: tuple[tuple[str, str], ...] = (
 #: escalating. Any other ``scripts/`` file keeps escalating below.
 _COVERED_SCRIPTS: tuple[str, ...] = (
     "scripts/check_docs.py",
+    "scripts/check_release_metadata.py",
     "scripts/check_tests.py",
 )
 
@@ -135,8 +136,8 @@ _ESCALATE_PREFIXES: tuple[str, ...] = (
 
 #: Documentation and release-note paths that cannot affect any test. They are
 #: ignored rather than escalated: nearly every commit updates CHANGELOG.md, and
-#: escalating those would run the full suite every time. This mirrors CI, which
-#: skips the test matrix for documentation-only changes.
+#: escalating those would run the full suite for the fast local selector even
+#: though the full CI matrix still protects every pull request.
 #:
 #: These are repository-root paths only. A package-local ``README.md`` or
 #: ``AUTHORING.md`` is a runtime asset, not a guide, and it matches no entry
@@ -157,9 +158,9 @@ _DOC_ONLY_PREFIXES: tuple[str, ...] = (
 #: are ignored rather than escalated — the same safe direction as the doc-only
 #: list. ``typings/`` feeds mypy's ``types`` check (a stub cannot change which
 #: tests exist or what they import); ``.github/`` is CI and agent configuration
-#: whose contract tests live in their own suites (``test_check_docs`` mirrors
-#: the CI path filter itself). A ``.pyi`` under a package source tree still
-#: travels with its package via ``_OWNED_PREFIXES``, which run first.
+#: whose contract tests live in their own suites. A ``.pyi`` under a package
+#: source tree still travels with its package via ``_OWNED_PREFIXES``, which
+#: run first.
 _TEST_INERT_PREFIXES: tuple[str, ...] = (
     "typings/",
     ".github/",
@@ -178,11 +179,10 @@ _PORCELAIN_PATH_OFFSET = 3
 #: merge-base with ``HEAD``, and the most recent of those is the branch point.
 #: A stale candidate (an unfetched origin ref, or a local branch that has not
 #: been fast-forwarded) yields a merge-base older than the branch point, which
-#: would widen the delta to include other people's commits. ``dev`` is here
-#: because owned worktrees branch from it (the coding pack's ``base_branch``),
-#: so a dev that has advanced past main must anchor the branch point, not the
-#: older main merge-base.
-_DEFAULT_BASE_CANDIDATES: tuple[str, ...] = ("origin/dev", "dev", "origin/main", "main")
+#: would widen the delta to include other people's commits. ``main`` is the
+#: only integration branch; no second long-lived development branch is an
+#: implicit base.
+_DEFAULT_BASE_CANDIDATES: tuple[str, ...] = ("origin/main", "main")
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -433,12 +433,12 @@ def select_testpaths(
         return _escalation_selection(message, packages, max_tier=max_tier)
 
     if not packages:
-        # Doc-only and test-inert changes cannot affect a test run (CI skips
-        # the matrix for documentation-only changes; the types check owns
-        # stubs and the docs gate owns CI/agent config). Report it rather
-        # than running the suite for nothing. An unclassifiable non-escalated
-        # path should be unreachable: every branch above either claims a
-        # package, skips, or escalates.
+        # Doc-only and test-inert changes cannot affect this local pytest
+        # selection (the full PR matrix still runs; the types check owns stubs
+        # and the docs gate owns CI/agent config). Report it rather than
+        # running the suite for nothing. An unclassifiable non-escalated path
+        # should be unreachable: every branch above either claims a package,
+        # skips, or escalates.
         return [], (
             "inert change (documentation, stubs, or CI config); no test suites affected"
             if inert_only
