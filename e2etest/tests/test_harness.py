@@ -191,7 +191,7 @@ async def test_close_runtime_records_wait_timeout(
         async def aclose(self) -> None:
             await asyncio.sleep(1)
 
-    monkeypatch.setattr(driver_module, "_RUNTIME_ACLOSE_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(driver_module, "_RUNTIME_ACLOSE_TIMEOUT_S", 0.0)
     outcome = DriverOutcome()
     await driver_module._close_runtime(FakeRuntime(), outcome)
 
