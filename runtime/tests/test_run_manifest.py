@@ -9,6 +9,7 @@ from runtime.run_manifest import (
     RunManifest,
     build_run_manifest,
     config_digest,
+    config_digest_of,
     run_base_path,
 )
 from runtime.thread._results import _persist_result
@@ -86,3 +87,32 @@ def test_config_digest_ignores_key_order() -> None:
     """Resolved config is a mapping; iteration order is never meaningful."""
     assert config_digest({"a": 1, "b": 2}) == config_digest({"b": 2, "a": 1})
     assert config_digest({"a": 1}) != config_digest({"a": 2})
+
+
+def test_config_digest_of_normalizes_models_and_dataclasses() -> None:
+    class _Model:
+        def model_dump(self, *, mode: str) -> dict:
+            assert mode == "json"
+            return {"a": 1}
+
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Dataclass:
+        b: int
+
+    assert config_digest_of(_Model()) == config_digest({"a": 1})
+    assert config_digest_of(_Dataclass(2)) == config_digest({"b": 2})
+
+
+def test_config_digest_of_handles_dump_and_serialization_failures() -> None:
+    class _BrokenDump:
+        def model_dump(self, *, mode: str) -> dict:
+            del mode
+            raise RuntimeError("cannot normalize")
+
+    class _Unserializable:
+        pass
+
+    assert config_digest_of(_BrokenDump()) is None
+    assert config_digest_of(_Unserializable()) is None

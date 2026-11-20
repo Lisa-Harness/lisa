@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from runtime.model_discovery.catalog import (
     CATALOG_SCHEMA_VERSION,
     build_proposed_catalog,
@@ -77,3 +79,24 @@ def test_entry_carries_no_raw_payload() -> None:
     entry = model_catalog_entry(_model(display_name="d"), _OBSERVED)
     assert set(entry) == {"id", "provider", "fields"}
     assert set(entry["fields"]["display_name"]) == {"source", "observed_at", "value"}
+
+
+def test_read_catalog_covers_missing_malformed_and_unreadable(tmp_path: Path, monkeypatch) -> None:
+    import runtime.model_discovery.catalog as catalog_module
+
+    missing = tmp_path / "missing.yaml"
+    assert catalog_module.read_catalog(missing) is None
+
+    malformed = tmp_path / "malformed.yaml"
+    malformed.write_text("not: [valid", encoding="utf-8")
+    assert catalog_module.read_catalog(malformed) is None
+
+    wrong_shape = tmp_path / "wrong.yaml"
+    wrong_shape.write_text("schema_version: 1\nmodels: []\n", encoding="utf-8")
+    assert catalog_module.read_catalog(wrong_shape) is None
+
+    def _read_error(*_args: object, **_kwargs: object) -> str:
+        raise OSError("catalog unreadable")
+
+    monkeypatch.setattr(catalog_module.Path, "read_text", _read_error)
+    assert catalog_module.read_catalog(tmp_path / "catalog.yaml") is None

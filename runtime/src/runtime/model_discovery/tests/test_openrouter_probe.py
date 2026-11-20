@@ -20,6 +20,7 @@ from runtime.model_discovery.probes.openrouter import (
     _cost_tier_from_price,
     _enrich_openrouter_model,
     _is_chat_capable,
+    _price,
 )
 from runtime.model_discovery.types import ProbeStatus
 
@@ -196,6 +197,24 @@ class TestEnrichment:
             _row(id="deepseek/deepseek-coder"),
         )
         assert "code" in model.capabilities
+
+
+class TestOptionalPrice:
+    def test_none_blank_and_unparseable_are_unknown(self) -> None:
+        assert _price(None) is None
+        assert _price("") is None
+        assert _price("not-a-number") is None
+
+    def test_negative_and_zero_are_clamped_or_free(self) -> None:
+        assert _price("-1") == 0.0
+        assert _price("0") == 0.0
+
+    def test_object_string_conversion_fallback(self) -> None:
+        class _BadString:
+            def __str__(self) -> str:
+                raise TypeError("cannot stringify")
+
+        assert _price(_BadString()) is None
 
 
 class TestCostTierFromPrice:

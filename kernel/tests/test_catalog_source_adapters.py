@@ -114,6 +114,25 @@ def test_tool_catalog_routes_through_injected_source() -> None:
     assert loader.get_tool_catalog() == {}
 
 
+def test_source_backed_catalog_prewarm_and_call_guards() -> None:
+    from kernel.context.mcp_catalog import MCPModeCatalog
+
+    mode_loader = MCPModeCatalog(_unused_config(), source=_FakeCatalogSource({}))
+    mode_loader.prewarm()
+    with pytest.raises(RuntimeError, match="shared catalog session is unavailable"):
+        mode_loader._call("list_modes", {})
+
+    operation_loader = MCPOperationCatalog(_unused_config(), source=_FakeCatalogSource({}))
+    operation_loader.prewarm()
+    with pytest.raises(RuntimeError, match="shared catalog session is unavailable"):
+        operation_loader._call("list_operations", {})
+
+    tool_loader = MCPToolCatalog(_unused_config(), source=_FakeCatalogSource({}))
+    tool_loader.prewarm()
+    with pytest.raises(RuntimeError, match="shared catalog session is unavailable"):
+        tool_loader._call("list_tools", {})
+
+
 def test_failing_source_raises_without_stdio_fallback() -> None:
     class _Boom(_FakeContentSource):
         def read_authored_text(self, relative_path: str) -> str:

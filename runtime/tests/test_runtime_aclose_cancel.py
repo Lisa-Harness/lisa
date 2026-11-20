@@ -123,6 +123,50 @@ def test_aclose_suppresses_base_exception_group(tmp_path: Path) -> None:
     asyncio.run(_scenario())
 
 
+def test_await_mcp_started_event_caches_base_exception(tmp_path: Path) -> None:
+    class BrokenEvent:
+        async def wait(self) -> None:
+            raise RuntimeError("startup event failed")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_started_event = cast(Any, BrokenEvent())
+        with pytest.raises(RuntimeError, match="startup event failed"):
+            await runtime.resources._await_mcp_started_event()
+        assert isinstance(runtime.resources._mcp_start_exc, RuntimeError)
+
+    asyncio.run(_scenario())
+
+
+def test_aclose_suppresses_proxy_close_exception(tmp_path: Path) -> None:
+    class FakeProxy:
+        async def aclose(self) -> None:
+            raise RuntimeError("proxy close failed")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._proxy_pool = cast(Any, FakeProxy())
+        await runtime.aclose()
+        assert runtime.resources._proxy_pool is None
+
+    asyncio.run(_scenario())
+
+
+def test_aclose_sync_pool_close_suppresses_cancel(tmp_path: Path) -> None:
+    class FakePool:
+        async def aclose(self) -> None:
+            raise asyncio.CancelledError
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_tool_pool = cast(Any, FakePool())
+        runtime.resources._mcp_started = True
+        await runtime.aclose()
+        assert runtime.resources._mcp_tool_pool is None
+
+    asyncio.run(_scenario())
+
+
 def test_mcp_pool_aclose_suppresses_child_stack_base_exception_group() -> None:
     class FakeStack:
         async def aclose(self) -> None:
@@ -216,6 +260,27 @@ def test_aclose_suppresses_shared_session_lease_release_error(tmp_path: Path) ->
         runtime.resources._shared_session_lease = cast(Any, FakeLease())
         await runtime.aclose()
         assert runtime.resources._shared_session_lease is None
+
+    asyncio.run(_scenario())
+
+
+def test_aclose_suppresses_proxy_and_pool_close_base_exceptions(tmp_path: Path) -> None:
+    class FakeProxy:
+        async def aclose(self) -> None:
+            raise RuntimeError("proxy close failed")
+
+    class FakePool:
+        async def aclose(self) -> None:
+            raise asyncio.CancelledError
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._proxy_pool = cast(Any, FakeProxy())
+        runtime.resources._mcp_tool_pool = cast(Any, FakePool())
+        runtime.resources._mcp_started = True
+        await runtime.aclose()
+        assert runtime.resources._proxy_pool is None
+        assert runtime.resources._mcp_tool_pool is None
 
     asyncio.run(_scenario())
 

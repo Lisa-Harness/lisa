@@ -181,6 +181,34 @@ async def test_driver_suppresses_close_cancellation() -> None:
     assert outcome.aborted == ""
 
 
+@pytest.mark.asyncio
+async def test_close_runtime_records_direct_base_exception_group() -> None:
+    from e2etest.driver import DriverOutcome, _close_runtime
+
+    class FakeRuntime:
+        async def aclose(self) -> None:
+            raise BaseExceptionGroup("close", [RuntimeError("cancel scope")])
+
+    outcome = DriverOutcome()
+    await _close_runtime(FakeRuntime(), outcome)
+
+    assert outcome.aborted == "runtime.aclose() interrupted"
+
+
+@pytest.mark.asyncio
+async def test_close_runtime_records_ordinary_close_exception() -> None:
+    from e2etest.driver import DriverOutcome, _close_runtime
+
+    class FakeRuntime:
+        async def aclose(self) -> None:
+            raise RuntimeError("close failed")
+
+    outcome = DriverOutcome()
+    await _close_runtime(FakeRuntime(), outcome)
+
+    assert outcome.aborted == "runtime.aclose() failed: close failed"
+
+
 def test_driver_forwards_surface_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``run_conversation`` must pass scenario.surface into ``build_runtime``."""
     captured: dict[str, Any] = {}
@@ -456,6 +484,29 @@ def test_ledger_oracles_read_decisions_rows(committed_run: Evidence) -> None:
     assert [r.passed for r in results] == [True, True, True, False, False], [
         (r.name, r.detail) for r in results
     ]
+
+
+def test_usage_oracle_rejects_unknown_and_missing_arguments(committed_run: Evidence) -> None:
+    results = evaluate(
+        (
+            _spec("usage", unknown_limit="1"),
+            _spec("usage"),
+        ),
+        committed_run,
+    )
+    assert [r.passed for r in results] == [False, False]
+
+
+def _ledger_error_details(ev: Evidence, args: dict[str, object]) -> tuple[bool, str]:
+    from e2etest.oracles import _ledger_error
+
+    return _ledger_error(ev, args)
+
+
+def test_ledger_error_oracle_validates_target_and_text(committed_run: Evidence) -> None:
+    ok, detail = _ledger_error_details(committed_run, {})
+    assert ok is False
+    assert "no 'target' arg" in detail
 
 
 def test_ledger_oracles_pass_without_a_ledger_file(committed_run: Evidence) -> None:
@@ -780,6 +831,43 @@ def test_usage_summary_aggregates_the_durable_log(tmp_path: Path) -> None:
     assert summary["by_model"]["glm-5"]["total_tokens"] == 13
 
 
+def test_replay_runner_wrong_arg_count_prints_usage(capsys: pytest.CaptureFixture[str]) -> None:
+    from e2etest.replay_runner import main
+
+    assert main(["only-one"]) == 2
+    assert "usage:" in capsys.readouterr().err
+
+
+def test_replay_runner_handles_asyncio_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from e2etest import replay_runner
+
+    async def _fail(**_kwargs: Any) -> None:
+        raise RuntimeError("replay failed")
+
+    monkeypatch.setattr(replay_runner, "replay_turn", _fail)
+    code = replay_runner.main(["thread.jsonl", "3", "scratch", "source", "session"])
+    assert code == 1
+    assert "replay runner failed" in capsys.readouterr().err
+
+
+def test_replay_runner_success_prints_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from runtime.replay import ReplayReport
+
+    from e2etest import replay_runner
+
+    async def _success(**_kwargs: Any) -> ReplayReport:
+        return ReplayReport(turn_index=3, turn_id="turn-3")
+
+    monkeypatch.setattr(replay_runner, "replay_turn", _success)
+    code = replay_runner.main(["thread.jsonl", "3", "scratch", "source", "session"])
+    assert code == 0
+    assert '"turn_index": 3' in capsys.readouterr().out
+
+
 def test_usage_summary_absent_log_is_zero(tmp_path: Path) -> None:
     """A run without usage evidence reports zero counters, not an error."""
     from e2etest.cli import _usage_for
@@ -805,6 +893,28 @@ def test_usage_summary_tolerates_torn_lines(tmp_path: Path) -> None:
     summary = usage_summary(log)
     assert summary["calls"] == 1
     assert summary["prompt_tokens"] == 5
+
+
+def test_pin_model_manifest_rejects_invalid_shapes(tmp_path: Path) -> None:
+    from e2etest.environment import _pin_model_manifest
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("- not-a-mapping\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="model manifest must be a mapping"):
+        _pin_model_manifest(bad, "m1")
+
+    no_models = tmp_path / "no-models.yaml"
+    no_models.write_text("version: 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="model manifest has no models list"):
+        _pin_model_manifest(no_models, "m1")
+
+    unknown = tmp_path / "unknown.yaml"
+    unknown.write_text(
+        "version: 1\nmodels:\n- model_id: m2\n  provider: ollama\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="is not present in the base manifest"):
+        _pin_model_manifest(unknown, "m1")
 
 
 def test_usage_summary_skips_blank_lines_and_unidentified_models(tmp_path: Path) -> None:
@@ -1042,7 +1152,13 @@ def test_repeat_counts_passes_across_subprocesses(
     codes = [0, 1, 0]
 
     def fake_run(argv: Any, **kwargs: Any) -> Any:
-        return sp.CompletedProcess(argv, codes.pop(0), stdout="", stderr="")
+        code = codes.pop(0)
+        stdout = (
+            "model: m\nusage: 1 model call(s)\nverdict: PASS\n"
+            if code == 0
+            else "FAIL oracle.probe\n"
+        )
+        return sp.CompletedProcess(argv, code, stdout=stdout, stderr="")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     code = cli._repeat(_repeat_args(tmp_path, runs=3, min_pass=2))

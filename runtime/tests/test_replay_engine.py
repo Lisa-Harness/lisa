@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 import pytest
 from kernel.provider_contracts import CompletionRequest
 from runtime.replay import (
+    RecordedTurn,
     ReplayDivergence,
     ReplayGatewayError,
     ReplayGatewayProvider,
@@ -23,6 +25,7 @@ from runtime.replay._engine import (
     _project_gateway_errors,
     _replay_divergences_from_gaps,
     _replay_divergences_from_provider,
+    _seed_scratch_config,
 )
 from runtime.testing.archive import ArchivedCall, ArchiveGatewayProvider, ArchiveOutcomeError
 from runtime.testing.scripted import ScriptError
@@ -41,6 +44,24 @@ def test_answerer_records_gap_and_raises_for_unknown_id() -> None:
     with pytest.raises(ReplayToolGapError, match="call_recorded_1"):
         answerer.answer("t", {"x": 1}, "call_recorded_1")
     assert answerer.gaps == [{"tool": "t", "tool_call_id": "call_recorded_1"}]
+
+
+def test_answerer_status_marks_error_text_and_json_errors() -> None:
+    answerer = TranscriptToolAnswerer(
+        tool_results={
+            "text-error": "Error: provider unavailable",
+            "json-error": '{"error": "provider unavailable"}',
+            "malformed-json": '{"error":',
+            "http-error": "HTTP 403 (Forbidden)",
+            "ok": "provider answered",
+        }
+    )
+
+    assert answerer.answer_with_status("t", {}, "text-error")[1] is True
+    assert answerer.answer_with_status("t", {}, "json-error")[1] is True
+    assert answerer.answer_with_status("t", {}, "malformed-json")[1] is False
+    assert answerer.answer_with_status("t", {}, "http-error")[1] is False
+    assert answerer.answer_with_status("t", {}, "ok")[1] is False
 
 
 # ── Divergence projection ────────────────────────────────────────────────
@@ -485,3 +506,259 @@ async def test_replay_turn_missing_turn_sets_report_error(
     )
     assert report.error == "no recorded turn at index 7"
     assert report.ok is False
+
+
+@pytest.mark.asyncio
+async def test_replay_gateway_complete_delegates_to_owner_answer(
+    tmp_path: Path,
+) -> None:
+    provider = ReplayGatewayProvider(
+        turn_calls=ArchiveGatewayProvider(calls=[_archived_call("reply")]),
+        auxiliary_calls=ArchiveGatewayProvider(calls=[]),
+    )
+    gateway = provider.gateway_for("ollama")
+
+    result = await gateway.complete(
+        _gateway_request([{"role": "user", "content": "go"}], call_kind="turn")
+    )
+
+    assert result.content == "reply"
+    assert provider.turn_calls.position == 1
+
+
+def test_seed_scratch_config_copies_models_and_overlays(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    scratch = tmp_path / "scratch"
+    (source / "config" / "overlays").mkdir(parents=True)
+    (source / "config" / "models.yaml").write_text("active: gpt\n", encoding="utf-8")
+    (source / "config" / "overlays" / "lisa.yaml").write_text("mode: test\n", encoding="utf-8")
+
+    _seed_scratch_config(source, scratch)
+
+    assert (scratch / "config" / "models.yaml").read_text(encoding="utf-8") == "active: gpt\n"
+    assert (scratch / "config" / "overlays" / "lisa.yaml").read_text(
+        encoding="utf-8"
+    ) == "mode: test\n"
+
+
+def test_newest_scratch_entry_skips_blank_and_invalid_lines(tmp_path: Path) -> None:
+    threads = tmp_path / "threads"
+    threads.mkdir()
+    active = threads / "thread.current.jsonl"
+    active.write_text("\nnot-json\n{}\n", encoding="utf-8")
+
+    entry = _newest_scratch_entry(tmp_path)
+
+    assert entry == {}
+
+
+def test_newest_scratch_entry_treats_stat_errors_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    threads = tmp_path / "threads"
+    threads.mkdir()
+    (threads / "thread.current.jsonl").write_text("{}\n", encoding="utf-8")
+    original_stat = Path.stat
+
+    def _stat_error(_path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if _path.name == "thread.current.jsonl":
+            raise OSError("stat failed")
+        return original_stat(_path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _stat_error)
+
+    assert _newest_scratch_entry(tmp_path) is None
+
+
+@pytest.mark.asyncio
+async def test_replay_turn_success_path_collects_no_divergences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import runtime.bootstrap
+    import runtime.handle_message
+    import runtime.replay._engine as engine
+
+    recorded = RecordedTurn(
+        turn_index=3,
+        turn_id="turn-3",
+        mode_id="exact",
+        query="hello",
+        response_text="hello",
+    )
+    monkeypatch.setattr(engine, "ThreadStore", lambda _path: _Store(tmp_path, {}))
+    monkeypatch.setattr(engine, "load_recorded_turn", lambda _store, _index: recorded)
+    monkeypatch.setattr(engine, "load_auxiliary_calls", lambda **_kwargs: [])
+
+    class _Session:
+        provider_gateways_override: object = None
+        tool_call_answerer: object = None
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.session = _Session()
+
+        async def start(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            return None
+
+    fake_runtime = _Runtime()
+    monkeypatch.setattr(runtime.bootstrap, "build_runtime", lambda **_kwargs: fake_runtime)
+
+    async def _handle(_runtime: object, _query: str, _transport: object) -> SimpleNamespace:
+        return SimpleNamespace(text="hello")
+
+    monkeypatch.setattr(runtime.handle_message, "handle_message", _handle)
+    from runtime.replay import replay_turn
+
+    report = await replay_turn(
+        source_thread_path=tmp_path / "source.jsonl",
+        turn_index=3,
+        scratch_data_dir=tmp_path / "scratch",
+    )
+
+    assert report.turn_id == "turn-3"
+    assert report.response_match is True
+    assert report.receipts_match is True
+    assert report.ok is True
+    assert fake_runtime.session.provider_gateways_override is None
+    assert fake_runtime.session.tool_call_answerer is None
+
+
+@pytest.mark.asyncio
+async def test_replay_turn_runtime_failure_is_reported_and_cleaned_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import runtime.bootstrap
+    import runtime.handle_message
+    import runtime.replay._engine as engine
+
+    recorded = RecordedTurn(
+        turn_index=4,
+        turn_id="turn-4",
+        mode_id="exact",
+        query="hello",
+        response_text="recorded",
+    )
+    monkeypatch.setattr(engine, "ThreadStore", lambda _path: _Store(tmp_path, {}))
+    monkeypatch.setattr(engine, "load_recorded_turn", lambda _store, _index: recorded)
+    monkeypatch.setattr(engine, "load_auxiliary_calls", lambda **_kwargs: [])
+
+    class _Session:
+        provider_gateways_override: object = None
+        tool_call_answerer: object = None
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.session = _Session()
+
+        async def start(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            return None
+
+    fake_runtime = _Runtime()
+    monkeypatch.setattr(runtime.bootstrap, "build_runtime", lambda **_kwargs: fake_runtime)
+
+    async def _handle_failure(_runtime: object, _query: str, _transport: object) -> SimpleNamespace:
+        raise RuntimeError("runtime exploded")
+
+    monkeypatch.setattr(runtime.handle_message, "handle_message", _handle_failure)
+    from runtime.replay import replay_turn
+
+    report = await replay_turn(
+        source_thread_path=tmp_path / "source.jsonl",
+        turn_index=4,
+        scratch_data_dir=tmp_path / "scratch",
+    )
+
+    assert report.error == "replay run failed: runtime exploded"
+    assert report.response_match is False
+    assert report.ok is False
+    assert fake_runtime.session.provider_gateways_override is None
+    assert fake_runtime.session.tool_call_answerer is None
+
+
+@pytest.mark.asyncio
+async def test_replay_turn_unexpected_load_error_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import runtime.replay._engine as engine
+    from runtime.replay import replay_turn
+
+    class _BrokenStore:
+        base_path = tmp_path
+
+        def load_turns(self, _turns: object) -> dict:
+            raise RuntimeError("load exploded")
+
+    monkeypatch.setattr(engine, "ThreadStore", lambda _path: _BrokenStore())
+    monkeypatch.setattr(
+        engine,
+        "load_recorded_turn",
+        lambda _store, _index: (_ for _ in ()).throw(RuntimeError("loader exploded")),
+    )
+
+    report = await replay_turn(
+        source_thread_path=tmp_path / "source.jsonl",
+        turn_index=1,
+        scratch_data_dir=tmp_path / "scratch",
+    )
+
+    assert report.error == "failed to load recorded turn 1: loader exploded"
+    assert report.ok is False
+
+
+@pytest.mark.asyncio
+async def test_replay_turn_receipt_mismatch_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import runtime.bootstrap
+    import runtime.handle_message
+    import runtime.replay._engine as engine
+    from runtime.replay import replay_turn
+
+    recorded = RecordedTurn(
+        turn_index=5,
+        turn_id="turn-5",
+        mode_id="exact",
+        query="hello",
+        response_text="hello",
+        effect_receipts=[{"effect": "read", "capability_id": "tool"}],
+    )
+    monkeypatch.setattr(engine, "ThreadStore", lambda _path: _Store(tmp_path, {}))
+    monkeypatch.setattr(engine, "load_recorded_turn", lambda _store, _index: recorded)
+    monkeypatch.setattr(engine, "load_auxiliary_calls", lambda **_kwargs: [])
+
+    class _Session:
+        provider_gateways_override: object = None
+        tool_call_answerer: object = None
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.session = _Session()
+
+        async def start(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            return None
+
+    fake_runtime = _Runtime()
+    monkeypatch.setattr(runtime.bootstrap, "build_runtime", lambda **_kwargs: fake_runtime)
+
+    async def _handle(_runtime: object, _query: str, _transport: object) -> SimpleNamespace:
+        return SimpleNamespace(text="hello")
+
+    monkeypatch.setattr(runtime.handle_message, "handle_message", _handle)
+
+    report = await replay_turn(
+        source_thread_path=tmp_path / "source.jsonl",
+        turn_index=5,
+        scratch_data_dir=tmp_path / "scratch",
+    )
+
+    assert report.receipts_match is False
+    assert any(divergence.kind == "receipts" for divergence in report.divergences)

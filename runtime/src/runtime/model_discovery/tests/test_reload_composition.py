@@ -113,3 +113,42 @@ def test_lifecycle_changes_are_reported_not_merged() -> None:
     assert "lifecycle" not in composed["models"][0]
     kinds = {entry["field"] for entry in report if entry["kind"] == "catalog_only_field"}
     assert {"expires_at", "lifecycle"} <= kinds
+
+
+def test_unknown_operator_and_catalog_fields_are_reported_verbatim() -> None:
+    operator = {
+        "version": 1,
+        "models": [_operator_row(custom_setting="keep-me")],
+    }
+    catalog = _catalog_with(
+        _catalog_row(
+            {
+                "unknown_catalog_field": _catalog_field("catalog-value"),
+                "diagnostics": _catalog_field(["warning"]),
+            }
+        )
+    )
+
+    composed, report = compose_effective_manifest(operator, catalog)
+
+    assert composed["models"][0]["custom_setting"] == "keep-me"
+    assert "unknown_catalog_field" not in composed["models"][0]
+    kinds = {(entry["kind"], entry["field"]) for entry in report}
+    assert ("unestablishable_ownership", "custom_setting") in kinds
+    assert ("unknown_catalog_field", "unknown_catalog_field") in kinds
+
+
+def test_pinned_not_measured_and_measured_not_pinned_are_reported() -> None:
+    operator = {"version": 1, "models": [_operator_row()]}
+    catalog = _catalog_with(_catalog_row({"context_window": _catalog_field(128000)}))
+    catalog["providers"]["openai"]["models"].append(
+        {"id": "other-model", "provider": "openai", "fields": {}}
+    )
+
+    composed, report = compose_effective_manifest(operator, catalog)
+
+    assert composed["models"][0]["context_window"] == 128000
+    assert any(
+        entry["kind"] == "measured_not_pinned" and entry["model"] == "other-model"
+        for entry in report
+    )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from runtime.testing.runtime_factory import build_test_runtime
@@ -51,6 +52,37 @@ def test_setup_framework_preserves_build_error_when_lease_release_fails(
 
     with pytest.raises(RuntimeError, match="build failed"):
         mcp_pool.setup_framework(runtime)
+
+    assert runtime.resources.shared_session_lease is None
+
+
+def test_release_previous_build_suppresses_lease_release_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runtime.mcp_pool import _release_previous_build
+
+    class FakeLease:
+        def release(self) -> None:
+            raise RuntimeError("lease close failed")
+
+    runtime = build_test_runtime(tmp_path)
+    runtime.resources.shared_session_lease = FakeLease()
+    runtime._in_process_mcp = True
+
+    discovery = SimpleNamespace(
+        host_specs=[],
+        pack_specs=[],
+        user_specs=[],
+        roots=[],
+        disabled_packs=[],
+    )
+    content_config = SimpleNamespace()
+    monkeypatch.setattr(
+        "kernel.ipsar_fsm.reset_workflow_catalog",
+        lambda: None,
+    )
+    _release_previous_build(runtime, discovery, content_config)
 
     assert runtime.resources.shared_session_lease is None
 

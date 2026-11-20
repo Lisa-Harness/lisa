@@ -343,3 +343,77 @@ def test_auxiliary_calls_return_empty_without_a_logs_dir(tmp_path: Path) -> None
         user_slug="local-user",
     )
     assert calls == []
+
+
+def test_result_unwrap_covers_invalid_shapes() -> None:
+    import runtime.replay._recording as recording
+
+    assert recording._unwrap_envelope(None) == {}
+    assert recording._unwrap_envelope({"content": 123}) == {"content": 123}
+    assert recording._unwrap_envelope({"content": "{bad"}) == {"content": "{bad"}
+    assert recording._unwrap_envelope({"content": "{}"}) == {}
+    assert recording._text(None) == ""
+    assert recording._text("plain") == "plain"
+
+
+def test_load_recorded_turn_normalizes_non_dict_turn_input(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store._entries[0]["turn_input"] = []
+
+    recorded = load_recorded_turn(store, 0)
+
+    assert recorded.calls == []
+
+
+def test_auxiliary_calls_skip_malformed_segments(tmp_path: Path) -> None:
+    from runtime.replay import load_auxiliary_calls
+
+    logs = tmp_path / "data" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "decisions.jsonl").write_text(
+        "{bad json\n[]\n" + json.dumps({"topic": "other"}) + "\n",
+        encoding="utf-8",
+    )
+
+    calls = load_auxiliary_calls(
+        source_data_dir=tmp_path / "data",
+        thread_base_path=tmp_path / "thread.jsonl",
+        user_slug="local-user",
+    )
+
+    assert calls == []
+
+
+def test_auxiliary_calls_wrap_unloadable_snapshot_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import runtime.replay._recording as recording
+    from runtime.replay import load_auxiliary_calls
+
+    logs = tmp_path / "data" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "decisions.jsonl").write_text(
+        json.dumps(
+            {
+                "topic": "model.request",
+                "user_slug": "local-user",
+                "call_id": "call-1",
+                "request_ref": "request-ref",
+                "response_ref": "response-ref",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _load_error(_ref: str) -> dict:
+        raise RuntimeError("archive unavailable")
+
+    monkeypatch.setattr(recording, "archive_loader", lambda _base: _load_error)
+
+    with pytest.raises(ReplayError, match="auxiliary call request-ref"):
+        load_auxiliary_calls(
+            source_data_dir=tmp_path / "data",
+            thread_base_path=tmp_path / "thread.jsonl",
+            user_slug="local-user",
+        )

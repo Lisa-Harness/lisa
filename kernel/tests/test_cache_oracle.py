@@ -10,7 +10,7 @@ distinguishable from a changed prefix. Reports stay aggregate-only.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from kernel.cache_oracle import (
     BREAK_CACHE_EXPIRED,
@@ -268,3 +268,26 @@ def test_report_carries_digests_not_prompt_text():
     assert SECRET_QUESTION not in report
     assert "carried=" in report and "shape=" in report
     assert SECRET_PROMPT not in explain(obs)
+
+
+def test_explain_and_observations_and_empty_fold_fallbacks():
+    oracle = CacheOracle()
+    observation = oracle.observe(request([{"role": "user", "content": "hello"}]), label="")
+    line = explain(observation)
+    assert "iteration" in line
+    assert oracle.observations == (observation,)
+    detailed = replace(
+        observation,
+        break_detail="explicit breakpoint",
+        cache_ttl_state="ttl-5m",
+    )
+    detailed_line = explain(detailed)
+    assert "explicit breakpoint" in detailed_line
+    assert "ttl=ttl-5m" in detailed_line
+
+    rewritten, replacements = apply_folds(
+        [{"role": "tool", "tool_call_id": "other", "content": "untouched"}],
+        [],
+    )
+    assert rewritten[0]["content"] == "untouched"
+    assert replacements == {}

@@ -104,6 +104,43 @@ async def test_raising_answerer_surfaces_like_a_tool_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_status_aware_answerer_records_read_error_without_read_receipt() -> None:
+    class StatusAnswerer:
+        def answer(self, _tool_name: str, _arguments: dict[str, Any], _tool_call_id: str) -> str:
+            return "Error: provider unavailable"
+
+        def answer_with_status(
+            self, _tool_name: str, _arguments: dict[str, Any], _tool_call_id: str
+        ) -> tuple[str, bool]:
+            return "Error: provider unavailable", True
+
+    state = _TurnState()
+    ledger = CallLedger()
+    answerer = StatusAnswerer()
+    hooks = _hooks(answerer.answer)
+
+    outcome = await dispatch_capability(
+        tool_name="test_tool",
+        tool_arguments={"path": "a.py"},
+        tool_kind="function",
+        ctx=OperationExecutionContext(),
+        state=state,
+        ledger=ledger,
+        pool=_ExplodingPool(),
+        operation_catalog={},
+        tool_catalog={"test_tool": SimpleNamespace(effect="read")},
+        exec_op=_exploding_exec_op,
+        hooks=hooks,
+        tool_call_id="call_recorded_1",
+    )
+
+    assert outcome.is_ok is False
+    assert "provider unavailable" in outcome.tool_output
+    assert state.effect_receipts == []
+    assert ledger.counts == {"test_tool": 1}
+
+
+@pytest.mark.asyncio
 async def test_none_answerer_executes_the_tool_normally() -> None:
     """Without the hook, the operation executes and its output reaches the model."""
 
@@ -126,3 +163,55 @@ async def test_none_answerer_executes_the_tool_normally() -> None:
     assert outcome.operation_result is not None
     assert outcome.operation_result.output_text == "live output"
     assert [r.capability_id for r in state.effect_receipts] == ["test_tool"]
+
+
+def test_dereference_ref_for_read_accepts_result_and_thread_refs() -> None:
+    from kernel.turn_phases._dispatch import dereference_ref_for_read
+
+    tool_def = SimpleNamespace(effect="read")
+    assert (
+        dereference_ref_for_read(
+            tool_name="storage.read_file",
+            tool_arguments={"ref": "r" + "a" * 64},
+            tool_def=tool_def,
+        )
+        == "r" + "a" * 64
+    )
+    assert (
+        dereference_ref_for_read(
+            tool_name="thread.read",
+            tool_arguments={"ref": "t12"},
+            tool_def=tool_def,
+        )
+        == "t12"
+    )
+
+
+def test_dereference_ref_for_read_rejects_invalid_shapes() -> None:
+    from kernel.turn_phases._dispatch import dereference_ref_for_read
+
+    tool_def = SimpleNamespace(effect="read")
+    assert (
+        dereference_ref_for_read(
+            tool_name="storage.read_file",
+            tool_arguments=["not", "a", "dict"],
+            tool_def=tool_def,
+        )
+        is None
+    )
+    assert (
+        dereference_ref_for_read(
+            tool_name="storage.read_file",
+            tool_arguments={"ref": "https://example.com"},
+            tool_def=tool_def,
+        )
+        is None
+    )
+    assert (
+        dereference_ref_for_read(
+            tool_name="storage.write_file",
+            tool_arguments={"ref": "r" + "a" * 64},
+            tool_def=SimpleNamespace(effect="write"),
+        )
+        is None
+    )

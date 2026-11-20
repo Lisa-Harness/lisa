@@ -17,6 +17,7 @@ from kernel.cache_metrics import (
     build_partition_report,
     classify_usage_record,
     partition_key_from_record,
+    wilson_half_width,
 )
 
 
@@ -167,3 +168,78 @@ def test_unknown_dimensions_render_not_pooled() -> None:
     assert key.prefix_id is None
     assert key.cache_policy is None
     assert not key.identity_known
+
+
+def test_wilson_half_width_and_optional_numeric_fallbacks() -> None:
+    assert wilson_half_width(1, 0) is None
+    assert wilson_half_width(1, 10) is not None
+    assert (
+        classify_usage_record(
+            {
+                "kind": "chat_completion",
+                "cached_tokens": 1.5,
+                "prompt_tokens": 10,
+                "schema_version": 3,
+            }
+        ).cache_observation
+        == "hit"
+    )
+    nonfinite = classify_usage_record(
+        {
+            "kind": "chat_completion",
+            "cached_tokens": float("inf"),
+            "prompt_tokens": 10,
+            "cost_usd": float("-inf"),
+            "provider_cost_usd": float("nan"),
+        }
+    )
+    assert nonfinite.cache_observation == "unknown"
+    assert nonfinite.cost_usd is None
+    assert nonfinite.provider_cost_usd is None
+
+
+def test_aggregate_partition_sums_optional_cost_and_exclusions() -> None:
+    eligible = _row(
+        cached_tokens=40,
+        prompt_tokens=100,
+        cost_usd=0.25,
+        provider_cost_usd=0.30,
+        extra="ignored",
+    )
+    ambiguous = _row(
+        cached_tokens=0,
+        schema_version=None,
+    )
+    metrics = aggregate_partition([eligible, ambiguous])
+    assert metrics.row_count == 2
+    assert metrics.cost_known_count == 1
+    assert metrics.cost_sum == pytest.approx(0.25)
+    assert metrics.provider_cost_known_count == 1
+    assert metrics.provider_cost_sum == pytest.approx(0.30)
+
+
+def test_partition_metrics_empty_token_share_and_request_rate() -> None:
+    from kernel.cache_metrics import PartitionMetrics
+
+    metrics = PartitionMetrics()
+    assert metrics.token_share is None
+    assert metrics.request_hit_rate is None
+    assert metrics.wilson_half_width is None
+
+
+def test_prompt_unknown_inconsistent_and_ambiguous_eligible_rows() -> None:
+    from kernel.cache_metrics import aggregate_partition
+
+    prompt_unknown = classify_usage_record(
+        {"kind": "chat_completion", "cached_tokens": 1, "prompt_tokens": "unknown"}
+    )
+    assert prompt_unknown.exclusion_reason == "prompt_unknown"
+
+    inconsistent = classify_usage_record(
+        {"kind": "chat_completion", "cached_tokens": 11, "prompt_tokens": 10}
+    )
+    assert inconsistent.exclusion_reason == "inconsistent"
+
+    ambiguous_hit = _row(cached_tokens=1, prompt_tokens=10, schema_version=None)
+    metrics = aggregate_partition([ambiguous_hit])
+    assert metrics.ambiguous_rows == 1

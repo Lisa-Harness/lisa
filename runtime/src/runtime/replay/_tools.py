@@ -45,3 +45,20 @@ class TranscriptToolAnswerer:
             self.gaps.append({"tool": tool_name, "tool_call_id": tool_call_id})
             raise ReplayToolGapError(tool_name, tool_call_id)
         return self.tool_results[tool_call_id]
+
+    def answer_with_status(
+        self, tool_name: str, tool_arguments: dict[str, Any], tool_call_id: str
+    ) -> tuple[str, bool]:
+        """Return recorded text plus whether the transcript marked it an error."""
+        text = self.answer(tool_name, tool_arguments, tool_call_id)
+        lowered = text.lstrip().lower()
+        is_error = lowered.startswith("error:")
+        if not is_error:
+            try:
+                import json
+
+                parsed = json.loads(text)
+                is_error = isinstance(parsed, dict) and isinstance(parsed.get("error"), str)
+            except (TypeError, ValueError):
+                pass
+        return text, is_error

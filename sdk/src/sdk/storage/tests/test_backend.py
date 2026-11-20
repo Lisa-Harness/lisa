@@ -1808,3 +1808,507 @@ def test_write_manifest_rejects_unknown_kind(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     data = json.loads(b.write_model_manifest("x", "bogus"))
     assert "error" in data
+
+
+def test_batch_guards_convert_unexpected_entry_exceptions(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+
+    def _raise_path(_path: str) -> dict[str, Any]:
+        raise RuntimeError("injected path failure")
+
+    def _raise_pair(_pair: dict[str, str], **_kwargs: object) -> dict[str, Any]:
+        raise RuntimeError("injected pair failure")
+
+    path_receipt = b._guarded_path_item("a.txt", _raise_path)
+    pair_receipt = b._guarded_pair_item(
+        {"source": "a.txt", "destination": "b.txt"},
+        _raise_pair,
+    )
+
+    assert "RuntimeError" in path_receipt["error"]
+    assert "injected path failure" in path_receipt["error"]
+    assert "RuntimeError" in pair_receipt["error"]
+    assert "injected pair failure" in pair_receipt["error"]
+
+
+def test_delete_file_rejects_symlink_parent_and_lstat_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (b.files_root() / "linked").symlink_to(outside, target_is_directory=True)
+
+    symlinked = json.loads(b.delete_file("linked/victim.txt"))
+    assert "escapes sandbox" in symlinked["error"]
+
+    b.write_file("victim.txt", "x")
+    original_lstat = Path.lstat
+
+    def _lstat_error(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == b.files_root() / "victim.txt":
+            raise OSError(errno.EIO, "lstat failed")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", _lstat_error)
+    lstat_error = json.loads(b.delete_file("victim.txt"))
+    assert "Input/output error" in lstat_error["error"]
+
+
+def test_delete_directory_covers_lstat_and_scandir_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.make_dir("tree")
+
+    original_lstat = Path.lstat
+
+    def _lstat_error(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == b.files_root() / "tree":
+            raise OSError(errno.EIO, "lstat failed")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", _lstat_error)
+    lstat_error = json.loads(b.delete_directory("tree"))
+    assert "Input/output error" in lstat_error["error"]
+
+    monkeypatch.setattr(Path, "lstat", original_lstat)
+
+    def _scandir_error(*_args: object, **_kwargs: object) -> object:
+        raise OSError(errno.EIO, "scandir failed")
+
+    monkeypatch.setattr("sdk.storage._backend.os.scandir", _scandir_error)
+    scandir_error = json.loads(b.delete_directory("tree"))
+    assert "Input/output error" in scandir_error["error"]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_secure_move_covers_sync_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sdk.storage._move as secure_move
+
+    b = _backend(tmp_path)
+    b.write_file("source.txt", "content")
+
+    def _fsync_error(_fd: int) -> None:
+        raise OSError(errno.EIO, "fsync failed")
+
+    monkeypatch.setattr(secure_move.os, "fsync", _fsync_error)
+    receipt = json.loads(b.move_file("source.txt", "moved.txt"))
+
+    assert receipt["ok"] is True
+    assert receipt["durable"] is False
+    assert "durability" in receipt["warning"]
+    assert receipt["durability_errors"]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="secure moves require Linux")
+def test_secure_move_directory_covers_missing_source_and_sync_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    b = _backend(tmp_path)
+    missing = json.loads(b.move_directory("missing", "destination"))
+    assert "source directory not found" in missing["error"]
+
+    b.write_file("tree/a.txt", "a")
+
+    def _fsync_error(_fd: int) -> None:
+        raise OSError(errno.EIO, "fsync failed")
+
+    monkeypatch.setattr(secure_move.os, "fsync", _fsync_error)
+    receipt = json.loads(b.move_directory("tree", "moved"))
+
+    assert receipt["ok"] is True
+    assert receipt["durable"] is False
+    assert "durability" in receipt["warning"]
+
+
+def test_secure_move_covers_rename_errno_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sdk.storage._move as secure_move
+
+    class _Rename:
+        argtypes: object = None
+        restype: object = None
+
+        def __init__(self, result: int) -> None:
+            self.result = result
+
+        def __call__(self, *_args: object, **_kwargs: object) -> int:
+            return self.result
+
+    monkeypatch.setattr(secure_move, "_libc_renameat2", lambda: _Rename(-1))
+    monkeypatch.setattr(secure_move.ctypes, "get_errno", lambda: errno.EXDEV)
+    with pytest.raises(secure_move.SecureMoveError, match="crosses filesystems"):
+        secure_move._rename_noreplace(1, "source", 2, "destination")
+
+    monkeypatch.setattr(secure_move.ctypes, "get_errno", lambda: errno.ENOSYS)
+    with pytest.raises(secure_move.SecureMoveError, match="unsupported"):
+        secure_move._rename_noreplace(1, "source", 2, "destination")
+
+
+def test_secure_move_covers_missing_renameat2(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sdk.storage._move as secure_move
+
+    secure_move._libc_renameat2.cache_clear()
+    monkeypatch.setattr(
+        secure_move.ctypes,
+        "CDLL",
+        lambda _name, *_args, **_kwargs: object(),
+    )
+
+    with pytest.raises(secure_move.SecureMoveError, match="renameat2 is unavailable"):
+        secure_move._libc_renameat2()
+    secure_move._libc_renameat2.cache_clear()
+
+
+def test_secure_move_covers_hash_and_stat_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    root = tmp_path / "root"
+    root.mkdir()
+    root_fd = os.open(root, secure_move._DIRECTORY_FLAGS)
+    try:
+        with pytest.raises(secure_move.SecureMoveError, match="source file not found"):
+            secure_move._hash_open_file(root_fd, "missing.txt", label="source")
+
+        (root / "file.txt").write_bytes(b"x")
+
+        original_stat = secure_move.os.stat
+
+        def _stat_error(*_args: object, **_kwargs: object) -> os.stat_result:
+            raise PermissionError(errno.EACCES, "inspect denied")
+
+        monkeypatch.setattr(secure_move.os, "stat", _stat_error)
+        with pytest.raises(secure_move.SecureMoveError, match="inspect source file"):
+            secure_move._hash_open_file(root_fd, "file.txt", label="source")
+
+        monkeypatch.setattr(secure_move.os, "stat", original_stat)
+
+        def _open_error(*_args: object, **_kwargs: object) -> int:
+            raise PermissionError(errno.EACCES, "open denied")
+
+        monkeypatch.setattr(secure_move.os, "open", _open_error)
+        with pytest.raises(secure_move.SecureMoveError, match="open source file"):
+            secure_move._hash_open_file(root_fd, "file.txt", label="source")
+    finally:
+        os.close(root_fd)
+
+
+def test_secure_move_directory_root_open_and_source_stat_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    monkeypatch.setattr(secure_move, "_platform_supported", lambda: True)
+
+    def _open_error(*_args: object, **_kwargs: object) -> int:
+        raise OSError(errno.EIO, "directory root open failed")
+
+    monkeypatch.setattr(secure_move.os, "open", _open_error)
+    with pytest.raises(secure_move.SecureMoveError, match="open the files sandbox"):
+        secure_move.move_directory(
+            tmp_path,
+            source_parts=("source",),
+            destination_parts=("dest",),
+        )
+
+    monkeypatch.undo()
+    monkeypatch.setattr(secure_move, "_platform_supported", lambda: True)
+    b = _backend(tmp_path)
+    b.make_dir("source")
+    original_stat = secure_move.os.stat
+
+    def _stat_error(*_args: object, **_kwargs: object) -> os.stat_result:
+        raise PermissionError(errno.EACCES, "inspect denied")
+
+    monkeypatch.setattr(secure_move.os, "stat", _stat_error)
+    receipt = json.loads(b.move_directory("source", "dest"))
+    assert "inspect source directory" in receipt["error"]
+
+    monkeypatch.setattr(secure_move.os, "stat", original_stat)
+
+
+def test_secure_move_stat_sync_and_directory_verification_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    root = tmp_path / "root"
+    root.mkdir()
+    root_fd = os.open(root, secure_move._DIRECTORY_FLAGS)
+    try:
+        assert secure_move._stat_relative(root_fd, "missing") is None
+
+        def _fsync_error(_fd: int) -> None:
+            raise OSError(errno.EIO, "sync failed")
+
+        monkeypatch.setattr(secure_move.os, "fsync", _fsync_error)
+        errors = secure_move._sync_directories((root_fd, root_fd))
+        assert errors
+
+        source_stat = os.stat(root)
+        monkeypatch.setattr(secure_move, "_stat_relative", lambda *_args: None)
+
+        def _rollback_error(*_args: object, **_kwargs: object) -> None:
+            raise secure_move.SecureMoveError("rollback unavailable")
+
+        monkeypatch.setattr(secure_move, "_rename_noreplace", _rollback_error)
+        with pytest.raises(secure_move.SecureMoveError, match="rollback failed"):
+            secure_move._verify_moved_directory(source_stat, root_fd, "dest", root_fd, "source")
+    finally:
+        os.close(root_fd)
+
+
+def test_secure_move_covers_root_open_and_directory_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._move as secure_move
+
+    def _open_error(*_args: object, **_kwargs: object) -> int:
+        raise OSError(errno.EIO, "root open failed")
+
+    monkeypatch.setattr(secure_move.os, "open", _open_error)
+    monkeypatch.setattr(secure_move, "_platform_supported", lambda: True)
+    with pytest.raises(secure_move.SecureMoveError, match="open the files sandbox"):
+        secure_move.move_regular_file(
+            tmp_path,
+            source_parts=("source.txt",),
+            destination_parts=("dest.txt",),
+        )
+
+    monkeypatch.setattr(secure_move, "_platform_supported", lambda: False)
+    with pytest.raises(secure_move.SecureMoveError, match="unsupported"):
+        secure_move.move_directory(
+            tmp_path,
+            source_parts=("source",),
+            destination_parts=("dest",),
+        )
+
+
+def test_manifest_oserrors_are_sanitized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    b = _backend(tmp_path)
+    b.write_model_manifest("proposal: true\n", "proposal")
+
+    def _read_error(*_args: object, **_kwargs: object) -> str:
+        raise OSError(errno.EIO, "manifest read failed")
+
+    monkeypatch.setattr(Path, "read_text", _read_error)
+    read_receipt = json.loads(b.read_model_manifest("proposal"))
+    assert "Input/output error" in read_receipt["error"]
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+
+    def _open_error(*_args: object, **_kwargs: object) -> object:
+        raise OSError(errno.EIO, "manifest write failed")
+
+    monkeypatch.setattr(Path, "open", _open_error)
+    write_receipt = json.loads(b.write_model_manifest("x", "proposal"))
+    assert "Input/output error" in write_receipt["error"]
+
+
+def test_trash_and_hard_delete_oserrors_are_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._backend as backend
+
+    b = _backend(tmp_path)
+    b.make_dir("tree")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: True)
+
+    def _open_error(*_args: object, **_kwargs: object) -> int:
+        raise OSError(errno.EIO, "root open failed")
+
+    monkeypatch.setattr(backend.os, "open", _open_error)
+    removed_files, removed_dirs, error = b._hard_delete_tree(b.files_root() / "tree")
+    assert removed_files == 0
+    assert removed_dirs == 0
+    assert "root open failed" not in (error or "")
+    assert "Input/output error" in (error or "")
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+    b.make_dir("trash-session")
+    (b.files_root() / ".trash").mkdir(exist_ok=True)
+
+    def _scandir_error(*_args: object, **_kwargs: object) -> object:
+        raise OSError(errno.EIO, "trash scan failed")
+
+    monkeypatch.setattr(backend.os, "scandir", _scandir_error)
+    receipt = json.loads(b.purge_trash())
+    assert "purge failed" in receipt["error"]
+
+
+def test_storage_write_edit_read_append_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "hello")
+
+    def _replace_error(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "replace failed")
+
+    monkeypatch.setattr("sdk.storage._backend.os.replace", _replace_error)
+    edit_receipt = json.loads(b.edit_file("doc.txt", "hello", "world"))
+    assert "Input/output error" in edit_receipt["error"]
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+
+    def _write_open_error(*_args: object, **_kwargs: object) -> object:
+        raise OSError(errno.EIO, "write failed")
+
+    monkeypatch.setattr(Path, "open", _write_open_error)
+    write_receipt = json.loads(b.write_file("write.txt", "x"))
+    assert "Input/output error" in write_receipt["error"]
+    append_receipt = json.loads(b.append_file("append.txt", "x"))
+    assert "Input/output error" in append_receipt["error"]
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "hello")
+
+    def _read_bytes_error(*_args: object, **_kwargs: object) -> bytes:
+        raise OSError(errno.EIO, "read failed")
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes_error)
+    stat_receipt = json.loads(b.stat_file("doc.txt"))
+    assert "Input/output error" in stat_receipt["error"]
+    edit_receipt = json.loads(b.edit_file("doc.txt", "hello", "world"))
+    assert "Input/output error" in edit_receipt["error"]
+
+
+def test_storage_read_slice_unlink_and_nofollow_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "hello")
+
+    def _read_text_error(*_args: object, **_kwargs: object) -> str:
+        raise OSError(errno.EIO, "slice read failed")
+
+    monkeypatch.setattr(Path, "read_text", _read_text_error)
+    range_receipt = json.loads(b.read_file_range("doc.txt"))
+    assert "Input/output error" in range_receipt["error"]
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+    b.write_file("doc.txt", "hello")
+
+    def _unlink_error(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "unlink failed")
+
+    monkeypatch.setattr(Path, "unlink", _unlink_error)
+    unlink_receipt = json.loads(b.delete_file("doc.txt"))
+    assert "Input/output error" in unlink_receipt["error"]
+
+
+def test_move_prepare_covers_same_path_hash_and_malformed_path(
+    tmp_path: Path,
+) -> None:
+    b = _backend(tmp_path)
+
+    same = json.loads(b.move_file("a.txt", "a.txt"))
+    assert "same path" in same["error"]
+
+    bad_hash = json.loads(b.move_file("a.txt", "b.txt", expected_sha256="not-a-sha"))
+    assert "64 hexadecimal" in bad_hash["error"]
+
+    unsafe = json.loads(b.move_file("../a.txt", "b.txt"))
+    assert "unsafe or escapes sandbox" in unsafe["error"]
+
+    b.write_file("pair.txt", "x")
+    pair_receipt = json.loads(b.move_files([None]))
+    assert pair_receipt["count"] == 1
+    assert "malformed pair" in pair_receipt["results"][0]["error"]
+
+
+def test_hard_delete_relative_and_parent_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._backend as backend
+
+    b = _backend(tmp_path)
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    assert (
+        b._relative_parts_for_delete(outside)[1]
+        == "delete failed: path is outside the files sandbox"
+    )
+    assert (
+        b._relative_parts_for_delete(b.files_root())[1]
+        == "delete failed: cannot remove the files sandbox root"
+    )
+
+    root_fd = os.open(b.files_root(), backend._DIRECTORY_OPEN_FLAGS)
+    try:
+
+        def _missing_component(*_args: object, **_kwargs: object) -> int:
+            raise FileNotFoundError
+
+        monkeypatch.setattr(backend.os, "open", _missing_component)
+        opened = b._open_parent_directory_fd(root_fd, ("missing",))
+        assert "No such file or directory" in opened
+    finally:
+        os.close(root_fd)
+
+
+def test_nofollow_and_directory_validation_cover_malformed_paths(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("plain", "plain")
+
+    resolved = b._resolve_nofollow("../evil.txt")
+    assert isinstance(resolved, dict)
+    assert "unsafe or escapes sandbox" in resolved["error"]
+    resolved = b._resolve_nofollow("evil\0.txt")
+    assert isinstance(resolved, dict)
+    assert "unsafe or escapes sandbox" in resolved["error"]
+
+    prepared = b._resolve_delete_directory("plain")
+    assert isinstance(prepared, str)
+    assert "targets a file" in prepared
+
+
+def test_delete_directory_hard_delete_descriptor_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sdk.storage._backend as backend
+
+    b = _backend(tmp_path)
+    b.make_dir("tree")
+    b.write_file("tree/a.txt", "a")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: True)
+
+    root = b.files_root()
+    root_fd = os.open(root, backend._DIRECTORY_OPEN_FLAGS)
+    try:
+        opened_parent = b._open_parent_directory_fd(root_fd, ("missing",))
+        if isinstance(opened_parent, str):
+            assert opened_parent.startswith("delete failed:")
+
+        def _open_directory_error(*_args: object, **_kwargs: object) -> int:
+            raise OSError(errno.EIO, "descriptor open failed")
+
+        monkeypatch.setattr(backend.os, "open", _open_directory_error)
+        opened = b._open_root_directory_fd()
+        assert "Input/output error" in opened
+    finally:
+        os.close(root_fd)
+
+    monkeypatch.undo()
+    b = _backend(tmp_path)
+    b.make_dir("tree")
+    monkeypatch.setattr(b, "_supports_dirfd_recursive_delete", lambda: True)
+    monkeypatch.setattr(
+        b,
+        "_open_root_directory_fd",
+        lambda: "delete failed: root descriptor unavailable",
+    )
+    removed_files, removed_dirs, error = b._hard_delete_tree(b.files_root() / "tree")
+    assert removed_files == 0
+    assert removed_dirs == 0
+    assert "root descriptor" in error

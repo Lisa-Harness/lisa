@@ -28,7 +28,7 @@ from kernel.models import (
 )
 from kernel.operations.registry import OperationTimeoutError
 from kernel.recovery import RECOVERY_APPROVAL_PENDING_ERROR
-from kernel.tools.mcp_client import MCPToolPool
+from kernel.tools.mcp_client import MCPToolPool, MCPToolResult
 from kernel.tools.registry import execute_tool
 from kernel.turn_phases._history import maybe_resolve_anchor_read
 from kernel.turn_phases._post_turn import (
@@ -888,6 +888,19 @@ async def _execute_capability(
         # ledger, receipt, read-cache, and error-streak bookkeeping in
         # ``dispatch_capability`` still executes, so the loop behaves as
         # if the tool had run.
+        answer_owner = getattr(answerer, "__self__", None)
+        answer_with_status = getattr(answer_owner, "answer_with_status", None)
+        if callable(answer_with_status):
+            tool_output, is_error = answer_with_status(tool_name, tool_arguments, tool_call_id)
+            mcp_result = cast(
+                Any,
+                MCPToolResult(
+                    tool_id=tool_name,
+                    output_text=tool_output,
+                    is_error=is_error,
+                ),
+            )
+            return tool_output, None, None, mcp_result, None
         return answerer(tool_name, tool_arguments, tool_call_id), None, None, None, None
     if tool_name in operation_catalog:
         tool_output, op_result, delegate_yield = await _dispatch_operation(
