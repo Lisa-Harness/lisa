@@ -139,6 +139,24 @@ def test_await_mcp_started_event_caches_base_exception(tmp_path: Path) -> None:
     asyncio.run(_scenario())
 
 
+def test_capture_mcp_start_error_handles_canceled_and_existing(tmp_path: Path) -> None:
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        canceled_task = asyncio.create_task(asyncio.sleep(10))
+        canceled_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await canceled_task
+        runtime.resources._mcp_start_task = canceled_task
+        runtime.resources._capture_mcp_start_error()
+        assert isinstance(runtime.resources._mcp_start_exc, asyncio.CancelledError)
+
+        runtime.resources._mcp_start_exc = RuntimeError("existing")
+        runtime.resources._capture_mcp_start_error()
+        assert isinstance(runtime.resources._mcp_start_exc, RuntimeError)
+
+    asyncio.run(_scenario())
+
+
 def test_aclose_suppresses_proxy_close_exception(tmp_path: Path) -> None:
     class FakeProxy:
         async def aclose(self) -> None:
@@ -148,6 +166,24 @@ def test_aclose_suppresses_proxy_close_exception(tmp_path: Path) -> None:
         runtime = _make_runtime(tmp_path)
         runtime.resources._proxy_pool = cast(Any, FakeProxy())
         await runtime.aclose()
+        assert runtime.resources._proxy_pool is None
+
+    asyncio.run(_scenario())
+
+
+def test_close_proxy_pool_noop_and_base_exception(tmp_path: Path) -> None:
+    class BrokenProxy:
+        async def aclose(self) -> None:
+            raise BaseExceptionGroup(
+                "proxy close",
+                [RuntimeError("close failed")],
+            )
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        await runtime.resources._close_proxy_pool()
+        runtime.resources._proxy_pool = cast(Any, BrokenProxy())
+        await runtime.resources._close_proxy_pool()
         assert runtime.resources._proxy_pool is None
 
     asyncio.run(_scenario())
@@ -285,6 +321,39 @@ def test_mcp_pool_start_and_close_exceptions_are_suppressed(tmp_path: Path) -> N
         finally:
             mcp_module.MCPToolPool = original
         assert runtime.resources._mcp_tool_pool is None
+
+    asyncio.run(_scenario())
+
+
+def test_build_pool_without_warm_configs_is_started(tmp_path: Path) -> None:
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_warm_configs = []
+        await runtime.resources._build_pool()
+        assert runtime.resources._mcp_started is True
+
+    asyncio.run(_scenario())
+
+
+def test_aclose_deferred_build_wait_interruption_is_suppressed(tmp_path: Path) -> None:
+    class BrokenEvent:
+        async def wait(self) -> None:
+            raise RuntimeError("started event failed")
+
+        def is_set(self) -> bool:
+            return False
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_started_event = cast(Any, BrokenEvent())
+        runtime.resources._mcp_close_signal = asyncio.Event()
+
+        async def _fake_start_task() -> None:
+            await asyncio.sleep(0)
+
+        runtime.resources._mcp_start_task = asyncio.create_task(_fake_start_task())
+        await runtime.aclose()
+        assert runtime.resources._mcp_start_task is None
 
     asyncio.run(_scenario())
 

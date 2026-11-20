@@ -58,6 +58,23 @@ def test_discover_pack_slice_provider_factory_factory(monkeypatch: pytest.Monkey
     assert len(providers) == 1
     assert providers[0].name == "provider"
 
+    class NonCallableEntry:
+        pack_name = "bad-pack"
+        factory = staticmethod(lambda: None)
+
+    monkeypatch.setattr(
+        discovery,
+        "discover_slice_provider_factories",
+        lambda: [NonCallableEntry()],
+    )
+    assert (
+        turn_hooks_builder._discover_pack_slice_providers(
+            view=SimpleNamespace(),
+            session_plan=SimpleNamespace(),
+        )
+        == []
+    )
+
 
 def test_view_declares_seam_slots() -> None:
     """``_SliceProviderHooksView`` declares the dispatch and model seams in __slots__."""
