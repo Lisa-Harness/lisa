@@ -44,50 +44,11 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
-          python - <<'PY'
-          import os
-          import tomllib
-          from pathlib import Path
-
-          packages = {
-              "kernel": "lisa-harness-kernel",
-              "sdk": "lisa-harness-sdk",
-              "mcp_server": "lisa-harness-mcp-servers",
-              "sdk/packs/core": "lisa-pack-core",
-              "sdk/packs/introspect": "lisa-pack-introspect",
-              "sdk/packs/memory": "lisa-pack-memory",
-              "sdk/packs/recovery": "lisa-pack-recovery",
-              "runtime": "lisa-harness-runtime",
-              "packstest": "lisa-harness-packstest",
-              "e2etest": "lisa-harness-e2e",
-          }
-          tag = os.environ["RELEASE_TAG"]
-          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
-          release_heading = f"## [{version}] - "
-          if not any(
-              line.startswith(release_heading)
-              for line in Path("CHANGELOG.md").read_text().splitlines()
-          ):
-              raise SystemExit(f"CHANGELOG.md has no dated release section for {version}")
-          for directory, expected_name in packages.items():
-              project = tomllib.loads(Path(directory, "pyproject.toml").read_text())["project"]
-              if project["name"] != expected_name:
-                  raise SystemExit(
-                      f"{directory}: expected distribution {expected_name!r}, "
-                      f"found {project['name']!r}"
-                  )
-              if project["version"] != version:
-                  raise SystemExit(
-                      f"{expected_name}: version {project['version']!r} "
-                      f"does not match workspace version {version!r}"
-                  )
-              expected_tag = f"v{project['version']}"
-              if tag and tag != expected_tag:
-                  raise SystemExit(
-                      f"release tag {tag!r} does not match {expected_name} version "
-                      f"{project['version']!r} (expected {expected_tag!r})"
-                  )
-          PY
+          if [[ -n "$RELEASE_TAG" ]]; then
+            python scripts/check_release_metadata.py --tag "$RELEASE_TAG"
+          else
+            python scripts/check_release_metadata.py
+          fi
 
       - name: Build packages
         run: |

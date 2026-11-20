@@ -19,7 +19,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.12
-      - run: uv sync --frozen --extra dev --extra mutation
+      - run: uv sync --locked --extra dev --extra mutation
       - name: Mutate in an isolated copy
         run: uv run --no-sync mutmut run --max-children 2
       - name: Export results (survivors require review)
