@@ -17,7 +17,7 @@ command. A released CLI also does not automatically run your local changes.
    git clone https://github.com/Lisa-Harness/lisa.git
    git clone https://github.com/Lisa-Harness/lisa-cli.git
    cd lisa
-   uv sync --frozen --extra dev
+   uv sync --locked --extra dev
    uv run pytest packstest/tests -m "not live" -q
    ```
 
@@ -99,8 +99,8 @@ command. A released CLI also does not automatically run your local changes.
    for placement) and ask Lisa to implement a bounded change with regression
    tests. It prepares the owned worktree, records a baseline, checks the
    candidate tree, and commits there. Review the diff and check evidence before
-   integrating by rebase/squash or exported patches. Ask separately to push or
-   create a PR; add the GitHub pack only when publication is needed.
+   integrating by rebase or exported patches. Ask separately to push or create
+   a PR; add the GitHub pack only when publication is needed.
 
 The coding pack loads repository guidance from
 [project instructions](../.github/copilot-instructions.md) and
@@ -117,7 +117,7 @@ request creation. They share the host-owned `WorkProduct` contract.
 ## Workflow
 
 1. Inspect the configured workspace with bounded read tools.
-2. Create an isolated worktree on an owned feature branch.
+2. Create an isolated worktree on an owned feature branch from `main`.
 3. Apply a validated unified diff in that worktree.
 4. Run named, session-configured checks inside the sandbox with the owned
    worktree bound writable (`direct-write`). Containment comes from whichever
@@ -131,6 +131,14 @@ request creation. They share the host-owned `WorkProduct` contract.
    before the executor can report completion.
 6. Push the branch, open a pull request, or clean up only on a separate
    operator request. None is part of the default finish line.
+
+`main` is the only integration branch. Keep feature branches short-lived and
+PRs focused. Fold review corrections into their target commit with `fixup!`
+and autosquash before the final merge, then rebase the branch onto current
+`main`. Land with **rebase and merge** so each logical commit remains visible;
+do not squash an entire PR, and never create or push a merge commit. Only the
+feature branch may be force-updated, with `--force-with-lease`; `main` is never
+rewritten.
 
 Each patch increments the artifact revision and clears prior check records.
 Checks therefore cannot authorize a later patch. Pull-request publication also

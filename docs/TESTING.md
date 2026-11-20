@@ -1,21 +1,18 @@
 # Testing and quality gates
 
 Run commands from the framework workspace root after
-`uv sync --frozen --extra dev`. The root [pyproject.toml](../pyproject.toml)
+`uv sync --locked --extra dev`. The root [pyproject.toml](../pyproject.toml)
 defines pytest paths, markers, Ruff, mypy, and coverage settings;
 [CI](../.github/workflows/ci.yml) is authoritative for required jobs.
 For a copy-paste command sequence and failure triage, use the
 [testing runbook](TESTING_RUNBOOK.md).
 
-Documentation-only changes — paths matching the
-[CI](../.github/workflows/ci.yml) `paths-ignore` filter (`docs/**`, `*.md`,
-`**/README.md`, `**/AUTHORING.md`) — skip the quality, test, and coverage
-matrix by design. On such a pull request the only job that runs is
-[docs.yml](../.github/workflows/docs.yml)'s "Documentation quality" gate
-([check_docs.py](../scripts/check_docs.py)); the CI `merge-gate` aggregate
-does not report, so branch protection must key to the Docs job, not the
-aggregate. Markdown under a package source tree is runtime input, not
-documentation, and runs the full matrix.
+Every pull request runs the complete [CI](../.github/workflows/ci.yml) matrix,
+including documentation-only changes. Branch protection keys to the resulting
+**Merge gate**, which cannot pass unless quality, documentation, tests,
+changed-line coverage, offline e2e, and distribution validation all pass.
+Markdown under a package source tree is runtime input, not maintained
+documentation, and is covered by its owning tests.
 
 ## Test-selection tiers
 
@@ -42,10 +39,10 @@ full suite for `kernel` (the shared contract layer every package imports),
 outside a known package. Stub (`typings/`), CI/agent config (`.github/`), and
 documentation paths are inert to a test run and are skipped rather than
 escalating — the types check owns stubs and the docs gate owns CI config.
-Worktree feature branches anchor their delta against `dev` when it exists
-(the worktrees branch from it), falling back to `main`. `--dry-run` prints the
-command without running it; `--paths` selects explicitly. Its package table
-is asserted against the configured `testpaths` by
+Worktree feature branches anchor their delta against `main`, the only
+integration branch. `--dry-run` prints the command without running it;
+`--paths` selects explicitly. Its package table is asserted against the
+configured `testpaths` by
 `packstest/tests/test_check_tests.py`, so a new suite cannot silently fall
 outside selection.
 
@@ -94,21 +91,21 @@ state when the gate runs.
 
 The base is `--base` when given — an explicit ref that does not resolve is an
 error rather than a silent fallback — otherwise the merge-base of `HEAD` with
-`origin/dev`, `dev`, `origin/main`, and `main`, taking the most recent of
-those. Worktree feature branches branch from `dev`, so an advanced `dev` must
-anchor the branch point instead of the older main merge-base. A stale candidate
-yields a merge-base older than the branch point, which would widen the delta to
-include other people's commits; merge-bases of one `HEAD` are totally ordered by
-ancestry, so the maximal one is the branch point.
+`origin/main` and `main`, taking the most recent one. A stale candidate yields a
+merge-base older than the branch point, which would widen the delta to include
+other people's commits; merge-bases of one `HEAD` are totally ordered by
+ancestry, so the maximal one is the branch point. A lingering local `dev` ref
+is intentionally ignored.
 
 The selector escalates to the full suite rather than guessing when it cannot
 show that a subset covers the change: no base resolved, no changed paths
 detected, a path outside every known package, a cross-cutting path
 (`pyproject.toml`, `uv.lock`, `conftest.py`, `typings/`, `.github/`,
-`vulture_allowlist.py`, or any `scripts/` file other than the two the packstest
-suite loads), or a kernel change. Documentation-only paths select nothing and
-exit 0, mirroring the CI path filter. The exit code is pytest's, so a failed,
-errored, or uncollected run fails the gate.
+`vulture_allowlist.py`, or any `scripts/` file other than the scripts the
+packstest suite loads), or a kernel change. Documentation-only paths select
+nothing and exit 0 for the local package selector; the full CI matrix still
+runs on every PR. The exit code is pytest's, so a failed, errored, or
+uncollected run fails the gate.
 
 ## Fast development loop
 
@@ -149,7 +146,10 @@ test module).
 ## CI gates
 
 Quality jobs run on Ubuntu/Python 3.12. Tests and per-package coverage gates
-run on Python 3.11/3.12 across Linux, macOS, and Windows.
+run on Python 3.11/3.12 across Linux, macOS, and Windows. Every PR, including
+documentation-only changes, validates release metadata, builds all ten wheels
+and source distributions, and runs `twine check`, so a release does not inherit
+deferred packaging failures.
 
 Linear history is a repository setting, not a CI job: `main` requires linear
 history and disallows merge commits, so GitHub rejects a non-linear merge at
@@ -168,6 +168,9 @@ uv run python scripts/check_direct_io_policy.py
 uv run mypy
 uv run vulture
 uv run lint-imports
+uv run python scripts/check_release_metadata.py
+uv build --no-sources --all-packages --out-dir dist
+uvx --from twine twine check dist/*
 uv run python scripts/check_coverage.py --run
 ```
 
@@ -226,7 +229,7 @@ The optional Linux-only mutation extra checks the changed-coverage gate itself,
 including missing/unmeasured data, Git deltas, and the exact 95% boundary:
 
 ```sh
-uv sync --frozen --extra dev --extra mutation
+uv sync --locked --extra dev --extra mutation
 uv run --no-sync mutmut run --max-children 2
 uv run --no-sync mutmut results --all true
 uv run --no-sync mutmut show scripts.check_changed_coverage.x_check_coverage__mutmut_1
@@ -268,24 +271,19 @@ matches the one GitHub renders.
 Markdown that is *not* documentation is out of scope: pack content (modes,
 operations, prompts, sessions), test fixtures, and Copilot customization
 files are inputs to the runtime or the agent host, and the tests that load
-them cover them. A change to one of those files still runs the full CI
-matrix; a change to a guide does not.
+them cover them.
 
 ## When CI runs
 
-The [CI workflow](../.github/workflows/ci.yml) skips the quality, test, and
-coverage matrix when a push or pull request changes only documentation:
-the guides under `docs/`, the root-level `*.md` files, and any `README.md`
-or `AUTHORING.md`. The documentation gate still runs, so a doc-only change
-is still checked.
+The [CI workflow](../.github/workflows/ci.yml) has no path filter. Every pull
+request runs the quality, documentation, OS/Python test and coverage matrix,
+offline e2e smoke, and distribution build. This keeps the required Merge gate
+available for code, runtime-content, agent-content, infrastructure, and
+documentation changes alike.
 
-Markdown that the runtime or the agent host loads is *not* documentation and
-does not trigger the skip. Pack content, test fixtures, and the files under
-`.github/` that carry Copilot customizations all run the full matrix. A
-`README.md` inside a package source tree is a runtime asset rather than a
-guide, so it runs the matrix too. The path filter and the documentation
-gate use the same rule, so a file is never documentation for one and
-behavior for the other.
+Markdown that the runtime or agent host loads remains outside the
+documentation corpus: pack content, test fixtures, Copilot customizations, and
+package-local runtime documentation are covered by their owning tests.
 
 The release workflow calls both CI and the documentation gate, so a tag
 build is validated regardless of which files the release commit touched.

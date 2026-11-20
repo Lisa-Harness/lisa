@@ -17,20 +17,22 @@ When an agent completes an implementation change (code, docs, or config) and the
 
 ## Linear history: no merge commits
 
-`main` only ever receives commits by rebase or squash. Repository protection
-requires linear history and disables merge commits, so GitHub rejects a merge
-at the server; there is no separate CI check for it.
+`main` only ever receives commits by rebase and merge. Repository protection
+requires linear history and disables squash and merge commits, so GitHub
+rejects either at the server; there is no separate CI check for it.
 
 - **Never** run `git merge` on a branch that will be reviewed or pushed.
   Integrate base-branch changes with `git fetch origin && git rebase origin/main`.
-- Land changes with **rebase and merge** (fast-forward) or **squash and
-  merge**. Do not create a merge commit to bring a branch into `main`.
+- Land changes with **rebase and merge**. Do not squash an entire PR into one
+  commit or create a merge commit to bring a branch into `main`.
 - Fold correction commits with autosquash rather than adding a merge:
   `git commit --fixup=<sha>`, then
   `git rebase --autosquash --interactive origin/main`.
-- Rewriting an **unpushed** branch is expected and preferred. Once a branch
-  is pushed and reviewed, do not force-push it to hide review history; add
-  `fixup!` commits and squash them at merge time instead.
+- Rewriting an **unpushed** branch is expected and preferred. On a reviewed
+  branch, accumulate `fixup!` commits while iterating, then autosquash them
+  before the final merge. Update only that feature branch with
+  `--force-with-lease`; never hide outstanding review feedback or rewrite
+  `main`.
 - Never rewrite or force-push `main`.
 
 ## Commit scope and hygiene

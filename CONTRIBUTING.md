@@ -20,10 +20,11 @@ data directory, credentials, or private conversation logs.
 
 ## Set up a checkout
 
-Fork/clone the repository, create a feature branch, and run from its root:
+Fork/clone the repository, create a short-lived feature branch from current
+`main`, and run from its root:
 
 ```sh
-uv sync --frozen --extra dev
+uv sync --locked --extra dev
 uv run pytest packstest/tests -m "not live" -q
 ```
 
@@ -100,9 +101,11 @@ Use concise subjects with a type and optional scope:
 - `docs:` documentation; `test:` tests; `infra:` build/CI/tooling.
 - `copilot:` agent customization.
 
-Describe compatibility breaks in the body and changelog. Land on `main` by
-rebase (fast-forward) or squash, never by a merge commit; keep already shared
-history intact and consider using a `fixup!` commit but never rewrite it.
+Describe compatibility breaks in the body and changelog. Land on `main` with
+**rebase and merge**, never with a merge commit or a whole-PR squash. Keep
+logical commits separate and focused; use `fixup!` commits for review
+corrections, fold them with `git rebase --autosquash` before landing, and update
+only the feature branch with `--force-with-lease`. Never force-update `main`.
 
 ## Licensing and review
 
