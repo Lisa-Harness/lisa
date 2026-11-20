@@ -1962,6 +1962,10 @@ def test_secure_move_covers_missing_renameat2(monkeypatch: pytest.MonkeyPatch) -
     secure_move._libc_renameat2.cache_clear()
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative move fallback requires dir_fd support",
+)
 def test_secure_move_covers_hash_and_stat_oserrors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1997,6 +2001,10 @@ def test_secure_move_covers_hash_and_stat_oserrors(
         os.close(root_fd)
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative move fallback requires dir_fd support",
+)
 def test_secure_move_directory_root_open_and_source_stat_oserrors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2031,6 +2039,10 @@ def test_secure_move_directory_root_open_and_source_stat_oserrors(
     monkeypatch.setattr(secure_move.os, "stat", original_stat)
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative move fallback requires dir_fd support",
+)
 def test_secure_move_stat_sync_and_directory_verification_fallbacks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2226,6 +2238,10 @@ def test_move_prepare_covers_same_path_hash_and_malformed_path(
     assert "malformed pair" in pair_receipt["results"][0]["error"]
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative hard delete requires dir_fd support",
+)
 def test_hard_delete_relative_and_parent_fallbacks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2273,6 +2289,10 @@ def test_nofollow_and_directory_validation_cover_malformed_paths(tmp_path: Path)
     assert "targets a file" in prepared
 
 
+@pytest.mark.skipif(
+    not _dirfd_recursive_delete_supported(),
+    reason="descriptor-relative hard delete requires dir_fd support",
+)
 def test_delete_directory_hard_delete_descriptor_fallbacks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
