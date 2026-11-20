@@ -1,0 +1,39 @@
+id: canary/web-research-answer
+session_context: live_session_context.md
+packs:
+  - lisa-pack-memory
+  - lisa-pack-markdown
+  - lisa-pack-personas
+  - lisa-pack-serper
+turns:
+  - >-
+    Research who operates the official Python.org website. Call the
+    `web_search` tool exactly once, then return at most 120 words including
+    one source URL. Do not fetch pages.
+budgets:
+  max_messages: 2
+  max_continues: 0
+  max_yield_replies: 0
+  wall_clock_s: 180
+env:
+  MAX_TOOL_ITERATIONS: "8"
+  STAGE_NUDGE_THRESHOLD: "3"
+  STAGE_NUDGE_CAP: "6"
+  TURN_COMPLETION_MAX_TOKENS: "4096"
+oracles:
+  hygiene:
+    - not_aborted: {}
+    - no_turn_errors: {}
+    - no_operator_exit: {}
+    - no_unanswered_yield: {}
+    - no_runtime_errors: {}
+  research:
+    - receipt: {capability: web_search, min: 1}
+    - exchange_contains: {text: "http"}
+  efficiency:
+    - usage_within:
+        min_calls: 2
+        max_calls: 6
+        max_prompt_tokens: 100000
+        max_completion_tokens: 8192
+        max_total_tokens: 108192

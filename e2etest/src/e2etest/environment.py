@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 
+import yaml
 from dotenv import load_dotenv
 
 from e2etest.scenario import Scenario
@@ -108,6 +109,34 @@ def _copy_base_data(base: Path, config_dir: Path) -> None:
         shutil.copytree(overlays, config_dir / "overlays")
 
 
+def _pin_model_manifest(path: Path, model_id: str) -> None:
+    """Pin every mode and remove router rules so one live model drives a run."""
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"model manifest must be a mapping: {path}")
+    models = raw.get("models")
+    if not isinstance(models, list):
+        raise ValueError(f"model manifest has no models list: {path}")
+    known = {
+        str(model.get("model_id") or "")
+        for model in models
+        if isinstance(model, dict) and model.get("model_id")
+    }
+    if model_id not in known:
+        raise ValueError(
+            f"model '{model_id}' is not present in the base manifest; "
+            f"available models: {', '.join(sorted(known))}"
+        )
+    mode_models = raw.get("mode_models")
+    pinned_modes = set(mode_models) if isinstance(mode_models, dict) else {"default"}
+    pinned_modes.add("default")
+    raw["mode_models"] = dict.fromkeys(sorted(pinned_modes), model_id)
+    router = raw.get("router")
+    if isinstance(router, dict):
+        router["rules"] = []
+    path.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+
 def git(cwd: Path, *args: str) -> str:
     proc = subprocess.run(
         ["git", *args],
@@ -140,7 +169,12 @@ def _seed_fixture(scenario: Scenario, run_dir: Path) -> tuple[Path | None, Path 
 
 
 def prepare_run(
-    scenario: Scenario, run_dir: Path, packs_venv: Path, *, base: Path | None = None
+    scenario: Scenario,
+    run_dir: Path,
+    packs_venv: Path,
+    *,
+    base: Path | None = None,
+    model_id: str = "",
 ) -> RunPaths:
     """Create the run dir, seed config + fixture, and point the process env at it.
 
@@ -153,6 +187,8 @@ def prepare_run(
     config_dir.mkdir(parents=True)
     base = base or base_data_dir()
     _copy_base_data(base, config_dir)
+    if model_id:
+        _pin_model_manifest(config_dir / "models.yaml", model_id)
     policy_text = (
         scenario.policy.read_text(encoding="utf-8") if scenario.policy else _DEFAULT_POLICY
     )

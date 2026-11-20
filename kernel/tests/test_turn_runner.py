@@ -5317,6 +5317,52 @@ def test_routing_hint_does_not_re_escalate_to_plan_after_plan_ran() -> None:
     assert "transition_stage" in hint
 
 
+def test_routing_hint_skips_planner_when_one_mode_covers_fast_path_tags() -> None:
+    """A multi-tag fast path for one mode is still a single-mode request."""
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _compute_capability_routing_hint
+
+    planner_cfg = _mode_config(
+        mode_id="planner",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+        routing_intent_keywords={"plan": ["plan"]},
+    )
+    researcher_cfg = _mode_config(
+        mode_id="researcher",
+        satisfies_intents=["research", "gather", "learn"],
+        routing_intent_tags=["research", "gather", "learn"],
+        routing_intent_keywords={
+            "research": ["research"],
+            "gather": ["research"],
+            "learn": ["research"],
+        },
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {
+        "planner": planner_cfg,
+        "researcher": researcher_cfg,
+        "default": default_cfg,
+    }
+
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog",
+        return_value=patched_catalog,
+    ):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="Research who operates Python.org.",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["planner", "researcher"],
+            mode_config=default_cfg,
+            planner_model_id="gpt-live",
+        )
+
+    assert "planner" not in hint
+    assert "target_stage_id `researcher`" in hint
+
+
 def test_single_handoff_target_for_gap_names_markdown_for_write_gap() -> None:
     """``_single_handoff_target_for_gap`` resolves the concrete handoff
     target for a residual intent gap, used by the write-effect correction

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -568,6 +569,23 @@ def test_load_script_requires_respond_and_scenario_resolves_script(tmp_path: Pat
     assert load_scenario(path).model_script == (tmp_path / "model.py").resolve()
 
 
+def test_scenario_parses_live_model_pin(tmp_path: Path) -> None:
+    path = _write_scenario(tmp_path, "session_context: ctx.md\nturns: [x]\nmodel: {id: gpt-live}\n")
+    scenario = load_scenario(path)
+    assert scenario.model_id == "gpt-live"
+    assert scenario.model_script is None
+
+
+def test_scenario_rejects_model_id_and_script_together(tmp_path: Path) -> None:
+    (tmp_path / "model.py").write_text("X = 1\n", encoding="utf-8")
+    path = _write_scenario(
+        tmp_path,
+        "session_context: ctx.md\nturns: [x]\nmodel: {id: gpt-live, script: model.py}\n",
+    )
+    with pytest.raises(ScenarioError, match="mutually exclusive"):
+        load_scenario(path)
+
+
 # ── offline base data + usage roll-up ────────────────────────────────
 
 
@@ -607,6 +625,99 @@ def test_prepare_run_seeds_overlays_from_base(tmp_path: Path) -> None:
     assert (paths.data_dir / "config" / "policy.yaml").is_file()
 
 
+def test_prepare_run_pins_one_live_model_and_removes_router_rules(tmp_path: Path) -> None:
+    from e2etest.environment import prepare_run
+
+    base = tmp_path / "base"
+    (base / "config").mkdir(parents=True)
+    (base / "config" / "models.yaml").write_text(
+        """
+mode_models: {default: first, researcher: second}
+router:
+  backend: lisa-router
+  rules:
+    - {when: route.mode_id == "researcher", use: second}
+models:
+  - model_id: first
+    provider: openai
+  - model_id: second
+    provider: openai
+""",
+        encoding="utf-8",
+    )
+    scenario = load_scenario(_smoke_scenario_path())
+    paths = prepare_run(
+        scenario,
+        tmp_path / "run",
+        tmp_path / "venv",
+        base=base,
+        model_id="second",
+    )
+    import yaml
+
+    manifest = yaml.safe_load(
+        (paths.data_dir / "config" / "models.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["mode_models"] == {"default": "second", "researcher": "second"}
+    assert manifest["router"]["rules"] == []
+
+
+def test_prepare_run_rejects_unknown_model_pin(tmp_path: Path) -> None:
+    from e2etest.environment import prepare_run
+
+    base = tmp_path / "base"
+    (base / "config").mkdir(parents=True)
+    (base / "config" / "models.yaml").write_text(
+        "mode_models: {default: first}\nmodels: [{model_id: first, provider: openai}]\n",
+        encoding="utf-8",
+    )
+    scenario = load_scenario(_smoke_scenario_path())
+    with pytest.raises(ValueError, match="not present"):
+        prepare_run(
+            scenario,
+            tmp_path / "run",
+            tmp_path / "venv",
+            base=base,
+            model_id="missing",
+        )
+
+
+def test_usage_within_oracle_uses_durable_token_log(tmp_path: Path) -> None:
+    logs = tmp_path / "data" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "token-usage.jsonl").write_text(
+        json.dumps(
+            {
+                "model_id": "m",
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "cost_usd": 0.01,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence = Evidence(RunPaths(tmp_path, tmp_path / "data", None, None, ""), DriverOutcome())
+    passed, failed = evaluate(
+        (
+            _spec(
+                "usage_within",
+                min_calls=1,
+                max_calls=2,
+                max_prompt_tokens=100,
+                max_completion_tokens=20,
+                max_total_tokens=120,
+                max_cost_usd=0.02,
+            ),
+            _spec("usage_within", max_calls=0),
+        ),
+        evidence,
+    )
+    assert passed.passed
+    assert not failed.passed and "calls=1 max_calls=0" in failed.detail
+
+
 def _smoke_scenario_path() -> Path:
     return Path(__file__).resolve().parent / "e2e" / "harness_smoke.scenario.yml"
 
@@ -620,6 +731,22 @@ def test_smoke_scenario_is_hermetic() -> None:
     _framework, sources = _manifest(Path(__file__).resolve().parents[1] / "packs.yml")
     unknown = [p for p in scenario.packs if p not in sources]
     assert not unknown, f"smoke packs must be registered: {unknown}"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "live_direct_answer.scenario.yml",
+        "live_web_research.scenario.yml",
+        "live_web_research_artifact.scenario.yml",
+    ],
+)
+def test_live_canary_scenarios_are_bounded(name: str) -> None:
+    scenario = load_scenario(Path(__file__).resolve().parent / "e2e" / name)
+    assert scenario.model_script is None, "live canaries must exercise a real provider"
+    assert scenario.budgets.max_continues == 0
+    assert scenario.budgets.max_yield_replies == 0
+    assert any(oracle.name == "usage_within" for oracle in scenario.oracles)
 
 
 def test_usage_summary_aggregates_the_durable_log(tmp_path: Path) -> None:
@@ -731,6 +858,7 @@ def test_run_reports_setup_error_for_missing_scenario(
                 scenario=Path("/no/such/scenario.yml"),
                 runs_dir=Path("/tmp/runs"),
                 rebuild_venv=False,
+                model="",
             )
         )
         == 2
@@ -800,7 +928,11 @@ def test_run_scenario_once_writes_verdict_bundle(
 
     monkeypatch.setattr(cli, "load_scenario", lambda _p: scenario)
     monkeypatch.setattr(cli, "ensure_packs_venv", lambda _packs, _cache, rebuild: tmp_path / "venv")
-    monkeypatch.setattr(cli, "prepare_run", lambda _s, _d, _v, base=None: run_paths)
+    monkeypatch.setattr(
+        cli,
+        "prepare_run",
+        lambda _s, _d, _v, base=None, model_id="": run_paths,
+    )
     monkeypatch.setattr(cli, "run_conversation", lambda _s, _paths, _v: outcome)
     monkeypatch.setattr(cli, "verdict", lambda _s, _e, _r: bundle)
     monkeypatch.setattr(
@@ -895,6 +1027,7 @@ def _repeat_args(tmp_path: Path, runs: int, min_pass: int | None) -> Any:
         min_pass=min_pass,
         runs_dir=tmp_path / "runs",
         rebuild_venv=False,
+        model="",
     )
 
 
@@ -917,6 +1050,38 @@ def test_repeat_counts_passes_across_subprocesses(
     out = capfd.readouterr().out
     assert "run 1/3: PASS" in out and "run 2/3: FAIL" in out
     assert "repeat verdict: 2/3 passed (required 2)" in out
+
+
+def test_repeat_forwards_model_pin_to_each_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess as sp
+
+    from e2etest import cli
+
+    argv_seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: Any) -> Any:
+        argv_seen.append(argv)
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    args = _repeat_args(tmp_path, runs=1, min_pass=1)
+    args.model = "gpt-live"
+    assert cli._repeat(args) == 0
+    assert argv_seen == [
+        [
+            sys.executable,
+            "-m",
+            "e2etest.cli",
+            "run",
+            "unused.yml",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--model",
+            "gpt-live",
+        ]
+    ]
 
 
 def test_repeat_fails_below_min_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

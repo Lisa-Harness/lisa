@@ -197,6 +197,50 @@ def _no_runtime_errors(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
     return not hits, "\n".join(hits) or "no error-level runtime log records"
 
 
+@oracle("usage_within")
+def _usage_within(ev: Evidence, args: dict[str, Any]) -> tuple[bool, str]:
+    """Assert durable token-usage evidence stays inside a scenario's budget."""
+    from e2etest.usage import usage_summary
+
+    fields = {
+        "min_calls": "calls",
+        "max_calls": "calls",
+        "max_prompt_tokens": "prompt_tokens",
+        "max_completion_tokens": "completion_tokens",
+        "max_total_tokens": "total_tokens",
+        "max_cost_usd": "cost_usd",
+    }
+    unknown = sorted(set(args) - set(fields))
+    if unknown:
+        return False, f"unknown usage limits: {unknown}"
+    path = ev.paths.data_dir / "logs" / "token-usage.jsonl"
+    if not path.is_file():
+        summary = {
+            "calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
+        }
+    else:
+        summary = usage_summary(path)
+    failures: list[str] = []
+    for arg, summary_field in fields.items():
+        if arg not in args:
+            continue
+        actual = float(summary[summary_field])
+        limit = float(args[arg])
+        failed = actual < limit if arg.startswith("min_") else actual > limit
+        if failed:
+            failures.append(f"{summary_field}={summary[summary_field]} {arg}={args[arg]}")
+    detail = (
+        f"calls={summary['calls']} prompt={summary['prompt_tokens']} "
+        f"completion={summary['completion_tokens']} total={summary['total_tokens']} "
+        f"cost={summary['cost_usd']}"
+    )
+    return not failures, "; ".join(failures) + " | " + detail if failures else detail
+
+
 # ── capability + knowledge evidence ─────────────────────────────────────
 
 

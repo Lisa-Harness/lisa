@@ -84,6 +84,8 @@ class Scenario:
     #: ``model.script``: a Python module that stands in for the LLM (see
     #: ``runtime.testing.scripted``). ``None`` runs against the configured live model.
     model_script: Path | None = None
+    #: ``model.id`` pins every manifest mode to one concrete model for this run.
+    model_id: str = ""
 
     @property
     def base_dir(self) -> Path:
@@ -130,6 +132,9 @@ def load_scenario(path: Path) -> Scenario:
     approvals = raw.get("approvals") or {}
     budgets = raw.get("budgets") or {}
     surface = raw.get("surface") or {}
+    model = raw.get("model") or {}
+    if model.get("id") and model.get("script"):
+        raise ScenarioError("'model.id' and 'model.script' are mutually exclusive")
     session_context = _resolve(
         base, raw.get("session_context"), key="session_context", required=True
     )
@@ -159,7 +164,6 @@ def load_scenario(path: Path) -> Scenario:
         continue_message=str(raw.get("continue_message") or "continue"),
         yield_reply=str(raw.get("yield_reply") or "Proceed with your best judgment."),
         env={str(k): str(v) for k, v in (raw.get("env") or {}).items()},
-        model_script=_resolve(
-            base, (raw.get("model") or {}).get("script"), key="model.script", required=False
-        ),
+        model_script=_resolve(base, model.get("script"), key="model.script", required=False),
+        model_id=str(model.get("id") or "").strip(),
     )
