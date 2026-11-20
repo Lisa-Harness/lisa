@@ -16,10 +16,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from kernel.tools.mcp_client import MCPToolPool
+from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
 from runtime.runtime import HostRuntime
 
 
@@ -226,6 +227,64 @@ def test_readiness_cancellation_does_not_cache_startup_error(tmp_path: Path) -> 
         with contextlib.suppress(asyncio.CancelledError):
             await readiness
         assert runtime.resources._mcp_start_exc is None
+
+    asyncio.run(_scenario())
+
+
+def test_proxy_pool_start_and_close_exceptions_are_suppressed(tmp_path: Path) -> None:
+    class FakeProxyPool:
+        def __init__(self, _configs: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            raise RuntimeError("proxy start failed")
+
+        async def aclose(self) -> None:
+            raise RuntimeError("proxy close failed")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._proxy_configs = [SimpleNamespace()]
+        import kernel.proxy_launch.pool as proxy_module
+
+        original = proxy_module.ProxyPool
+        proxy_module.ProxyPool = cast(Any, FakeProxyPool)
+        try:
+            with pytest.raises(RuntimeError, match="proxy start failed"):
+                await runtime.resources._build_proxy_pool()
+        finally:
+            proxy_module.ProxyPool = original
+
+    asyncio.run(_scenario())
+
+
+def test_mcp_pool_start_and_close_exceptions_are_suppressed(tmp_path: Path) -> None:
+    class FakeMCPPool:
+        def __init__(self, _configs: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            raise RuntimeError("MCP start failed")
+
+        async def aclose(self) -> None:
+            raise RuntimeError("MCP close failed")
+
+    async def _scenario() -> None:
+        runtime = _make_runtime(tmp_path)
+        runtime.resources._mcp_warm_configs = [
+            MCPClientConfig(server_id="fake", command="python", args=[], warm=True)
+        ]
+        runtime.resources._mcp_cold_configs = []
+        import kernel.tools.mcp_client as mcp_module
+
+        original = mcp_module.MCPToolPool
+        mcp_module.MCPToolPool = cast(Any, FakeMCPPool)
+        try:
+            with pytest.raises(RuntimeError, match="MCP start failed"):
+                await runtime.resources._build_pool()
+        finally:
+            mcp_module.MCPToolPool = original
+        assert runtime.resources._mcp_tool_pool is None
 
     asyncio.run(_scenario())
 
