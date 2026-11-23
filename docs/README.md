@@ -22,7 +22,7 @@ The [project README](../README.md) explains the project and its current status.
   the implemented directory, trash, purge, and batch contract.
 - [Logging](LOGGING.md): observability configuration and contributor standards.
 - [Turn forensics](FORENSICS.md): how to read the evidence for a past turn —
-  the four sources, the `turn_index` join, the three failure shapes, and what
+  the six sources, the `turn_index` join, the four failure shapes, and what
   the reader deliberately will not do.
 
 ## Understand and extend the framework

@@ -644,8 +644,9 @@ def _current_recovery_stage_id(*, hooks: TurnHooks) -> str:
     """Return the position's current stage id when available, else empty.
 
     ``RecoveryRecord.stage_id`` is retained as a persisted audit field so
-    records written before the stage FSM was retired still load. Nothing
-    writes a stage id any more: the position no longer carries one, so this
-    returns the empty string and the record records "no stage".
+    records written before the stage FSM was retired still load. The FSM
+    that advanced a position's ``stage_id`` is gone, so there is no current
+    stage to report: this returns the empty string and new records record
+    "no stage" while the field itself remains present on every record.
     """
     return ""

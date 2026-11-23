@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from kernel.models import ContextItem
+from runtime.thread._store import _segment_paths
 from runtime.thread_digest import build_thread_context_items
 from sdk.thread.redaction import ThreadRedactionPolicy
 
@@ -140,6 +141,56 @@ def test_digest_redacts_recorded_text(tmp_path: Path) -> None:
     assert "confidential payload" not in body
     assert "secret-task" not in body
     assert "iteration budget" in body  # not in the configured pattern set
+
+
+def test_digest_includes_provenance_only_lifecycle_block_as_objective(tmp_path: Path) -> None:
+    thread_path = tmp_path / "thread"
+    _write_entry(
+        thread_path,
+        query="operation failed",
+        response_text="lifecycle failure",
+        task_id="task-1",
+        provenance_extra={"blocked": True, "block_origin": "lifecycle_failure"},
+    )
+
+    items = build_thread_context_items(thread_path)
+    by_id = {item.item_id: item for item in items}
+
+    assert "thread:open_objectives" in by_id
+    objective = by_id["thread:open_objectives"].body
+    assert "blocked turn (lifecycle_failure)" in objective
+    assert "operation failed" in objective
+
+
+def test_digest_resolves_top_level_task_id_lifecycle_block(tmp_path: Path) -> None:
+    thread_path = tmp_path / "thread"
+    _write_entry(
+        thread_path,
+        query="operation failed",
+        response_text="lifecycle failure",
+        task_id="",
+        provenance_extra={"blocked": True, "block_origin": "lifecycle_failure"},
+    )
+    paths = _segment_paths(thread_path)
+    current = paths.current
+    entries = [json.loads(line) for line in current.read_text(encoding="utf-8").splitlines()]
+    entries[-1]["task_id"] = "task-1"
+    current.write_text(
+        "".join(json.dumps(entry) + "\n" for entry in entries),
+        encoding="utf-8",
+    )
+    _write_entry(
+        thread_path,
+        query="operation recovered",
+        response_text="completed",
+        task_id="task-1",
+    )
+
+    items = build_thread_context_items(thread_path)
+    by_id = {item.item_id: item for item in items}
+
+    objectives = by_id.get("thread:open_objectives")
+    assert objectives is None or "operation failed" not in objectives.body
 
 
 def test_digest_skips_open_objectives_when_turns_are_clean(tmp_path: Path) -> None:
@@ -359,6 +410,31 @@ def test_digest_live_state_pending_blocker_stays_live(tmp_path: Path) -> None:
     for item in items:
         assert "superseded" not in item.body
     assert "awaiting user" in by_id["thread:open_objectives"].body
+
+
+def test_digest_resolves_provenance_only_lifecycle_block_on_later_clean_evidence(
+    tmp_path: Path,
+) -> None:
+    thread_path = tmp_path / "thread"
+    _write_entry(
+        thread_path,
+        query="operation failed",
+        response_text="lifecycle failure",
+        task_id="task-1",
+        provenance_extra={"blocked": True, "block_origin": "lifecycle_failure"},
+    )
+    _write_entry(
+        thread_path,
+        query="operation recovered",
+        response_text="completed",
+        task_id="task-1",
+    )
+
+    items = build_thread_context_items(thread_path)
+    by_id = {item.item_id: item for item in items}
+
+    objectives = by_id.get("thread:open_objectives")
+    assert objectives is None or "operation failed" not in objectives.body
 
 
 def test_digest_resolves_blockers_on_later_same_task_evidence(tmp_path: Path) -> None:

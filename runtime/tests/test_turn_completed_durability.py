@@ -82,6 +82,32 @@ async def test_turn_completed_is_emitted_after_the_thread_entry_is_appended(
 
 
 @pytest.mark.asyncio
+async def test_blocked_turn_persists_blocked_state_in_thread_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+
+    async def _fake_run_turn(**_kwargs: Any) -> TurnResult:
+        return TurnResult(
+            response_text="blocked",
+            blocked=True,
+            block_origin="input_guard",
+        )
+
+    monkeypatch.setattr(handle_message_mod, "run_turn", _fake_run_turn)
+    await handle_message(runtime, "guard me", NullTransport())
+
+    entries = load_recent_thread_entries(
+        thread_path=runtime.paths.thread_path,
+        limit=100,
+    )
+    assert len(entries) == 1
+    assert entries[0]["provenance"]["blocked"] is True
+    assert entries[0]["provenance"]["block_origin"] == "input_guard"
+
+
+@pytest.mark.asyncio
 async def test_turn_completed_payload_locates_the_thread_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -113,3 +139,4 @@ async def test_turn_completed_payload_locates_the_thread_entry(
     assert getattr(event, "task_id", "") == entry["provenance"]["task_id"], (
         "the event's task_id must match the entry's provenance"
     )
+    assert entry["task_id"] == entry["provenance"]["task_id"]

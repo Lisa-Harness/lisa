@@ -317,11 +317,18 @@ result = runner.interpret_result(request, envelope)  # raises when unproven
 Three rules make that boundary trustworthy:
 
 - **Structured, never textual.** A request carries an argv tuple, a cwd, a
-  timeout, and posture axes. No shell string crosses the boundary, so no
-  implementation can reintroduce quoting.
+  timeout, and posture axes. The argv shape prevents accidental
+  shell-string serialization across the protocol boundary — a consumer
+  cannot unknowingly pass a quoted shell string where an argv is
+  expected. It does not prove that a backend implementation cannot
+  invoke a shell internally; containment evidence comes from the next
+  rule.
 - **Evidence, not optimism.** `interpret_result` must raise
   `SandboxRunnerContractError` when the result cannot prove the posture it
-  was asked for. A consumer treats "returned a result" as "ran contained".
+  was asked for. Receiving a result is not itself proof of containment:
+  containment is established only by successful `interpret_result`
+  validation, and missing or failed validation must fail closed rather
+  than fall back to the host.
 - **Fail closed on absence.** `ctx.sandbox_runner is None` means no
   implementation is active (missing pack, unimportable run tool, non-Windows
   host with the Windows pack, undeliberate no-floor session). A consumer

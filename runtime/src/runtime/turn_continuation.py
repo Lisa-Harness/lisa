@@ -16,7 +16,7 @@ from runtime.thread._results import _persist_result
 
 def persist_continuation(thread_path: Path | None, saved: TurnContinuation) -> str:
     if thread_path is None:
-        raise ValueError("Turn continuation requires a thread storage path.")
+        raise ValueError("Turn continuation requires a thread or ephemeral storage path.")
     return _persist_result(thread_path, {"content": saved.model_dump_json()})
 
 

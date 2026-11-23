@@ -699,8 +699,8 @@ def _read_distribution_name(pyproject: Path) -> str:
 
 
 def _normalize_provider_id(raw: str) -> str:
-    value = raw.strip().lower().replace("_", "-")
-    return re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
+    value = raw.strip().lower()
+    return re.sub(r"[-_.\s]+", "-", value).strip("-")
 
 
 def _backfill_provider_ids(

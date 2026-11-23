@@ -41,6 +41,13 @@ def _status(entry: dict[str, Any]) -> str:
         return "paused"
     if entry.get("yielded"):
         return "awaiting_user"
+    if (
+        entry.get("blocked")
+        or provenance.get("blocked")
+        or entry.get("block_origin")
+        or provenance.get("block_origin")
+    ):
+        return "blocked"
     return "open"
 
 
@@ -53,6 +60,12 @@ def _blocker(
         return {"kind": "approval", "request_id": _text(request_id, redaction)}
     if entry.get("yielded"):
         return {"kind": "question", "question": _text(entry.get("yield_question"), redaction)}
+    block_origin = entry.get("block_origin") or provenance.get("block_origin")
+    if entry.get("blocked") or provenance.get("blocked") or block_origin:
+        return {
+            "kind": "blocked",
+            "origin": _text(block_origin or "unknown", redaction),
+        }
     return None
 
 
@@ -249,7 +262,7 @@ def build_task_view(
     if blocker is not None:
         if blocker["kind"] == "approval":
             blocker["request_id_ref"] = f"t{latest_turn}.pending_approval_request_id"
-        else:
+        elif blocker["kind"] == "question":
             blocker["question_ref"] = f"t{latest_turn}.yield_question"
         view["blocker"] = blocker
     return _trim(view, budget)

@@ -294,3 +294,62 @@ def test_legacy_seal_without_hash_is_reported(tmp_path: Path) -> None:
     assert result.ok
     assert result.unchained_seals == 1
     assert result.verified_seals == 0
+
+
+def test_sealed_terminal_entry_tamper_is_detected_via_index_tail(tmp_path: Path) -> None:
+    """A sealed segment's terminal entry is independently anchored.
+
+    The index records the terminal raw line's hash, so mutating the last
+    entry of a sealed segment is detected even without an in-segment
+    successor: the index tail hash no longer matches the segment's raw
+    terminal line.
+    """
+    base = tmp_path / "u"
+    line0 = _entry_line(0)
+    line1 = _entry_line(1, prev=_active_sha(line0))
+    _seal(base, "0001", [line0, line1])
+    _write_active(base, [])
+
+    # Mutate the sealed segment's terminal entry (same raw-line length,
+    # coherent recompression) while leaving the index record untouched.
+    import zstandard
+
+    tampered = _entry_line(1, prev=_active_sha(line0), response_text="rX")
+    assert len(tampered) == len(line1)
+    raw = ("\n".join([line0, tampered]) + "\n").encode("utf-8")
+    Path(f"{base}.0001.jsonl.zst").write_bytes(zstandard.ZstdCompressor().compress(raw))
+
+    result = verify_chain(base)
+    assert result.ok is False
+    assert "index terminal hash" in result.first_divergence
+
+
+def test_active_tail_payload_mutation_is_not_independently_anchored(tmp_path: Path) -> None:
+    """The active segment's newest entry has no successor or index anchor.
+
+    Mutating a non-link payload field in the newest active entry — same
+    raw-line length, prev_entry_sha256 preserved, no index record for the
+    active segment — changes head_sha256 but produces no divergence:
+    nothing links forward to the newest entry yet. External notarization
+    of head_sha256 is what closes this window.
+    """
+    base = tmp_path / "u"
+    line0 = _entry_line(0)
+    line1 = _entry_line(1, prev=_active_sha(line0))
+    line2 = _entry_line(2, prev=_active_sha(line1))
+    _write_active(base, [line0, line1, line2])
+
+    before = verify_chain(base)
+    assert before.ok
+    assert before.chained_entries == 2
+
+    tampered = _entry_line(2, prev=_active_sha(line1), response_text="rX")
+    assert len(tampered) == len(line2)
+    _write_active(base, [line0, line1, tampered])
+
+    result = verify_chain(base)
+    assert result.ok is True
+    assert result.divergences == []
+    assert result.first_divergence == ""
+    assert result.chained_entries == before.chained_entries
+    assert result.head_sha256 == _active_sha(tampered)

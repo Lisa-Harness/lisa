@@ -2,7 +2,88 @@
 
 from __future__ import annotations
 
+import re
+from collections import Counter, deque
+
 from kernel.provider_contracts import StreamedCompletion
+
+_INLINE_LITERAL = re.compile(r'`[^`\n]*`|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+_NUMBER = re.compile(r"\b\d+\b")
+_NON_SIGNATURE = re.compile(r"[^a-z0-9#<> ]+")
+_WHITESPACE = re.compile(r"\s+")
+_MIN_SIGNATURE_CHARS = 8
+
+
+class StreamRepetitionGuard:
+    """Detect sustained structurally repeated lines while a stream is live."""
+
+    __slots__ = (
+        "_content_pending",
+        "_counts",
+        "_line_limit",
+        "_reasoning_pending",
+        "_window",
+        "_window_chars",
+        "_window_size",
+    )
+
+    def __init__(self, *, line_limit: int, window_chars: int) -> None:
+        self._content_pending = ""
+        self._reasoning_pending = ""
+        self._line_limit = max(0, int(line_limit))
+        self._window_chars = max(0, int(window_chars))
+        self._window: deque[tuple[str, int]] = deque()
+        self._window_size = 0
+        self._counts: Counter[str] = Counter()
+
+    @staticmethod
+    def _signature(line: str) -> str:
+        normalized = _INLINE_LITERAL.sub("<literal>", line.lower())
+        normalized = _NUMBER.sub("#", normalized)
+        normalized = _NON_SIGNATURE.sub(" ", normalized)
+        normalized = _WHITESPACE.sub(" ", normalized).strip()
+        return normalized if len(normalized) >= _MIN_SIGNATURE_CHARS else ""
+
+    def _observe_lines(self, text: str, pending: str) -> tuple[str, bool]:
+        pending += text
+        while "\n" in pending:
+            line, pending = pending.split("\n", 1)
+            signature = self._signature(line)
+            line_chars = len(line) + 1
+            if self._observe_signature(signature, line_chars):
+                return pending, True
+        return pending, False
+
+    def _observe_signature(self, signature: str, line_chars: int) -> bool:
+        self._window.append((signature, line_chars))
+        self._window_size += line_chars
+        if signature:
+            self._counts[signature] += 1
+        while self._window and self._window_size > self._window_chars:
+            old_signature, old_chars = self._window.popleft()
+            self._window_size -= old_chars
+            if old_signature:
+                self._counts[old_signature] -= 1
+                if self._counts[old_signature] <= 0:
+                    del self._counts[old_signature]
+        return bool(signature and self._counts[signature] >= self._line_limit)
+
+    def observe(self, *, content: str = "", reasoning: str = "") -> bool:
+        """Return ``True`` once one repeated shape reaches the configured cap."""
+        if self._line_limit <= 0 or self._window_chars <= 0:
+            return False
+        if content:
+            self._content_pending, repeated = self._observe_lines(content, self._content_pending)
+            if repeated:
+                return True
+        if reasoning:
+            self._reasoning_pending, repeated = self._observe_lines(
+                reasoning, self._reasoning_pending
+            )
+            if repeated:
+                return True
+        return False
+
 
 # ── Streaming adapter ──────────────────────────────────────────────────────
 

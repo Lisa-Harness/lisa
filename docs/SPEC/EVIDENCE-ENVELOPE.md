@@ -1,6 +1,7 @@
 # Evidence Envelope Specification
 
-> **Status:** Proposed.
+> **Status:** Partially implemented — see the implementation-status matrix
+> below. Trace export remains proposed.
 > **Order:** 1 of 4 in the observability and replay program.
 > **Depends on:** nothing.
 > **Unblocks:** [model call archive](./MODEL-CALL-ARCHIVE.md),
@@ -13,11 +14,19 @@ Make every durable evidence row self-describing, versioned, and addressable to
 the exact model call, dispatch, run configuration, and parent turn that
 produced it.
 
-Today the ledgers join only at turn granularity (`turn_index`, `user_slug`,
-`thread_store_slug`). A turn with several iterations cannot attribute a cost
-to the request that incurred it, a failed dispatch cannot be matched to the
-tool call in the transcript, an old turn cannot say which packs and modes
-produced it, and delegated child work has no recorded parent.
+## Implementation status
+
+| Capability | Status | Evidence |
+| --- | --- | --- |
+| Typed topic payloads with write-time allowlists | Implemented | `kernel/evidence.py` (`ENVELOPE_FIELDS`, per-topic payload models, `schema_version` per topic); the decision handler drops unknown keys at write; committed JSON Schemas under `schemas/` |
+| `turn_id` per execution, stable across pause/resume | Implemented | `kernel/call_identity.py` (`mint_turn_id`); thread entries and ledger rows carry it |
+| Call-level join keys (`call_id`, `attempt`) | Implemented | Thread `turn_input.calls[]`, token rows (`token_usage.py`), `turn.decision`, `tool.telemetry`, off-turn `model.request`; `stream_tool_fallback` and `truncation_continuation` attempts are recorded in the turn runner |
+| `dispatch_id` including rejected dispatches | Implemented | `tool.telemetry`, `model.request` rows |
+| Parent lineage (`parent_turn_id`, `parent_dispatch_id`) | Implemented | Fork/delegate child turns record both; top-level turns carry neither |
+| Run manifest (`run_ref`, `mode_digest`) | Implemented | Content-addressed run manifest; thread entries and ledger rows carry `run_ref` |
+| Reader joins (per-call cost, dispatch-to-tool-call, delegation tree) | Proposed | `sdk/forensics/reader.py` has no `call_id`/`parent_turn_id` join methods; the reader joins at turn granularity only |
+| `trace_id` / `span_id` slots | Reserved only | Envelope fields exist; [trace export](./TRACE-EXPORT-AND-TIMELINE.md) is not implemented |
+| Approval-ledger schema versioning | Open | Rows are treated as version 0 (see Open questions) |
 
 ## Non-goals
 
@@ -28,17 +37,18 @@ produced it, and delegated child work has no recorded parent.
 - No OpenTelemetry work. This spec reserves the `trace_id` and `span_id` slots;
   [trace export](./TRACE-EXPORT-AND-TIMELINE.md) fills them.
 
-## Current state
+## Ledger posture
 
 | Ledger | Versioned | Write-side allowlist | Join keys |
 | --- | --- | --- | --- |
-| `token-usage.jsonl` | `schema_version` (v3) | `_LEDGER_FIELDS` in [token_usage.py](../../kernel/src/kernel/token_usage.py) | turn, user, pseudonymous thread |
-| `decisions.jsonl` | No | No: [`DecisionTelemetryHandler`](../../kernel/src/kernel/decision_telemetry.py) persists any mapping a publisher sends | turn, user, thread stem |
-| `approvals.jsonl` | Per the [approval ledger](../../runtime/src/runtime/approval_ledger.py) | Ledger-owned | turn, `request_id` |
+| `token-usage.jsonl` | `schema_version` (v3) | `_LEDGER_FIELDS` in [token_usage.py](../../kernel/src/kernel/token_usage.py) | turn, user, pseudonymous thread, `call_id` |
+| `decisions.jsonl` | Per topic (`schema_version` on typed payloads) | Yes: [`DecisionTelemetryHandler`](../../kernel/src/kernel/decision_telemetry.py) drops unknown keys at write via `kernel.evidence` | turn, user, thread stem, `call_id`, `dispatch_id` |
+| `approvals.jsonl` | Per the [approval ledger](../../runtime/src/runtime/approval_ledger.py) | Ledger-owned | turn, `request_id`, `tool_call_id`, `dispatch_id` |
 
 The token ledger's posture — typed fields, an allowlist that drops unknown
 keys at write, and "missing is unknown, never zero" — is the model this spec
-extends to every topic.
+extends to every topic; the decision handler now enforces the same
+allowlist discipline.
 
 ## 1. Common envelope
 
@@ -103,9 +113,10 @@ The set is closed: an attempt value a reader does not know is a bug, not a new
 case to guess at. The turn loop has no provider-error retry, so `retry` is not
 a declared attempt.
 
-Today the streaming fallback and truncation rescue make extra calls inside one
-iteration, which `turn_input.calls` (`{"iteration", "ref"}`) cannot tell
-apart.
+The streaming fallback and truncation rescue make extra calls inside one
+iteration; each is recorded with its own `call_id` and `attempt`
+(`stream_tool_fallback`, `truncation_continuation`), so they are
+distinguishable in `turn_input.calls`.
 
 ### Where the keys land
 

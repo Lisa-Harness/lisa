@@ -198,16 +198,27 @@ def _resolved_on_evidence(
     never resolve on evidence (a later turn cannot be attributed to
     them); live-approval reconciliation stays in ``_superseded_note``.
     """
-    task_id = str((entry.get("provenance") or {}).get("task_id") or "")
+    provenance = entry.get("provenance") or {}
+    task_id = str(entry.get("task_id") or provenance.get("task_id") or "")
     if not task_id:
         return False
     for _, later in later_entries:
         later_provenance = later.get("provenance") or {}
-        if str(later_provenance.get("task_id") or "") != task_id:
+        later_task_id = str(later.get("task_id") or later_provenance.get("task_id") or "")
+        if later_task_id != task_id:
             continue
-        later_blocked = later_provenance.get("block_origin") or later.get("block_origin")
+        later_blocked = (
+            later_provenance.get("blocked")
+            or later_provenance.get("block_origin")
+            or later.get("blocked")
+            or later.get("block_origin")
+        )
         later_pending = later_provenance.get("pending_approval_request_id") or later.get("yielded")
-        if not (later_blocked or later_pending):
+        later_failed = (
+            later_provenance.get("finish_reason") == "error"
+            or later_provenance.get("source") == "host-approved-failed"
+        )
+        if not (later_blocked or later_pending or later_failed):
             return True
     return False
 
@@ -379,7 +390,12 @@ def _render_recent_history(
             continue
         timestamp = str(entry.get("timestamp_utc") or "unknown")
         provenance = entry.get("provenance") or {}
-        blocked = provenance.get("block_origin") or entry.get("block_origin")
+        blocked = (
+            provenance.get("blocked")
+            or provenance.get("block_origin")
+            or entry.get("blocked")
+            or entry.get("block_origin")
+        )
         pending = provenance.get("pending_approval_request_id") or entry.get("yielded")
         if (blocked or pending) and not _resolved_on_evidence(
             entry, entries[window_start + window_pos + 1 :]
@@ -416,7 +432,12 @@ def _append_open_objectives_item(
     for pos in range(len(entries) - 1, -1, -1):
         _, entry = entries[pos]
         provenance = entry.get("provenance") or {}
-        blocked = provenance.get("block_origin") or entry.get("block_origin")
+        blocked = (
+            provenance.get("blocked")
+            or provenance.get("block_origin")
+            or entry.get("blocked")
+            or entry.get("block_origin")
+        )
         pending = provenance.get("pending_approval_request_id") or entry.get("yielded")
         if not (blocked or pending):
             continue
@@ -432,8 +453,10 @@ def _append_open_objectives_item(
             response = redaction.redact(response)
         note = _superseded_note(entry, live_state)
         if blocked:
+            block_origin = provenance.get("block_origin") or entry.get("block_origin") or "unknown"
             lines.append(
-                f"- blocked turn ({blocked}) [recorded]: {query[:160]} → {response[:200]}{note}"
+                f"- blocked turn ({block_origin}) [recorded]: "
+                f"{query[:160]} → {response[:200]}{note}"
             )
         else:
             lines.append(f"- awaiting user [recorded]: {query[:160]} → {response[:200]}{note}")

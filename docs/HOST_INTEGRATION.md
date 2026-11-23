@@ -73,7 +73,7 @@ active execution (each with its own `HostRuntime` and event loop) sharing
   ([filelock.py](../sdk/src/sdk/filelock.py)), atomic temp-file replacements,
   commit-time monotonic turn-index assignment on `<base>.lock`, owner-PID
   liveness checks in recovery reconciliation, and SQLite WAL mode on
-  `memory.sqlite3`.
+  `data/memory.db`.
 - **Isolated conversations (`conversation_id` / `LISA_CONVERSATION_ID`):**
   pass `conversation_id` to `build_runtime` or `HostConfig.from_env` (or set
   `LISA_CONVERSATION_ID`) to isolate the thread store under

@@ -477,15 +477,19 @@ def _validate_pack_spec_for_install(spec: str) -> tuple[bool, str]:  # noqa: C90
 
     if _is_local_pack_spec(normalized):
         pack_path = Path(normalized.strip('"')).expanduser()
-        project_name = _read_local_pack_project_name(pack_path)
+        project_name = normalize_pack_name(_read_local_pack_project_name(pack_path))
         if not project_name:
             return False, (
                 f"Local pack '{pack_path}' is missing a valid pyproject.toml project.name."
             )
-        package_name = project_name.lower()
-        if not any(package_name.startswith(prefix) for prefix in pack_allowed_prefixes()):
+        allowed = tuple(
+            normalize_pack_name(prefix).strip("-") for prefix in pack_allowed_prefixes()
+        )
+        if not any(
+            project_name == prefix or project_name.startswith(f"{prefix}-") for prefix in allowed
+        ):
             return False, (
-                f"Pack '{package_name}' rejected: allowed package prefixes are "
+                f"Pack '{project_name}' rejected: allowed package prefixes are "
                 f"{', '.join(pack_allowed_prefixes())}."
             )
         return True, ""
@@ -498,18 +502,26 @@ def _validate_pack_spec_for_install(spec: str) -> tuple[bool, str]:  # noqa: C90
             return False, f"Git host '{host}' is not in the allowlist."
         if pack_require_git_ref() and "@" not in normalized:
             return False, "Git refs must pin @tag/@branch/@sha (policy LISA_PACK_REQUIRE_GIT_REF)."
-        package_name = _extract_package_name_from_spec(normalized).lower()
-        if not any(package_name.startswith(prefix) for prefix in pack_allowed_prefixes()):
+        package_name = normalize_pack_name(_extract_package_name_from_spec(normalized))
+        allowed = tuple(
+            normalize_pack_name(prefix).strip("-") for prefix in pack_allowed_prefixes()
+        )
+        if not any(
+            package_name == prefix or package_name.startswith(f"{prefix}-") for prefix in allowed
+        ):
             return False, (
                 f"Pack '{package_name}' rejected: allowed package prefixes are "
                 f"{', '.join(pack_allowed_prefixes())}."
             )
         return True, ""
 
-    package_name = _extract_package_name_from_spec(normalized).lower()
+    package_name = normalize_pack_name(_extract_package_name_from_spec(normalized))
     if not package_name:
         return False, "Invalid package ref."
-    if not any(package_name.startswith(prefix) for prefix in pack_allowed_prefixes()):
+    allowed = tuple(normalize_pack_name(prefix).strip("-") for prefix in pack_allowed_prefixes())
+    if not any(
+        package_name == prefix or package_name.startswith(f"{prefix}-") for prefix in allowed
+    ):
         return False, (
             f"Pack '{package_name}' rejected: allowed package prefixes are "
             f"{', '.join(pack_allowed_prefixes())}."

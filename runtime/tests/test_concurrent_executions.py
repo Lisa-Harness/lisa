@@ -614,7 +614,7 @@ def test_conversation_id_without_user_slug_degrades_to_shared_conversation_store
 
 def test_multiprocess_sqlite_memory_store_concurrent_writes(tmp_path: Path) -> None:
     """Multiple processes writing to the same SqliteMemoryStore succeed with WAL + busy_timeout."""
-    db_path = tmp_path / "data" / "memory.sqlite3"
+    db_path = tmp_path / "data" / "memory.db"
     # Initialize schema once before spawning workers.
     init_store = SqliteMemoryStore(db_path)
     init_store.close()

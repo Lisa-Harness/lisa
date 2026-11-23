@@ -47,8 +47,15 @@ def _open_task_span(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not relevant:
         return []
     span = [relevant[-1]]
+    newest = relevant[-1]
+    newest_provenance = newest.get("provenance") or {}
+    newest_task_id = str(newest.get("task_id") or newest_provenance.get("task_id") or "")
     for entry in reversed(relevant[:-1]):
         if not _is_task_link(entry):
+            break
+        provenance = entry.get("provenance") or {}
+        entry_task_id = str(entry.get("task_id") or provenance.get("task_id") or "")
+        if newest_task_id and entry_task_id and entry_task_id != newest_task_id:
             break
         span.insert(0, entry)
     return span
@@ -199,7 +206,7 @@ def build_open_task_messages(
                 messages.extend(
                     project_thread_messages(
                         rehydrated,
-                        str(provenance.get("task_id") or ""),
+                        str(entry.get("task_id") or provenance.get("task_id") or ""),
                         thread_path=thread_path,
                         ephemeral_results_path=ephemeral_results_path,
                         budget_bytes=_entry_tool_bytes(rehydrated),
@@ -215,7 +222,7 @@ def build_open_task_messages(
         messages.extend(
             project_thread_messages(
                 rehydrated,
-                str(provenance.get("task_id") or ""),
+                str(entry.get("task_id") or provenance.get("task_id") or ""),
                 thread_path=thread_path,
                 ephemeral_results_path=ephemeral_results_path,
                 budget_bytes=_entry_tool_bytes(rehydrated),
@@ -228,7 +235,13 @@ def build_open_task_messages(
         # evidence inventory by address so the newest stays resident.
         messages = project_thread_messages(
             messages,
-            str((entries[-1].get("provenance") or {}).get("task_id") or "") if entries else "",
+            str(
+                entries[-1].get("task_id")
+                or (entries[-1].get("provenance") or {}).get("task_id")
+                or ""
+            )
+            if entries
+            else "",
             thread_path=thread_path,
             ephemeral_results_path=ephemeral_results_path,
             budget_bytes=budget_bytes,

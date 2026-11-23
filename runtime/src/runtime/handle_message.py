@@ -1059,10 +1059,13 @@ def _kernel_loop_provenance(runtime: HostRuntime, result: TurnResult) -> dict[st
     either cannot disagree with a reader preferring the other.
     """
     paused_at = result.continuation
-    if paused_at is None or paused_at.requires_approval or runtime.paths.thread_path is None:
+    if paused_at is None or paused_at.requires_approval:
+        return {}
+    continuation_path = runtime.paths.thread_path or runtime.paths.ephemeral_results_path
+    if continuation_path is None:
         return {}
     return {
-        "turn_continuation_ref": persist_continuation(runtime.paths.thread_path, paused_at),
+        "turn_continuation_ref": persist_continuation(continuation_path, paused_at),
     }
 
 
@@ -1090,7 +1093,7 @@ def _resumable_task_context(thread_path: Any, message: str) -> tuple[str, str]:
     for entry in reversed(load_recent_thread_entries(thread_path=thread_path, limit=50)):
         provenance = entry.get("provenance") or {}
         source = provenance.get("source")
-        task_id = str(provenance.get("task_id") or "")
+        task_id = str(entry.get("task_id") or provenance.get("task_id") or "")
         if (
             entry.get("yielded")
             or source in {"host-approved", "host-approved-failed"}
@@ -1169,6 +1172,7 @@ async def _handle_pending_approval(
         turn_id=turn_id or None,
         parent_turn_id=parent_turn_id or None,
         parent_dispatch_id=parent_dispatch_id or None,
+        task_id=task_id,
         turn_input={"calls": result.model_requests} if result.model_requests else None,
         transcript=result.transcript,
         history=result.history,
@@ -1255,12 +1259,17 @@ def _record_operation_error_thread_entry(
             "source": "system-verified",
             "finish_reason": "error",
             "task_id": run_context.get("task_id", ""),
+            "blocked": True,
+            "block_origin": "lifecycle_failure",
         },
         turn=turn_index,
         reservation=reservation,
         run_ref=runtime.run_ref,
         mode_digest=_mode_digest(mode),
         turn_id=str(run_context.get("turn_id") or "") or None,
+        parent_turn_id=str(run_context.get("parent_turn_id") or "") or None,
+        parent_dispatch_id=str(run_context.get("parent_dispatch_id") or "") or None,
+        task_id=str(run_context.get("task_id") or ""),
     )
     if committed_turn is not None:
         run_context["turn_index"] = committed_turn
@@ -1624,13 +1633,17 @@ async def _run_reserved_turn(
         turn_index=turn_index,
         task_id=task_id,
         task_goal=task_goal,
-        parent_turn_id="",
-        parent_dispatch_id="",
+        parent_turn_id=(continuation.identity.parent_turn_id if continuation is not None else ""),
+        parent_dispatch_id=(
+            continuation.identity.parent_dispatch_id if continuation is not None else ""
+        ),
     )
     run_context.update(
         turn_index=identity.turn_index,
         task_id=identity.task_id,
         task_goal=identity.task_goal,
+        parent_turn_id=identity.parent_turn_id,
+        parent_dispatch_id=identity.parent_dispatch_id,
         turn_id=identity.turn_id,
     )
 
@@ -1749,6 +1762,7 @@ async def _run_reserved_turn(
         ),
         "task_id": task_id,
         **_kernel_loop_provenance(runtime, result),
+        **({"blocked": True} if result.blocked else {}),
         **({"block_origin": result.block_origin} if result.block_origin else {}),
     }
 
@@ -1798,6 +1812,7 @@ async def _run_reserved_turn(
         turn_id=str(run_context.get("turn_id") or "") or None,
         parent_turn_id=str(run_context.get("parent_turn_id") or "") or None,
         parent_dispatch_id=str(run_context.get("parent_dispatch_id") or "") or None,
+        task_id=task_id,
     )
     turn_index = turn_index if committed_turn is None else committed_turn
     run_context["turn_index"] = turn_index
@@ -1973,6 +1988,7 @@ def _handle_unsupported_mode(
         mode_id=mode.mode_id,
         query=query,
         response_text=response_text,
+        task_id=_resumable_task_id(runtime.paths.thread_path, message),
     )
     return response_text
 

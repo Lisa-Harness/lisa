@@ -1,6 +1,8 @@
 # Model Call Archive Specification
 
-> **Status:** Proposed.
+> **Status:** Partially implemented — see the implementation-status matrix
+> below. The `/forensics` per-call line and retention measurement remain
+> proposed.
 > **Order:** 2 of 4 in the observability and replay program.
 > **Depends on:** [evidence envelope](./EVIDENCE-ENVELOPE.md) (`call_id`,
 > `attempt`).
@@ -12,25 +14,33 @@ Every model call, whether in-turn or off-turn, has an archived request and
 response pair, addressed by `call_id`. The pair must be sufficient to
 reproduce what the call did to the loop without contacting the provider.
 
+## Implementation status
+
+| Capability | Status | Evidence |
+| --- | --- | --- |
+| `record_response` hook next to `record_request` | Implemented | `kernel/turn_hooks.py` (`TurnHooks.models.record_response`); `OperationHost` records off-turn responses through the same hook (`kernel/seams/host_adapter.py`) |
+| Response snapshot (§2 shape) | Implemented | `kernel/turn_runner/__init__.py` `_record_response_snapshot`: call_id/attempt/iteration, request_ref, outcome, content, tool_calls, reasoning_content, finish_reason, truncated, continuation, provider, model_id, provider_request_id, usage, duration_ms, streamed, time_to_first_token_ms, chunk_count, error on non-`ok` |
+| Non-`ok` calls recorded (wall budget, silent stream) | Implemented | `_record_unarchived_call` with `outcome="wall_budget_expired"` |
+| Recording failure logs WARNING, call proceeds | Implemented | `turn_runner/__init__.py` warning path leaves `response_ref` `null` |
+| Refs land in `turn_input.calls[]` and `model.request` rows | Implemented | `turn_input.calls[]` entries are `{call_id, iteration, attempt, ref, response_ref}`; [thread store spec](./THREAD_STORE.md) documents both refs and the archive-gap semantics |
+| Archive loading for replay | Implemented | `runtime/testing/archive.py` loads request and response objects; a missing `response_ref` is a reported archive gap |
+| `/forensics` and `turn_forensics` per-call line (§5) | Proposed | Not implemented |
+| Retention measurement (§4) | Proposed | Not measured on a live store |
+| Redaction tests covering response objects | Open | Not directly tested |
+
 ## Current state
 
 - **Requests are archived.** The turn loop records a request snapshot through
   `TurnHooks.models.record_request` ([turn_hooks.py](../../kernel/src/kernel/turn_hooks.py))
-  and stores `{"iteration", "ref"}` in the thread entry's `turn_input.calls`.
-  Off-turn calls archive the request in
+  and stores `{"call_id", "iteration", "attempt", "ref"}` in the thread
+  entry's `turn_input.calls`. Off-turn calls archive the request in
   [`OperationHost._record_request_snapshot`](../../kernel/src/kernel/seams/host_adapter.py)
   and publish a `model.request` row.
-- **Responses are not archived.** What survives is a by-product:
-  - the assistant message and tool calls the loop appended to `transcript`;
-  - a token usage row;
-  - the final `finish_reason` in the entry's provenance.
-
-  The read surface caps reasoning at 800 characters. Intermediate calls'
-  finish reasons, truncation flags, continuations, provider request IDs,
-  streaming facts, and failed or cancelled calls leave no durable record.
-  Off-turn calls keep only token usage.
-
-This means half of every model exchange cannot be inspected or replayed.
+- **Responses are archived.** `TurnHooks.models.record_response` persists a
+  response snapshot into the same result-object store and stamps
+  `response_ref` on the call entry; off-turn responses go through the same
+  hook on the audit context. A `null` `response_ref` (no hook, or a recording
+  failure) is the countable archive gap a reader reports.
 
 ## Non-goals
 
@@ -84,8 +94,8 @@ normalized form deliberately drops.
 | `model.request` ledger row | Adds `response_ref` |
 | Token usage row | Unchanged; joins to the call by `call_id` |
 
-Update the [thread store spec](./THREAD_STORE.md) `turn_input` row when this
-lands.
+The [thread store spec](./THREAD_STORE.md) documents the `turn_input` row
+and the archive-gap semantics for `response_ref`.
 
 ## 4. Storage and retention
 

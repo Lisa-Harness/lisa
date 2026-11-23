@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from kernel.extension_names import normalize_pack_name
 from kernel.mcp_launch.server_manifest import load_mcp_server_manifest
 from kernel.session_plan import compile_session_plan
 from runtime.commands import _packs
@@ -598,6 +599,14 @@ def test_validate_pack_spec_for_install_git_host_and_ref_policy(
     )
     assert ok is False
     assert "must pin @tag/@branch/@sha" in reason
+
+
+def test_validate_pack_spec_normalizes_prefix_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LISA_PACK_ALLOWED_PREFIXES", "lisa_pack_")
+    normalized = normalize_pack_name("lisa_pack_beta")
+    assert normalized == "lisa-pack-beta"
+    assert normalize_pack_name("Lisa-.Pack__Beta") == "lisa-pack-beta"
+    assert commands._validate_pack_spec_for_install("lisa_pack_beta")[0] is True
 
 
 @pytest.mark.parametrize(

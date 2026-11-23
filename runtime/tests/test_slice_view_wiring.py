@@ -97,6 +97,7 @@ def test_view_exposes_identity_and_path_fields(tmp_path: Path) -> None:
 
     assert view.memory_data_dir == runtime.paths.durable_dir
     assert view.user_slug == runtime.config.user_slug
+    assert view.thread_store_slug == runtime.config.thread_slug
     assert view.workspace_id == runtime.session_plan.manifest.name
     assert view.surface_id == runtime.config.surface_id
     assert callable(view.read_authored_text)

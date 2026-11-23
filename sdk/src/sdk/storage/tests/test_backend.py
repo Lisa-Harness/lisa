@@ -1471,6 +1471,40 @@ def test_edit_file_leaves_no_temporary_file(tmp_path: Path) -> None:
     assert sorted(p.name for p in b.files_root().iterdir()) == ["doc.md"]
 
 
+def test_edit_file_cleanup_failure_is_suppressed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cleanup ``OSError`` cannot mask the edit's primary error.
+
+    ``_atomic_replace`` removes its staged temp file on failure paths, but
+    removal is best-effort: the ``OSError`` is suppressed so the caller
+    still sees the real outcome. A failed cleanup can therefore leave a
+    temporary file behind — cleanup is a best effort, not a guarantee.
+    """
+    b = _backend(tmp_path)
+    b.write_file("doc.md", "one\n")
+    before = b.read_file("doc.md")
+
+    def failing_unlink(self: Path, missing_ok: bool = False) -> None:
+        del self, missing_ok
+        raise OSError(errno.EACCES, "cleanup refused")
+
+    def failing_replace(src: object, dst: object) -> None:
+        del src, dst
+        raise OSError(errno.EIO, "replace refused")
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    receipt = json.loads(b.edit_file("doc.md", "one", "two"))
+
+    assert "edit failed" in receipt["error"]
+    assert b.read_file("doc.md") == before
+    # Cleanup is best-effort: the unlink failure leaves the staged file.
+    leftovers = [p for p in b.files_root().iterdir() if p.name != "doc.md"]
+    assert leftovers
+
+
 def test_stat_file_reports_sha256_for_files_only(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     b.write_file("hashed.txt", "abc")
@@ -1550,11 +1584,15 @@ def test_write_file_empty_content_is_untouched(tmp_path: Path) -> None:
     assert b.read_file("empty.txt") == ""
 
 
-def test_write_file_leaves_binary_suffix_content_exact(tmp_path: Path) -> None:
-    """A binary format is stored byte-for-byte.
+def test_write_file_binary_suffix_suppresses_newline_normalization_only(
+    tmp_path: Path,
+) -> None:
+    """A binary-suffix path skips newline normalization — nothing more.
 
-    Normalizing the trailing byte of a PNG or a database would corrupt
-    it: those formats put significant data in their final bytes.
+    The payload is still a valid text string stored as its UTF-8 bytes;
+    the suffix only opts the file out of the POSIX trailing-newline rule.
+    This is not a byte-oriented API and proves nothing about arbitrary
+    binary round trips.
     """
     b = _backend(tmp_path)
     receipt = json.loads(b.write_file("image.png", "PNG-not-really"))

@@ -306,7 +306,7 @@ from ._helpers import (
 )
 from ._result import TurnResult
 from ._seams import ContextSeams
-from ._streaming import StreamedCompletionAdapter
+from ._streaming import StreamedCompletionAdapter, StreamRepetitionGuard
 
 # Logger for the intra-turn compaction breaker block inside
 # ``_record_iteration_completion``: that function takes no ``log`` parameter.
@@ -3258,24 +3258,21 @@ async def _collect_stream(
     a slow-but-alive generation never trips it.
     """
     timeout_s = float(getattr(_kernel_settings, "stream_idle_timeout_s", 0.0) or 0.0)
-    if timeout_s <= 0:
-        chunks: list[StreamedChunk] = []
-        started = time.perf_counter()
-        async for chunk in stream_gateway_fn(completion_request):
-            _stamp_first_token(timings, chunk, started)
-            chunks.append(chunk)
-            if on_delta is not None and (chunk.content or chunk.reasoning_content):
-                await on_delta(chunk.content, chunk.reasoning_content)
-        elapsed = (time.perf_counter() - started) * 1000.0
-        _stamp_stream_timings(timings, chunk_count=len(chunks), elapsed_ms=elapsed)
-        return chunks, elapsed
-
+    repetition_guard = StreamRepetitionGuard(
+        line_limit=int(getattr(_kernel_settings, "stream_repetition_line_limit", 64) or 0),
+        window_chars=int(getattr(_kernel_settings, "stream_repetition_window_chars", 16384) or 0),
+    )
     started = time.perf_counter()
-    chunks = []
+    chunks: list[StreamedChunk] = []
     stream = stream_gateway_fn(completion_request)
     while True:
         try:
-            chunk = await asyncio.wait_for(stream.__anext__(), timeout=timeout_s)
+            next_chunk = stream.__anext__()
+            chunk = (
+                await asyncio.wait_for(next_chunk, timeout=timeout_s)
+                if timeout_s > 0
+                else await next_chunk
+            )
         except StopAsyncIteration:
             elapsed = (time.perf_counter() - started) * 1000.0
             _stamp_stream_timings(timings, chunk_count=len(chunks), elapsed_ms=elapsed)
@@ -3294,6 +3291,25 @@ async def _collect_stream(
             raise StreamIdleTimeout(f"stream produced no chunk for {timeout_s:.0f}s") from exc
         _stamp_first_token(timings, chunk, started)
         chunks.append(chunk)
+        if repetition_guard.observe(
+            content=chunk.content,
+            reasoning=chunk.reasoning_content,
+        ):
+            close = getattr(stream, "aclose", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    await close()
+            elapsed = (time.perf_counter() - started) * 1000.0
+            provider_chunk_count = len(chunks)
+            chunks.append(StreamedChunk(finish_reason="repetition"))
+            _stamp_stream_timings(
+                timings,
+                chunk_count=provider_chunk_count,
+                elapsed_ms=elapsed,
+            )
+            if timings is not None:
+                timings["repetition_detected"] = True
+            return chunks, elapsed
         if on_delta is not None and (chunk.content or chunk.reasoning_content):
             await on_delta(chunk.content, chunk.reasoning_content)
 
@@ -4467,6 +4483,15 @@ def _resolve_call_cost(
     return canonical, provider_cost
 
 
+def _strip_repetition_tool_calls(completion: Any) -> list[dict[str, Any]]:
+    """Drop stitched tool calls when the stream stopped as repetitive."""
+    if getattr(completion, "finish_reason", None) != "repetition":
+        return getattr(completion, "tool_calls", None) or []
+    if hasattr(completion, "tool_calls"):
+        completion.tool_calls = []
+    return []
+
+
 async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry fold
     *,
     state: _TurnState,
@@ -4650,7 +4675,7 @@ async def _record_iteration_completion(  # noqa: C901  # linear usage/telemetry 
     _assistant_text = completion_content(completion)
     if _assistant_text:
         assistant_msg["content"] = _assistant_text
-    tool_calls = getattr(completion, "tool_calls", None) or []
+    tool_calls = _strip_repetition_tool_calls(completion)
     if tool_calls:
         assistant_msg["tool_calls"] = tool_calls
     if hasattr(completion, "model"):
@@ -4727,6 +4752,9 @@ def _synthesize_empty_completion_call(
     both shapes (Phase 5). Returns ``(tool_calls, synthesized, pre_handoff_text)``
     — ``([] , False, pre_handoff_text)`` when nothing is pending.
     """
+    if getattr(completion, "finish_reason", None) == "repetition":
+        return [], False, pre_handoff_text
+
     if state.forced_action:
         _fa = state.forced_action
         log.warning(
@@ -9305,6 +9333,57 @@ async def _run_turn_entry_sequence(
     )
 
 
+def _bounded_aborted_completion_content(
+    *,
+    content: str,
+    finish_reason: str,
+    mode_id: str,
+    iteration: int,
+    log: logging.Logger,
+) -> str:
+    """Render the user-facing diagnostic for an aborted empty completion."""
+    if finish_reason == "repetition":
+        excerpt_limit = int(
+            getattr(
+                _kernel_settings,
+                "stream_repetition_excerpt_chars",
+                800,
+            )
+            or 0
+        )
+        sample = content.splitlines()[-1]
+        if excerpt_limit <= 0:
+            sample = ""
+        elif len(sample) > excerpt_limit:
+            sample = sample[: excerpt_limit - 1] + "…"
+        log.warning(
+            "stream repetition circuit-breaker stopped a completion "
+            "(mode=%s iteration=%d); ending the turn without a retry",
+            mode_id,
+            iteration,
+        )
+        message = (
+            "The model entered a repetitive-output loop, so Lisa stopped "
+            "the stream before it consumed the remaining completion "
+            "budget. The full partial completion remains in the "
+            "model-call archive."
+        )
+        if sample:
+            message += f"\n\nSample line:\n\n{sample}"
+        return message
+    log.warning(
+        "completion truncated at the token cap with no tool calls "
+        "(mode=%s iteration=%d); ending the turn instead of synthesizing "
+        "a dispatch the model never emitted",
+        mode_id,
+        iteration,
+    )
+    return (
+        "The model reached its token cap before emitting a tool call, so "
+        f"nothing was dispatched. Its partial response follows.\n\n{content}"
+    )
+
+
 async def _process_empty_completion(
     *,
     hooks: TurnHooks,
@@ -9457,17 +9536,14 @@ async def _process_empty_completion(
         # re-enter the loop (2026-09-30: four retry cycles, 220k-token
         # prompts, zero bytes written). Name the real cause instead. An
         # empty truncated completion still falls through to the yield.
-        if content and not tool_calls and getattr(completion, "finish_reason", None) == "length":
-            log.warning(
-                "completion truncated at the token cap with no tool calls "
-                "(mode=%s iteration=%d); ending the turn instead of synthesizing "
-                "a dispatch the model never emitted",
-                mode_id,
-                state.iteration,
-            )
-            content = (
-                "The model reached its token cap before emitting a tool call, so "
-                f"nothing was dispatched. Its partial response follows.\n\n{content}"
+        finish_reason = getattr(completion, "finish_reason", None)
+        if content and not tool_calls and finish_reason in {"length", "repetition"}:
+            content = _bounded_aborted_completion_content(
+                content=content,
+                finish_reason=finish_reason,
+                mode_id=mode_id,
+                iteration=state.iteration,
+                log=log,
             )
             return (
                 tool_calls,

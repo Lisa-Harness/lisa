@@ -128,6 +128,35 @@ def test_persist_request_archives_to_the_ephemeral_store(tmp_path: Path) -> None
     assert _thread_dirs(tmp_path) == []
 
 
+def test_persist_continuation_uses_ephemeral_store_without_thread(tmp_path: Path) -> None:
+    paths = _paths(tmp_path, no_thread=True)
+    from kernel.turn_continuation import TurnContinuation
+    from kernel.turn_hooks import TurnIdentity
+    from runtime.turn_continuation import persist_continuation
+
+    saved = TurnContinuation(
+        identity=TurnIdentity(task_id="task-1"),
+        mode_id="default",
+        query="continue",
+        state_json="{}",
+        context_json="{}",
+        mode_config_json="{}",
+        segments_json="{}",
+        preferred_model_id=None,
+        turn_budget=None,
+        execution_policy=None,
+        suppress_routing_hint=False,
+        delegate_depth=0,
+        mode_instruction="",
+        max_iterations=1,
+        per_step_max_iterations=1,
+        per_step_max_tool_calls=1,
+    )
+    ref = persist_continuation(paths.ephemeral_results_path, saved)
+    assert ref.startswith("r")
+    assert result_object_path(paths.ephemeral_results_path, ref).is_file()
+
+
 def test_persist_request_still_requires_a_base_without_ephemeral() -> None:
     with pytest.raises(ValueError, match="thread storage path"):
         persist_request(None, None, {"model": "stub"})

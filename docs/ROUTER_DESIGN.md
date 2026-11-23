@@ -50,15 +50,29 @@ routable mode handoff — plus the fan-out form:
 The intra-mode **workflow stage** target was removed. `WorkflowStageConfig`,
 `start_stage_id`, `allowed_next_stages`, `terminal`, the per-mode stage
 loader/validator, `is_terminal_stage`, and the stage-instruction injection
-into the system prompt are all gone, along with `WorkflowPosition.stage_id`.
-The mechanism never carried real work: no installed pack shipped stage files,
-19 of 20 modes declaring `start_stage_id` declared `none`, and the thread
-records 13 `transitioned_to` events across 1,043 turns — all of them
-mode-level re-entries, never a stage advance.
+into the system prompt are all gone. The mechanism never carried real work:
+no installed pack shipped stage files, 19 of 20 modes declaring
+`start_stage_id` declared `none`, and the thread records 13
+`transitioned_to` events across 1,043 turns — all of them mode-level
+re-entries, never a stage advance.
 
-`transitioned_to` and `RecoveryRecord.stage_id` survive as *read-only legacy
-fields* so persisted thread and recovery records from before the removal still
-load; nothing writes them. A handoff reports `handoff_to`.
+The stage *fields* survive with distinct current roles:
+
+- `WorkflowPosition.stage_id` is still a present, persisted field on the
+  position model; the stage FSM that advanced it is gone, so it stays at
+  its default empty value.
+- `TurnResult.transitioned_to` is still produced and persisted: the
+  runtime serializes `result.transitioned_to or ""` into each thread
+  entry, and the thread writer records the key whenever the value is
+  nonempty (an empty value omits the key rather than writing an empty
+  string). `WorkflowView` consumes it to credit the mode a turn ended in.
+- `RecoveryRecord.stage_id` is still a persisted audit field on every
+  recovery record; `_current_recovery_stage_id` currently returns the
+  empty string, so new records record "no stage" while pre-removal
+  records still load.
+
+A handoff reports `handoff_to`; it is a separate field with separate
+semantics, not a rename or substitute for either stage field.
 
 The routing FSM synthesizes a full mesh among routable modes, not just
 edges back to `default`.

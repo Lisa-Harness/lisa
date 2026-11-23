@@ -122,7 +122,12 @@ def turn_from_entry(turn: int, entry: dict[str, Any]) -> TurnEvidence:
         response_preview=_preview(entry.get("response_text")),
         handoff_to=str(entry.get("handoff_to") or ""),
         transitioned_to=str(entry.get("transitioned_to") or ""),
-        blocked=bool(entry.get("blocked") or provenance.get("blocked")),
+        blocked=bool(
+            entry.get("blocked")
+            or provenance.get("blocked")
+            or entry.get("block_origin")
+            or provenance.get("block_origin")
+        ),
         block_origin=str(entry.get("block_origin") or provenance.get("block_origin") or ""),
         content_source=str(entry.get("content_source") or ""),
         provenance_source=str(provenance.get("source") or ""),

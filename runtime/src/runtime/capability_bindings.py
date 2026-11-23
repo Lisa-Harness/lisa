@@ -51,9 +51,11 @@ class SessionCapabilityBindings(CapabilityBindingProvider):
                 # The catalog can carry the bare directory slug ('memory') while
                 # the configuration key is the distribution name
                 # ('lisa-pack-memory') — one pack, two id forms.
-                normal_owner = owner.strip().lower().replace("_", "-")
+                from kernel.extension_names import normalize_pack_name
+
+                normal_owner = normalize_pack_name(owner)
                 for unknown in unknown_owners:
-                    normal_unknown = unknown.strip().lower().replace("_", "-")
+                    normal_unknown = normalize_pack_name(unknown)
                     if normal_unknown == normal_owner:
                         return True
                     if normal_unknown.removeprefix("lisa-pack-") == normal_owner:

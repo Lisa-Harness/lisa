@@ -148,8 +148,15 @@ async def test_write_file_newline_terminates_text(storage_setup: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_write_file_leaves_binary_content_exact(storage_setup: None) -> None:
-    """A binary format is not text; its trailing bytes stay untouched."""
+async def test_write_file_binary_suffix_suppresses_newline_normalization_only(
+    storage_setup: None,
+) -> None:
+    """A binary-suffix path skips newline normalization — nothing more.
+
+    The payload is still a valid text string stored as its UTF-8 bytes;
+    this is not a byte-oriented API and proves nothing about arbitrary
+    binary round trips.
+    """
     from mcp_server.storage.server import mcp
 
     result = await mcp.call_tool("write_file", {"path": "image.png", "content": "PNG-not-really"})
@@ -157,6 +164,21 @@ async def test_write_file_leaves_binary_content_exact(storage_setup: None) -> No
     assert data["ok"] is True
     assert data["trailing_newline_added"] is False
     assert data["bytes"] == len(b"PNG-not-really")
+
+
+@pytest.mark.asyncio
+async def test_write_file_empty_content_stays_empty(storage_setup: None) -> None:
+    """Empty text is the newline rule's exception: it stays empty."""
+    from mcp_server.storage.server import mcp
+
+    result = await mcp.call_tool("write_file", {"path": "empty.txt", "content": ""})
+    data = json.loads(_tool_text(result))
+    assert data["ok"] is True
+    assert data["trailing_newline_added"] is False
+    assert data["bytes"] == 0
+
+    read_result = await mcp.call_tool("read_file", {"path": "empty.txt"})
+    assert _tool_text(read_result) == ""
 
 
 @pytest.mark.asyncio

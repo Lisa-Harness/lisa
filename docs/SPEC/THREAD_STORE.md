@@ -151,20 +151,29 @@ fragments and surface as false divergences:
   assemble the terminal line across block windows before hashing; the last
   `\n`-bounded fragment inside one window is not the line when the line
   exceeds the window.
-- All readers and sealers split raw bytes on `\n` only (JSONL line
-  identity). `str.splitlines()` also splits on raw NEL/LS/PS characters
-  that `json.dumps(ensure_ascii=False)` writes unescaped inside strings,
-  shearing one stored entry into fragments.
+- Entry payload, hashing, and sealing paths split raw bytes on `\n` only
+  (JSONL line identity). `str.splitlines()` also splits on raw NEL/LS/PS
+  characters that `json.dumps(ensure_ascii=False)` writes unescaped
+  inside strings, shearing one stored entry into fragments. The
+  restricted segment-index parsers are the deliberate exception: index
+  records have a fixed field shape, so they use
+  `read_text().splitlines()` (`runtime/thread/_store.py`,
+  `sdk/thread/_backend.py`). Do not read this rule as one shared
+  byte-splitting implementation across every reader.
 
 Honest threat model — what this does and does not prove:
 
 - **Detects**: any edit, deletion, or truncation of a stored entry or
   index line after the fact, unless the attacker coherently rewrites
-  everything from the edit point onward.
+  everything from the edit point onward. A sealed segment's terminal
+  entry is independently anchored: the index records its
+  `tail_sha256`, so mutating it is detected even without an in-segment
+  successor.
 - **Does not detect**: a full-store rewrite including the index; tampering
-  with the newest entry (nothing links to it yet — periodic external
-  notarization of `head_sha256` closes that window); an attacker who
-  controls the writer before evidence exists.
+  with the newest entry of the *active* segment, which has no successor
+  and no index anchor yet — periodic external notarization of
+  `head_sha256` closes that window; an attacker who controls the writer
+  before evidence exists.
 - Forensic reads surface the audit on explicit request only:
   `/forensics <selection> --verify-chain` and
   `turn_forensics(verify_chain=true)` append a one-line status note.

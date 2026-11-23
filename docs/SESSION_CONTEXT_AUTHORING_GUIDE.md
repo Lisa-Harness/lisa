@@ -342,7 +342,7 @@ answer when the user asks for a deliverable.
 
 | Block | Reason |
 | --- | --- |
-| `resources.packs.required` | All five packs are auto-installed at boot. A missing required pack is a **hard startup error** — the runtime does not start degraded. |
+| `resources.packs.required` | All five packs are auto-installed at boot. Every required pack must install successfully; one failure aborts startup even if another pack succeeds. A spec-resolution error (an unpinned git ref, an unknown source) aborts immediately before any install is attempted. |
 | `resources.packs.auto_install` | Pins each external pack to a tagged ref. Git refs **must** pin `@tag/@branch/@sha`; the host treats pinning as mandatory for auto-install regardless of `LISA_PACK_REQUIRE_GIT_REF`. |
 | `providers.tools.web_search` | **Required.** `lisa-pack-core` (the contract stub) and `lisa-pack-tavily` both ship `tool_id: web_search`. Without this line the catalog raises `CatalogCollisionError` at startup. |
 | `providers.operations.*` | Declares the owner for each research and document operation. Harmless when uncontested, but it makes ownership explicit and survives a future pack that ships a same-ID operation. |
@@ -442,7 +442,7 @@ Local paths are resolved relative to the session-context file's directory, so a 
 
 For `git+` sources, the host appends `egg=<pack name>` to the URL fragment unless one is already present, so the `auto_install` key names the package. This lets a pack live in a subdirectory of a differently named repository (e.g. `git+https://github.com/Lisa-Harness/lisa-go.git@v0.2.0#subdirectory=pack`). For `/pack install`, add `&egg=<pack name>` yourself. Packs that ship binary MCP servers without a `binary_download.version` download the release matching the installed pack version, so the git tag in `source` selects both the pack and its binaries.
 
-Auto-install applies **only** to `required` packs. Failure of any required pack is a hard startup error; the runtime does not start in a degraded state. When at least one pack is installed, the host flags a pending reload so `importlib.metadata` entry-point discovery sees the new packs on the next boot pass.
+Auto-install applies **only** to `required` packs. Every required pack must install successfully: if one install fails, startup aborts even if another pack succeeds. Spec-resolution errors (for example an unpinned git ref or unknown source) abort immediately before any install is attempted.
 
 ```yaml
 resources:
@@ -940,9 +940,18 @@ similar existing records and chooses create / update / skip per fact.
 Mining is idempotent per segment: a `mine.marker` sidecar beside the durable
 data root tracks the last mined segment, and the marker is positional — a
 rebuilt store cannot strand it mid-scan, and a full re-mine is non-destructive
-because the write-time dedup skips records that already exist. A failed
-distillation leaves the segment pending for the next pass; an unreadable
-segment advances the marker so it is not retried forever.
+because the write-time dedup skips records that already exist.
+
+The marker advances past a segment when the pass has attempted it — success,
+intentional all-skip, an unreadable/empty segment, per-segment attempt-cap
+exhaustion, or the operation reporting `status="error"` (storage failure).
+Advancing past a failed segment is what prevents starvation: later segments
+are not blocked behind a persistently failing one, and write-time dedup makes
+a later re-mine safe. The segment stays **pending** only when the pass never
+attempted it: a slice-budget break before the segment's turn, a
+`mine.marker` persistence failure, or no marker location (no durable data
+root). A failed distillation therefore does *not* leave the segment pending
+once its attempts are exhausted.
 
 ```yaml
 context:
@@ -1202,7 +1211,7 @@ Host-mandatory packs (declared in `mcp_servers.yaml` `pack_policy.always_on_pack
 - **Source rule with no selector and no fallback**: a rule needs at least one matching selector or `fallback: true`.
 - **`context_routing` is gone**: the legacy namespace-based routing block was removed. There is no `context_routing` key and no `ContextRoutingConfig`; use the `context` block (`lanes` + `sources`) instead. A `ContextRoutingConfig` reference in old code or docs is stale.
 - **`ContextItem.namespace` is a label, not a selector**: the mapper selects on `source`, `pack`, `source_type`, `evidence_type`, and `tags` — never on `namespace`. Setting `namespace="alerts"` does not route an item to an `alerts` lane; author a `context.sources` rule matching `evidence_types: [alert]` or `sources: [...]` instead.
-- **External packs installed in the main `.venv`**: an external pack present in both the main framework `.venv` and the packs venv produces a `Duplicate operation ID`/`Duplicate tool ID` collision at boot because the catalog subprocess sees two content-root paths for one pack. Keep external packs in the packs venv only; uninstall them from the main `.venv`. (Bundled packs are fine in the main `.venv` — they are not installed into the packs venv.)
+- **External packs installed in the main `.venv`**: an external pack present in both the main framework `.venv` and the packs venv is deduplicated by package name at discovery — the packs-venv root wins, so the same package does not produce a `Duplicate operation ID`/`Duplicate tool ID` collision. A collision still occurs when two *genuinely distinct* package IDs ship the same operation or tool ID (for example two different search-provider packs both shipping `web_search`); that requires a `providers` declaration, not an uninstall. Keep external packs in the packs venv only; bundled packs are fine in the main `.venv` — they are not installed into the packs venv.
 - **Two search provider packs without a `providers.tools` entry**: `lisa-pack-core`, `lisa-pack-tavily`, `lisa-pack-brave`, and `lisa-pack-serper` all ship a tool with `tool_id: web_search`. Activating more than one without declaring the owner raises a `CatalogCollisionError` at startup. Exactly one pack can own `web_search` at a time.
 - **A search provider pack without its API key**: the pack installs and the tool appears in the catalog, but every call fails with a "not configured" error naming the missing environment variable (for Tavily, `TAVILY_SEARCH_API_KEY`). The key is read from the environment, never from front matter — a secret does not belong in a versioned session file.
 - **`lisa-pack-core` alone is not a working search**: its `web_search` tool is a deliberate contract stub that returns "provider unavailable". It keeps `tool_ids: [web_search]` resolvable so operation validation passes; a concrete provider pack (Tavily, Brave, Serper) supplies the live tool.

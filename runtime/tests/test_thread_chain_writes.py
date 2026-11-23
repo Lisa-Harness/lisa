@@ -76,6 +76,42 @@ def test_first_entry_is_the_chain_head(tmp_path: Path) -> None:
     assert "prev_entry_sha256" not in entry  # the head fakes no link
 
 
+def test_transitioned_to_is_persisted_when_nonempty_and_omitted_when_empty(
+    tmp_path: Path,
+) -> None:
+    """The thread writer records ``transitioned_to`` only when nonempty.
+
+    The runtime passes ``result.transitioned_to or ""``; the writer omits
+    the key for an empty value rather than persisting an empty string, so
+    a present key always means a real transition was recorded.
+    """
+    base = tmp_path / "u"
+    append_thread_entry(
+        thread_path=base,
+        user_slug="u",
+        mode_id="default",
+        query="q0",
+        response_text="r0",
+        turn=0,
+        segment_turns=256,
+        transitioned_to="reviewer",
+    )
+    append_thread_entry(
+        thread_path=base,
+        user_slug="u",
+        mode_id="default",
+        query="q1",
+        response_text="r1",
+        turn=1,
+        segment_turns=256,
+        transitioned_to="",
+    )
+
+    first, second = (json.loads(line) for line in _active_lines(base))
+    assert first["transitioned_to"] == "reviewer"
+    assert "transitioned_to" not in second
+
+
 def test_each_entry_links_to_the_previous_raw_line(tmp_path: Path) -> None:
     base = tmp_path / "u"
     _append(base, 0)
