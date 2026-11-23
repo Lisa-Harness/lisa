@@ -130,7 +130,12 @@ def _resolve_auto_install_spec(
     (e.g. ``source: ../lisa-packs/brave``). Absolute paths and
     non-local sources (git+, bare names) are passed through unchanged.
     """
-    entry = auto_install.get(pack_name)
+    canonical_pack_name = normalize_pack_name(pack_name)
+    entry = None
+    for configured_name, configured_entry in auto_install.items():
+        if normalize_pack_name(configured_name) == canonical_pack_name:
+            entry = configured_entry
+            break
     if entry is not None:
         source = getattr(entry, "source", "") or ""
         editable = bool(getattr(entry, "editable", True))
@@ -214,6 +219,90 @@ def _activate_packs_venv(runtime: HostRuntime) -> None:
     importlib.invalidate_caches()
 
 
+def _resolve_required_specs(
+    missing: list[str],
+    auto_install_map: dict[str, PackInstallSpec],
+    session_source_dir: Path | None,
+) -> list[tuple[str, str, bool, str]]:
+    from runtime.commands._packs import (
+        _normalize_pack_install_spec,
+        _validate_pack_spec_for_install,
+    )
+
+    resolved: list[tuple[str, str, bool, str]] = []
+    for pack_name in missing:
+        canonical_pack_name = normalize_pack_name(pack_name)
+        try:
+            spec, editable, source_label = _resolve_auto_install_spec(
+                pack_name, auto_install_map, session_source_dir=session_source_dir
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        normalized_spec = _normalize_pack_install_spec(spec)
+        location = normalized_spec.partition("#")[0]
+        if normalized_spec.lower().startswith("git+") and "@" not in location:
+            raise RuntimeError(
+                f"auto-install: required pack '{pack_name}' has an unpinned git source "
+                f"{normalized_spec!r}; pin @tag/@branch/@sha is mandatory."
+            )
+        if normalized_spec.lower().startswith("git+"):
+            from runtime.commands._packs import _git_fragment_params
+
+            _location, _separator, fragment = normalized_spec.partition("#")
+            egg_name = _git_fragment_params(fragment).get("egg", "")
+            if egg_name and normalize_pack_name(egg_name) != canonical_pack_name:
+                raise RuntimeError(
+                    f"auto-install: required pack '{pack_name}' spec names "
+                    f"egg '{egg_name}'; names must match."
+                )
+        is_allowed, reason = _validate_pack_spec_for_install(normalized_spec)
+        if not is_allowed:
+            raise RuntimeError(f"auto-install: required pack '{pack_name}' spec rejected: {reason}")
+        if normalized_spec.lower().startswith((".", "/", "\\")) or any(
+            separator in normalized_spec for separator in ("/", "\\")
+        ):
+            from runtime.commands._packs import _read_local_pack_project_name
+
+            local_path = Path(normalized_spec).expanduser()
+            project_name = _read_local_pack_project_name(local_path)
+            if project_name and normalize_pack_name(project_name) != canonical_pack_name:
+                raise RuntimeError(
+                    f"auto-install: required pack '{pack_name}' spec resolves to "
+                    f"project '{project_name}' at {normalized_spec!r}; names must match."
+                )
+        resolved.append((pack_name, spec, editable, source_label))
+    return resolved
+
+
+def _install_required_specs(
+    runtime: HostRuntime,
+    resolved: list[tuple[str, str, bool, str]],
+) -> list[str]:
+    from runtime.commands._packs import run_pack_install_sync
+
+    installed_now: list[str] = []
+    last_error = ""
+    for pack_name, spec, editable, source_label in resolved:
+        logger.info(
+            "auto-install: required pack %r missing; installing from %s (%s, editable=%s)",
+            pack_name,
+            spec,
+            source_label,
+            editable,
+        )
+        ok, detail = run_pack_install_sync(runtime, spec, request_restart=False, editable=editable)
+        if ok:
+            installed_now.append(pack_name)
+            continue
+        last_error = detail
+        logger.error("auto-install: failed to install %r:\n%s", pack_name, detail)
+    if last_error:
+        raise RuntimeError(
+            f"auto-install: required pack(s) missing and install failed. Last error:\n{last_error}"
+        )
+    return installed_now
+
+
 def auto_install_required_packs(runtime: HostRuntime) -> list[str]:
     """Install any missing ``required`` packs before content-root discovery.
 
@@ -238,35 +327,13 @@ def auto_install_required_packs(runtime: HostRuntime) -> list[str]:
     if not missing:
         return []
 
-    from runtime.commands._packs import run_pack_install_sync
-
     session_source_dir: Path | None = None
     if runtime.session_plan.source_dir:
         session_source_dir = Path(runtime.session_plan.source_dir)
 
     auto_install_map = plan_packs.auto_install
-    installed_now: list[str] = []
-    last_error = ""
-    for pack_name in missing:
-        try:
-            spec, editable, source_label = _resolve_auto_install_spec(
-                pack_name, auto_install_map, session_source_dir=session_source_dir
-            )
-        except ValueError as exc:
-            raise RuntimeError(str(exc)) from exc
-        logger.info(
-            "auto-install: required pack %r missing; installing from %s (%s, editable=%s)",
-            pack_name,
-            spec,
-            source_label,
-            editable,
-        )
-        ok, detail = run_pack_install_sync(runtime, spec, request_restart=False, editable=editable)
-        if ok:
-            installed_now.append(pack_name)
-        else:
-            last_error = detail
-            logger.error("auto-install: failed to install %r:\n%s", pack_name, detail)
+    resolved = _resolve_required_specs(missing, auto_install_map, session_source_dir)
+    installed_now = _install_required_specs(runtime, resolved)
 
     if installed_now:
         _activate_packs_venv(runtime)
@@ -277,10 +344,7 @@ def auto_install_required_packs(runtime: HostRuntime) -> list[str]:
         )
         return installed_now
 
-    # Nothing installed and at least one missing required pack failed.
-    raise RuntimeError(
-        f"auto-install: required pack(s) missing and install failed. Last error:\n{last_error}"
-    )
+    raise RuntimeError("auto-install: required pack(s) missing and install failed")
 
 
 __all__ = ["auto_install_required_packs"]

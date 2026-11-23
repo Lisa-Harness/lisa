@@ -137,6 +137,60 @@ def test_blocked_streak_below_threshold_is_silent(tmp_path: Path) -> None:
     assert not any("consecutive turns ended blocked" in s for s in signals.signals)
 
 
+def test_provenance_only_blocked_state_counts_as_blocked(tmp_path: Path) -> None:
+    """Lifecycle blocks with provenance blocked=True remain blocked evidence."""
+    paths = _segment_paths(tmp_path / "thread")
+    paths.current.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC).isoformat()
+    with paths.current.open("w", encoding="utf-8") as handle:
+        for turn in range(3):
+            handle.write(
+                json.dumps(
+                    {
+                        "timestamp_utc": now,
+                        "mode_id": "m",
+                        "query": "q",
+                        "response_text": "r",
+                        "turn": turn,
+                        "provenance": {"blocked": True, "block_origin": "lifecycle_failure"},
+                    }
+                )
+                + "\n"
+            )
+
+    signals = compute_behavioral_signals(ThreadStore(tmp_path / "thread"))
+
+    assert signals.counters["blocked_streak"] == 3
+    assert signals.counters["blocked_turns"] == 3
+
+
+def test_top_level_block_origin_counts_as_blocked(tmp_path: Path) -> None:
+    paths = _segment_paths(tmp_path / "thread")
+    paths.current.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC).isoformat()
+    with paths.current.open("w", encoding="utf-8") as handle:
+        for turn in range(2):
+            handle.write(
+                json.dumps(
+                    {
+                        "timestamp_utc": now,
+                        "mode_id": "m",
+                        "query": "q",
+                        "response_text": "r",
+                        "turn": turn,
+                        "blocked": True,
+                        "block_origin": "lifecycle_failure",
+                    }
+                )
+                + "\n"
+            )
+
+    signals = compute_behavioral_signals(ThreadStore(tmp_path / "thread"))
+
+    assert signals.counters["blocked_streak"] == 2
+    assert signals.counters["blocked_turns"] == 2
+
+
 def test_blocked_streak_counts_only_the_trailing_run(tmp_path: Path) -> None:
     """An older block broken by a clean turn is not a current streak."""
     paths = _segment_paths(tmp_path / "thread")

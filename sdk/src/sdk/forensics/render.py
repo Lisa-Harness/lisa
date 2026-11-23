@@ -8,9 +8,12 @@ drifts, and the drift is invisible until someone compares them.
 
 Design rules, in order:
 
-1. **Every claim names its turn.** A line that says "blocked by task_completion"
-   is followed by ``(turn 1057)`` so a reader can check it with
-   ``thread_read_range`` instead of trusting the summary.
+1. **Turn-specific claims name their turn.** A line that says "blocked by
+   task_completion" is followed by ``(turn 1057)`` so a reader can check it
+   with ``thread_read_range`` instead of trusting the summary. Totals,
+   process logs, and unattributed rows are explicitly labelled as such;
+   missing attribution stays missing — the renderer never fabricates a
+   turn ID or forces a fake join.
 2. **Absence is stated, not implied.** A missing file, an empty join, and a
    zeroed window are three different answers; the renderer prints which one
    applies rather than emitting a tidy table that hides it.
@@ -42,6 +45,26 @@ _MAX_DECISION_ROWS = 6
 
 _MAX_REASON_CHARS = 160
 _MAX_ERROR_CHARS = 200
+
+#: Origin-aware classification for blocked turns. ``block_origin`` names the
+#: gate that produced the block; the classification restates it as a cause so
+#: guard blocks are not universally described as routing or contract failures.
+_BLOCK_ORIGIN_CLASSIFICATIONS = {
+    "capability_gate": "the capability gate refused the turn's target",
+    "input_guard": "an input guard blocked the request before the model call",
+    "output_guard": "an output guard replaced the response with a safe fallback",
+    "task_completion": "the turn did not satisfy its task completion contract",
+    "no_tools": "the turn made no verified action-tool write required by its completion contract",
+}
+
+
+def _blocked_classification(origin: str) -> str:
+    """Classify the cause of a blocked turn from its recorded origin."""
+    if origin in _BLOCK_ORIGIN_CLASSIFICATIONS:
+        return _BLOCK_ORIGIN_CLASSIFICATIONS[origin]
+    if origin:
+        return f"a non-guard lifecycle failure named {origin}"
+    return "a non-guard lifecycle failure (origin not recorded)"
 
 
 def _clip(text: str, limit: int) -> str:
@@ -144,9 +167,9 @@ def _render_turn_header(turn: TurnEvidence) -> list[str]:
     if routing:
         lines.append(routing)
     if turn.blocked:
+        origin = turn.block_origin or ""
         lines.append(
-            f"- **blocked:** origin={turn.block_origin or 'unknown'} "
-            "— the turn ended without satisfying its contract"
+            f"- **blocked:** origin={origin or 'unknown'} — {_blocked_classification(origin)}"
         )
     if turn.content_source:
         lines.append(

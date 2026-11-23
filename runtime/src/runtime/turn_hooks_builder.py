@@ -205,6 +205,18 @@ class _SliceProviderHooksView:
         return self._runtime.config.user_slug
 
     @property
+    def thread_store_slug(self) -> str:
+        return self._runtime.config.thread_slug
+
+    @property
+    def thread_path(self) -> Path | None:
+        return self._runtime.paths.thread_path
+
+    @property
+    def thread_dir(self) -> Path:
+        return self._runtime.paths.thread_dir
+
+    @property
     def workspace_id(self) -> str:
         return self._runtime.session_plan.manifest.name
 
@@ -1396,7 +1408,10 @@ def _assemble_turn_hooks(
             mcp_tool_pool=runtime.resources.mcp_tool_pool,
             mcp_tool_servers=runtime.resources.mcp_cold_configs,
             post_dispatch_result=runtime.decorate_pack_tool_result,
-            persist_tool_result=build_persist_tool_result_hook(runtime.paths.thread_path),
+            persist_tool_result=build_persist_tool_result_hook(
+                runtime.paths.thread_path,
+                runtime.paths.ephemeral_results_path,
+            ),
             # Session-owned execution override (Spec 3 slice 3): mirrors the
             # ``provider_gateways_override`` seam — the session field is read
             # at hook-assembly time, so ``handle_message`` is unchanged.

@@ -74,6 +74,15 @@ def test_turn_from_entry_reads_thread_fields() -> None:
     assert turn.task_id == "task-1"
 
 
+def test_turn_from_entry_derives_blocked_from_block_origin() -> None:
+    """A persisted block origin is sufficient evidence for blocked state."""
+    turn = turn_from_entry(
+        *(_entry(8, provenance={"source": "observed", "block_origin": "input_guard"}))
+    )
+    assert turn.blocked is True
+    assert turn.block_origin == "input_guard"
+
+
 def test_turn_from_entry_previews_long_text() -> None:
     """A forensic read is a summary: long fields are bounded."""
     turn = turn_from_entry(1, {"query": "q" * 5000})
@@ -221,6 +230,99 @@ def test_render_marks_blocked_turns_with_origin() -> None:
     assert "Turn 1057" in rendered
     assert "blocked" in rendered
     assert "task_completion" in rendered
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected"),
+    [
+        ("capability_gate", "the capability gate refused the turn's target"),
+        ("input_guard", "an input guard blocked the request before the model call"),
+        ("output_guard", "an output guard replaced the response with a safe fallback"),
+        ("task_completion", "the turn did not satisfy its task completion contract"),
+        (
+            "no_tools",
+            "the turn made no verified action-tool write required by its completion contract",
+        ),
+    ],
+)
+def test_render_classifies_blocked_turns_by_origin(origin: str, expected: str) -> None:
+    """Known block origins are classified without calling contract blocks lifecycle failures."""
+    bundle = _bundle(
+        turns=[
+            _entry(
+                1057,
+                provenance={"source": "observed", "blocked": True, "block_origin": origin},
+            )
+        ]
+    )
+    rendered = render_bundle(bundle)
+    assert f"origin={origin}" in rendered
+    assert expected in rendered
+
+
+def test_render_classifies_unknown_blocked_lifecycle_result() -> None:
+    """A blocked turn with an unknown origin is labelled as such."""
+    bundle = _bundle(
+        turns=[
+            _entry(
+                1058,
+                provenance={
+                    "source": "observed",
+                    "blocked": True,
+                    "block_origin": "fork_failed",
+                },
+            )
+        ]
+    )
+    rendered = render_bundle(bundle)
+    assert "non-guard lifecycle failure named fork_failed" in rendered
+
+
+def test_render_classifies_blocked_turn_when_origin_is_not_recorded() -> None:
+    """A blocked turn with no origin remains unknown, without fabricating a cause."""
+    bundle = _bundle(
+        turns=[
+            _entry(
+                1059,
+                provenance={"source": "observed", "blocked": True},
+            )
+        ]
+    )
+    rendered = render_bundle(bundle)
+    assert "origin=unknown" in rendered
+    assert "non-guard lifecycle failure (origin not recorded)" in rendered
+
+
+def test_render_accounts_for_all_six_sources() -> None:
+    """The Sources section names all six evidence sources."""
+    rendered = render_bundle(_bundle())
+    for source in (
+        "thread store",
+        "decisions log",
+        "token usage log",
+        "approvals log",
+        "errors ledger",
+        "runtime log",
+    ):
+        assert source in rendered
+
+
+def test_unattributed_records_with_no_turn_say_no_turn() -> None:
+    """A record with turn_index=None is labelled 'no turn', never fabricated."""
+    bundle = build_bundle(
+        generated_at=_NOW,
+        turns=[turn_from_entry(*_entry(1))],
+        decisions=[],
+        dispatches=[{"turn_index": None, "target_id": "slice_op", "status": "ok"}],
+        costs=[],
+        log_errors=[],
+        sources=BundleSources(thread_store=True),
+        notes=[],
+    )
+    rendered = render_bundle(bundle)
+    assert "### Unattributed records" in rendered
+    assert "no turn" in rendered
+    assert "turn 0" not in rendered.lower()
 
 
 def test_render_says_when_cost_did_not_join() -> None:

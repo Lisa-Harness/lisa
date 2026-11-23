@@ -476,6 +476,29 @@ class TestThreadReader:
             == "refactor the parser"
         )
 
+    def test_task_view_lifecycle_block(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_active_entry(
+            thread_path,
+            query="operation failed",
+            response_text="lifecycle failure",
+            mode_id="coding",
+            task_id="task-1",
+            provenance={
+                "blocked": True,
+                "block_origin": "lifecycle_failure",
+            },
+        )
+
+        reader = ThreadReader(ThreadStore(thread_path))
+        view = json.loads(reader.task_view("task-1"))
+
+        assert view["status"] == "blocked"
+        assert view["blocker"] == {
+            "kind": "blocked",
+            "origin": "lifecycle_failure",
+        }
+
     def test_task_view_defaults_to_latest_task_and_bounds_output(self, tmp_path: Path) -> None:
         thread_path = tmp_path / "thread"
         refs = ["r" + f"{index:064x}" for index in range(40)]

@@ -70,6 +70,25 @@ async def test_file_recovery_service_begin_and_list_open(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_recovery_record_stage_id_field_is_present_and_currently_empty(
+    tmp_path: Path,
+) -> None:
+    """``RecoveryRecord.stage_id`` survives as a persisted audit field.
+
+    The stage FSM that advanced it is retired, so new records carry the
+    field at its empty default ("no stage") rather than dropping it —
+    pre-removal records with a real stage id still load unchanged.
+    """
+    service = FileRecoveryService(tmp_path / "state" / "recovery-items.json")
+
+    record = await service.begin(_record(target_id="op_stage"))
+
+    assert record.stage_id == ""
+    # The field is present on the model, not removed.
+    assert "stage_id" in RecoveryRecord.model_fields
+
+
+@pytest.mark.asyncio
 async def test_file_recovery_service_settle_succeeded_removes_from_open(tmp_path: Path) -> None:
     service = FileRecoveryService(tmp_path / "state" / "recovery-items.json")
     record = await service.begin(_record(target_id="op_b"))

@@ -112,7 +112,12 @@ def _blocked(entry: dict[str, Any]) -> bool:
     """Return whether a thread entry records a blocked turn."""
     provenance = entry.get("provenance")
     provenance = provenance if isinstance(provenance, dict) else {}
-    return bool(entry.get("blocked") or provenance.get("block_origin"))
+    return bool(
+        entry.get("blocked")
+        or provenance.get("blocked")
+        or entry.get("block_origin")
+        or provenance.get("block_origin")
+    )
 
 
 def _block_origin(entry: dict[str, Any]) -> str:

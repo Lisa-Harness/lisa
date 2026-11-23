@@ -269,6 +269,137 @@ def test_auto_install_raises_on_install_failure(
         auto_install_required_packs(runtime)
 
 
+def test_auto_install_partial_success_is_hard_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed required pack prevents startup even after another pack succeeds."""
+    runtime = _make_runtime(
+        tmp_path,
+        required=["lisa-pack-alpha", "lisa-pack-beta"],
+        auto_install={
+            "lisa-pack-alpha": {
+                "source": "git+https://github.com/Lisa-Harness/lisa-pack-alpha.git@v1.0.0",
+                "pin": "v1.0.0",
+            },
+            "lisa-pack-beta": {
+                "source": "git+https://github.com/Lisa-Harness/lisa-pack-beta.git@v1.0.0",
+                "pin": "v1.0.0",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "runtime.pack_autoinstall._installed_pack_names",
+        lambda runtime: set(),
+    )
+
+    attempted: list[str] = []
+
+    def _fake_install_sync(
+        rt: HostRuntime, spec: str, *, request_restart: bool = True, editable: bool = False
+    ) -> tuple[bool, str]:
+        attempted.append(spec)
+        if "lisa-pack-alpha" in spec:
+            return False, "uv pip install failed: network error"
+        return True, "Installed."
+
+    monkeypatch.setattr(_packs, "run_pack_install_sync", _fake_install_sync)
+    monkeypatch.setattr(
+        "runtime.pack_autoinstall._activate_packs_venv",
+        lambda rt: None,
+    )
+
+    with pytest.raises(RuntimeError, match="install failed"):
+        auto_install_required_packs(runtime)
+
+    assert len(attempted) == 2
+
+
+def test_auto_install_spec_resolution_error_aborts_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A spec-resolution error aborts before any install is attempted.
+
+    Unlike an install failure, an unresolvable spec (unpinned git ref) raises
+    immediately: later packs are not attempted and earlier partial success
+    is not returned.
+    """
+    runtime = _make_runtime(
+        tmp_path,
+        required=["lisa-pack-alpha", "lisa-pack-beta"],
+        auto_install={
+            "lisa-pack-alpha": {
+                "source": "git+https://example.invalid/lisa-pack-alpha.git",
+            },
+            "lisa-pack-beta": {
+                "source": "git+https://example.invalid/lisa-pack-beta.git@v1.0.0",
+                "pin": "v1.0.0",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "runtime.pack_autoinstall._installed_pack_names",
+        lambda runtime: set(),
+    )
+
+    attempted: list[str] = []
+
+    def _fake_install_sync(
+        rt: HostRuntime, spec: str, *, request_restart: bool = True, editable: bool = False
+    ) -> tuple[bool, str]:
+        attempted.append(spec)
+        return True, "Installed."
+
+    monkeypatch.setattr(_packs, "run_pack_install_sync", _fake_install_sync)
+
+    with pytest.raises(RuntimeError, match="pin"):
+        auto_install_required_packs(runtime)
+
+    # The pass aborted before any install ran.
+    assert attempted == []
+
+
+def test_auto_install_trust_policy_error_in_later_spec_aborts_before_any_install(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Every spec is trust-validated before the first install begins."""
+    runtime = _make_runtime(
+        tmp_path,
+        required=["lisa-pack-alpha", "lisa-pack-beta"],
+        auto_install={
+            "lisa-pack-alpha": {
+                "source": "git+https://github.com/Lisa-Harness/lisa-pack-alpha.git@v1.0.0",
+                "pin": "v1.0.0",
+            },
+            "lisa-pack-beta": {
+                "source": "git+https://gitlab.com/Lisa-Harness/lisa-pack-beta.git@v1.0.0",
+                "pin": "v1.0.0",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "runtime.pack_autoinstall._installed_pack_names",
+        lambda runtime: set(),
+    )
+
+    attempted: list[str] = []
+
+    def _fake_install_sync(
+        rt: HostRuntime, spec: str, *, request_restart: bool = True, editable: bool = False
+    ) -> tuple[bool, str]:
+        attempted.append(spec)
+        return True, "Installed."
+
+    monkeypatch.setattr(_packs, "run_pack_install_sync", _fake_install_sync)
+
+    with pytest.raises(RuntimeError, match=r"Git host 'gitlab\.com'"):
+        auto_install_required_packs(runtime)
+
+    assert attempted == []
+
+
 def test_auto_install_raises_on_unpinned_git_ref(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -290,3 +421,134 @@ def test_auto_install_raises_on_unpinned_git_ref(
 
     with pytest.raises(RuntimeError, match="unpinned"):
         auto_install_required_packs(runtime)
+
+
+def test_auto_install_normalizes_underscore_pack_name_lookup() -> None:
+    spec, editable, source_label = _resolve_auto_install_spec(
+        "lisa-pack-beta",
+        {
+            "lisa_pack_beta": PackInstallSpec(
+                source="git+https://github.com/Lisa-Harness/lisa-pack-beta.git@v1.0.0",
+                pin="v1.0.0",
+            )
+        },
+    )
+    assert spec.endswith("#egg=lisa-pack-beta")
+    assert editable is True
+    assert source_label == "auto_install.source"
+
+
+def test_auto_install_rejects_git_egg_name_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _make_runtime(
+        tmp_path,
+        required=["lisa-pack-beta"],
+        auto_install={
+            "lisa-pack-beta": {
+                "source": "git+https://github.com/Lisa-Harness/lisa-go.git@v1.0.0"
+                "#egg=lisa-pack-alpha",
+                "pin": "v1.0.0",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "runtime.pack_autoinstall._installed_pack_names",
+        lambda runtime: set(),
+    )
+    attempted: list[str] = []
+    monkeypatch.setattr(
+        _packs,
+        "run_pack_install_sync",
+        lambda rt, spec, request_restart=False, editable=False: (
+            attempted.append(spec)
+            or (
+                True,
+                "Installed.",
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="names must match"):
+        auto_install_required_packs(runtime)
+
+    assert attempted == []
+
+
+def test_auto_install_rejects_local_project_name_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pack_dir = tmp_path / "lisa-pack-beta"
+    pack_dir.mkdir()
+    (pack_dir / "pyproject.toml").write_text(
+        '[project]\nname = "lisa-pack-beta"\nversion = "0.0.1"\n',
+        encoding="utf-8",
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        required=["lisa-pack-alpha"],
+        auto_install={
+            "lisa-pack-alpha": {
+                "source": str(pack_dir),
+                "editable": True,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "runtime.pack_autoinstall._installed_pack_names",
+        lambda runtime: set(),
+    )
+    attempted: list[str] = []
+    monkeypatch.setattr(
+        _packs,
+        "run_pack_install_sync",
+        lambda rt, spec, request_restart=False, editable=False: (
+            attempted.append(spec)
+            or (
+                True,
+                "Installed.",
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="names must match"):
+        auto_install_required_packs(runtime)
+
+    assert attempted == []
+
+
+def test_auto_install_pinning_is_mandatory_when_general_policy_disables_refs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Auto-install remains pinned even if the general /pack policy is disabled."""
+    monkeypatch.setenv("LISA_PACK_REQUIRE_GIT_REF", "false")
+    runtime = _make_runtime(
+        tmp_path,
+        required=["lisa-pack-cloudflare"],
+        auto_install={
+            "lisa-pack-cloudflare": {
+                "source": "git+https://github.com/Lisa-Harness/lisa-pack-cloudflare.git",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "runtime.pack_autoinstall._installed_pack_names",
+        lambda runtime: set(),
+    )
+    attempted: list[str] = []
+
+    def _fake_install_sync(
+        rt: HostRuntime, spec: str, *, request_restart: bool = True, editable: bool = False
+    ) -> tuple[bool, str]:
+        attempted.append(spec)
+        return True, "Installed."
+
+    monkeypatch.setattr(_packs, "run_pack_install_sync", _fake_install_sync)
+
+    with pytest.raises(RuntimeError, match="unpinned"):
+        auto_install_required_packs(runtime)
+
+    assert attempted == []

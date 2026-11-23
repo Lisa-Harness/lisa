@@ -69,6 +69,21 @@ the threshold do not. Turn/session limits and watchdogs remain applicable.
 Inspect usage, finish reason, reasoning flags, and tool support before
 raising limits; a larger ceiling can prolong runaway generation.
 
+## Streamed-output repetition guard
+
+Streaming turn-loop output is also checked for a sustained sentence-shape
+loop. `STREAM_REPETITION_LINE_LIMIT` (default **64**) stops the stream once
+that many structurally identical non-empty lines appear within
+`STREAM_REPETITION_WINDOW_CHARS` (default **16384**). Inline quoted or
+backticked literals and numbers are normalized, so changing filenames or
+numbers does not disguise the same repeated line. A zero line limit disables
+the guard.
+
+A stopped stream finishes with `finish_reason="repetition"`; it is not retried
+at a doubled token allowance. The full partial completion remains archived,
+while the terminal response contains only a bounded sample controlled by
+`STREAM_REPETITION_EXCERPT_CHARS` (default **800**).
+
 ## Turn and session execution limits
 
 Session `execution` requests tighten the host envelope; they do not grant

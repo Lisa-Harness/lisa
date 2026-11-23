@@ -57,10 +57,11 @@ _DIRECTORY_OPEN_FLAGS = (
 
 logger = logging.getLogger(__name__)
 
-#: Suffixes whose bytes are not text. A file with one of these suffixes is
-#: stored exactly as given — normalizing its trailing bytes would corrupt
-#: the format (a PNG's final byte is part of its IEND chunk, a DB's page
-#: layout is byte-exact).
+#: Suffixes whose payloads are not treated as text. A file with one of
+#: these suffixes skips newline normalization — normalizing a real binary
+#: format's trailing bytes would corrupt it (a PNG's final byte is part of
+#: its IEND chunk, a DB's page layout is byte-exact). The payload is still
+#: a text string encoded as UTF-8; this is not a byte-oriented API.
 _BINARY_SUFFIXES = frozenset(
     {
         ".png",
@@ -250,9 +251,10 @@ def _atomic_replace(target: Path, payload: bytes) -> str | None:
     The new bytes are staged in a temporary file in the *same* directory —
     ``os.replace`` is atomic only within a filesystem — then swapped in. A
     failure part-way through leaves the original file intact rather than
-    truncated, which is what makes an interrupted edit safe. The temp file
-    is removed on any failure path so the sandbox never accumulates
-    half-written copies.
+    truncated, which is what makes an interrupted edit safe. Temp-file
+    cleanup is best-effort: a cleanup ``OSError`` is suppressed so it
+    cannot mask the primary result, and a failed cleanup can leave a
+    temporary file behind.
     """
     temporary_path: Path | None = None
     try:
@@ -484,9 +486,11 @@ class StorageBackend:
         ``trailing_newline_added`` so the caller knows the stored bytes
         differ from the bytes it sent.
 
-        Binary content — a path with a binary suffix, or a payload that
-        is not valid UTF-8 — is stored exactly as given. Normalizing
-        those bytes would corrupt the format.
+        A path with a binary suffix only suppresses newline
+        normalization for an otherwise valid text string; the payload is
+        still UTF-8 encoded and this is not a byte-oriented API. A
+        payload that is not valid UTF-8 (a lone surrogate) is rejected
+        with an error rather than written.
 
         Returns a JSON object with ``ok``, ``path``, ``bytes``, and
         ``trailing_newline_added``.
@@ -562,10 +566,12 @@ class StorageBackend:
         lists the line numbers so the caller can add context. With
         ``replace_all`` true every occurrence is replaced.
 
-        ``expected_sha256`` is the staleness guard. Pass the ``sha256`` a
-        prior ``stat_file`` reported and the edit is refused if the file
-        changed in between, so an edit can never be applied against a
-        document the caller read in an earlier revision.
+        ``expected_sha256`` is an optional read-time staleness guard.
+        Pass the ``sha256`` a prior ``stat_file`` reported and the edit is
+        refused if the file already changed when it is read. The check and
+        the replacement are separate steps with no lock or compare-and-swap
+        between them, so a concurrent writer can still modify the file in
+        that window; omitting the hash is supported.
 
         The write is atomic (temp file in the same directory, then
         ``os.replace``): a failure part-way through leaves the original

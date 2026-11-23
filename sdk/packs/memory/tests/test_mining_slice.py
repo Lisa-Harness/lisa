@@ -18,7 +18,6 @@ import pytest
 import zstandard
 from kernel.slice import SliceMode, SlicePolicy
 from sdk.packs.memory.mining_slice import (
-    _LAST_MINED_SEGMENT_FILE_NAME,
     MemoryMiningSlice,
     MemoryMiningSliceConfig,
     get_slice_provider_factory,
@@ -30,8 +29,14 @@ def _config(
     *,
     memory_data_dir: Path | None = None,
     user_slug: str = "adam",
+    thread_store_slug: str | None = None,
+    thread_path: Path | None = None,
     max_segments_per_slice: int = 2,
 ) -> MemoryMiningSliceConfig:
+    resolved_slug = thread_store_slug or user_slug
+    resolved_thread_path = thread_path
+    if resolved_thread_path is None and memory_data_dir is not None:
+        resolved_thread_path = memory_data_dir / "threads" / resolved_slug
     return MemoryMiningSliceConfig(
         enabled=True,
         preferred_model_id="default",
@@ -39,6 +44,8 @@ def _config(
         max_segments_per_slice=max_segments_per_slice,
         memory_data_dir=memory_data_dir,
         user_slug=user_slug,
+        thread_store_slug=resolved_slug,
+        thread_path=resolved_thread_path,
     )
 
 
@@ -89,9 +96,52 @@ def test_missing_marker_root_is_a_noop() -> None:
     slc._persist_mine_marker("0001")
 
 
+def test_marker_isolated_by_thread_store(tmp_path: Path) -> None:
+    adam = MemoryMiningSlice(
+        config=_config(
+            memory_data_dir=tmp_path,
+            user_slug="adam",
+            thread_store_slug="adam",
+        ),
+        turn_hooks=_FakeHooks(),
+    )
+    bob = MemoryMiningSlice(
+        config=_config(
+            memory_data_dir=tmp_path,
+            user_slug="adam",
+            thread_store_slug="adam--conversation-b",
+        ),
+        turn_hooks=_FakeHooks(),
+    )
+
+    assert adam._mine_marker_path() != bob._mine_marker_path()
+    assert adam._thread_base() != bob._thread_base()
+
+
+def test_mining_uses_resolved_custom_thread_path(tmp_path: Path) -> None:
+    custom_thread = tmp_path / "custom" / "adam--conversation"
+    slc = MemoryMiningSlice(
+        config=_config(
+            memory_data_dir=tmp_path,
+            user_slug="adam",
+            thread_store_slug="adam--conversation",
+            thread_path=custom_thread,
+        ),
+        turn_hooks=_FakeHooks(),
+    )
+
+    assert slc._thread_base() == custom_thread
+    assert slc._mine_marker_path() == custom_thread.with_name(f"{custom_thread.name}.mine.marker")
+
+
 def test_marker_io_failures_are_reported(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).mkdir()
-    slc = MemoryMiningSlice(config=_config(memory_data_dir=tmp_path), turn_hooks=_FakeHooks())
+    slc = MemoryMiningSlice(
+        config=_config(memory_data_dir=tmp_path, user_slug="adam"),
+        turn_hooks=_FakeHooks(),
+    )
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    marker.mkdir(parents=True)
 
     assert slc._load_last_mined_seg_id() == ""
     slc._persist_mine_marker("0001")
@@ -177,7 +227,9 @@ async def test_mines_new_segment_and_advances_marker(tmp_path: Path) -> None:
     assert outcome.last_item == "mined:0001(0-2)->2"
     assert hooks.op_calls[0][0] == "mine_thread_segment"
     assert len(hooks.op_calls[0][1]["turns"]) == 3
-    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0001"
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    assert marker.read_text().strip() == "0001"
 
 
 @pytest.mark.asyncio
@@ -185,10 +237,13 @@ async def test_marker_present_skips_mined_segment(tmp_path: Path) -> None:
     hooks = _FakeHooks()
     base = _thread_base(tmp_path)
     _write_segment_fixture(base)
-    (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).write_text("0001", encoding="utf-8")
     slc = MemoryMiningSlice(
         config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks
     )
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("0001", encoding="utf-8")
 
     outcome = await slc.slice(None, _policy())
 
@@ -205,10 +260,13 @@ async def test_marker_id_missing_from_index_remines_from_start(tmp_path: Path) -
     hooks = _FakeHooks()
     base = _thread_base(tmp_path)
     _write_segment_fixture(base)
-    (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).write_text("zzzz", encoding="utf-8")
     slc = MemoryMiningSlice(
         config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks
     )
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("zzzz", encoding="utf-8")
 
     outcome = await slc.slice(None, _policy())
 
@@ -244,7 +302,9 @@ async def test_unreadable_segment_advances_marker_without_op(tmp_path: Path) -> 
 
     assert outcome.work_items_completed == 0
     assert hooks.op_calls == []
-    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0001"
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    assert marker.read_text().strip() == "0001"
 
 
 @pytest.mark.asyncio
@@ -279,7 +339,9 @@ async def test_operation_failure_exhausts_attempts_then_advances_marker(
     # The poisoned segment got its full attempt budget, then the pass moved on
     # to the next segment (which also fails its attempts) — no starvation.
     assert hooks.calls == 2 * 2
-    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0002"
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    assert marker.read_text().strip() == "0002"
     assert any("advancing the marker past it" in record.message for record in caplog.records)
 
 
@@ -312,7 +374,9 @@ async def test_transient_failure_retries_in_pass_and_mines(
     # op_calls records only successful dispatches (the fail-once raise skips
     # the super's recording): 0001 then 0002.
     assert [params["turns"][0]["turn"] for _, params in hooks.op_calls] == [0, 2]
-    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0002"
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    assert marker.read_text().strip() == "0002"
 
 
 class _StatusSwitchHooks(_FakeHooks):
@@ -368,7 +432,9 @@ async def test_error_result_skips_segment_after_attempts(
     # fails retries identically) but no longer strands it: the marker
     # advances so the pass — and future passes — continue past it.
     assert outcome.work_items_completed == 0
-    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0001"
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    assert marker.read_text().strip() == "0001"
     assert any("segment(s) failed" in note for note in outcome.notes)
 
 
@@ -386,7 +452,9 @@ async def test_all_skip_result_advances_marker(tmp_path: Path) -> None:
     outcome = await slc.slice(None, _policy())
 
     assert outcome.work_items_completed == 1
-    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0001"
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    assert marker.read_text().strip() == "0001"
 
 
 @pytest.mark.asyncio
@@ -406,7 +474,9 @@ async def test_storage_failure_does_not_stop_the_pass_after_prior_success(
     outcome = await slc.slice(None, _policy())
 
     assert outcome.work_items_completed == 1
-    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0002"
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    assert marker.read_text().strip() == "0002"
     assert len(hooks.op_calls) == 2
     assert any("1 segment(s) failed" in note for note in outcome.notes)
 
@@ -427,7 +497,9 @@ async def test_segments_capped_per_slice(tmp_path: Path) -> None:
     outcome = await slc.slice(None, _policy())
 
     assert outcome.work_items_completed == 2
-    assert (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).read_text().strip() == "0002"
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    assert marker.read_text().strip() == "0002"
 
 
 @pytest.mark.asyncio
@@ -459,7 +531,98 @@ async def test_expired_budget_does_not_advance_the_marker(tmp_path: Path) -> Non
 
     assert (completed, last_item, mined, failed) == (0, "", 0, 0)
     assert hooks.op_calls == []
-    assert not (tmp_path / _LAST_MINED_SEGMENT_FILE_NAME).exists()
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_marker_persistence_failure_leaves_segment_pending(
+    tmp_path: Path,
+) -> None:
+    """A `mine.marker` write failure leaves the segment pending.
+
+    The marker advances after every attempted segment, but the write itself
+    is best-effort: when it fails the segment stays pending and the next
+    pass re-attempts it (write-time dedup makes that safe). This is the
+    pending class that is distinct from the advance branches — success,
+    all-skip, unreadable segment, attempt-cap exhaustion, and operation
+    `status="error"` all advance the marker past the segment.
+    """
+    hooks = _FakeHooks()
+    base = _thread_base(tmp_path)
+    _write_segment_fixture(base, seg_id="0001", turns=(0, 1))
+    slc = MemoryMiningSlice(config=_config(memory_data_dir=tmp_path), turn_hooks=hooks)
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    marker.mkdir(parents=True)
+
+    completed, _last_item, _mined, _failed = await slc._mine_new_segments(
+        _policy(), time.monotonic()
+    )
+
+    # The segment was mined (the operation ran) but the marker write failed,
+    # so the segment stays pending for the next pass.
+    assert completed == 1
+    assert len(hooks.op_calls) == 1
+    assert slc._load_last_mined_seg_id() == ""
+
+
+@pytest.mark.asyncio
+async def test_marker_persistence_failure_stops_before_later_segment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed marker write must not let a later segment advance past this one."""
+    hooks = _FakeHooks()
+    base = _thread_base(tmp_path)
+    _write_segment_fixture(base, seg_id="0001", turns=(0, 1))
+    _write_segment_fixture(base, seg_id="0002", turns=(2, 3))
+    slc = MemoryMiningSlice(
+        config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks
+    )
+    original_write_text = Path.write_text
+
+    def _fail_first_marker_write(
+        path: Path,
+        data: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> int:
+        if path.name == "adam.mine.marker" and data == "0001":
+            raise OSError("marker write failed")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _fail_first_marker_write)
+
+    completed, _last_item, _mined, _failed = await slc._mine_new_segments(
+        _policy(), time.monotonic()
+    )
+
+    assert completed == 1
+    assert len(hooks.op_calls) == 1
+    assert slc._load_last_mined_seg_id() == ""
+
+
+@pytest.mark.asyncio
+async def test_unreadable_marker_failure_stops_before_later_segment(tmp_path: Path) -> None:
+    """A unreadable segment with a failed marker write stops the pass."""
+    hooks = _FakeHooks()
+    base = _thread_base(tmp_path)
+    record = SegmentRecord("0001", 0, 2, "", "", 10, 5)
+    Path(f"{base}.index.jsonl").write_text(json.dumps(record.to_dict()) + "\n", encoding="utf-8")
+    slc = MemoryMiningSlice(
+        config=_config(memory_data_dir=tmp_path, user_slug="adam"), turn_hooks=hooks
+    )
+    marker = slc._mine_marker_path()
+    assert marker is not None
+    marker.mkdir(parents=True)
+
+    outcome = await slc.slice(None, _policy())
+
+    assert outcome.work_items_completed == 0
+    assert hooks.op_calls == []
+    assert slc._load_last_mined_seg_id() == ""
 
 
 @pytest.mark.asyncio

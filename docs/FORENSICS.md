@@ -3,11 +3,11 @@
 How to read the evidence for a past turn — and what that evidence does and
 does not prove.
 
-Lisa records four kinds of durable evidence about a turn. They are written by
+Lisa records six kinds of durable evidence about a turn. They are written by
 different components, for different reasons, and any single one of them
 answers only part of the question. Forensics is the act of joining them.
 
-## The five sources
+## The six sources
 
 | Source | Written by | Answers |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ named under **missing**; "no warnings" and "I could not read the log" are
 different answers, and only one of them is safe to act on.
 
 The thread is the primary record: it is lossless, append-only, and segmented.
-The other four are telemetry around it. The approval ledger is one row per
+The other five are telemetry around it. The approval ledger is one row per
 state *transition*, not per request: a single approval can contribute
 requested → approved → consumed, and the bundle groups those by
 `request_id` into the decision's lifecycle. A policy auto-allow records
@@ -96,7 +96,7 @@ counts them. The note is a lower bound and rows predating the stamps are
 skipped, not reported — the same honest posture as pre-attribution ledger
 rows. See [loss observability](LOGGING.md#loss-observability).
 
-### Distinguish the three failure shapes
+### Distinguish the four failure shapes
 
 | Shape | Meaning |
 | --- | --- |
@@ -105,8 +105,13 @@ rows. See [loss observability](LOGGING.md#loss-observability).
 | **Rejected dispatch** | The call never ran: the registry refused it before execution (invalid parameters, mode allowlist, unknown id). Published to the dispatch ledger with `duration 0 ms`, so it appears in the dispatch section like any other failure |
 | **Degraded operation** | Completed with warnings; the status is `degraded`, not `error` |
 
-They have different causes and different fixes. A blocked turn is a routing or
-contract problem; a failed dispatch is a capability problem.
+They have different causes and different fixes. A blocked turn's cause is
+its `block_origin`: `capability_gate` means the capability gate refused the
+turn's target, `input_guard` and `output_guard` mean a guard blocked the
+request or replaced the response, `task_completion` means the turn did not
+satisfy its task completion contract, and `no_tools` means it made no verified
+action-tool write required by that contract. Any other origin is a non-guard
+lifecycle failure. A failed dispatch is a capability problem.
 
 ## What the reader will not do
 
@@ -225,7 +230,9 @@ not budget-bound.
 
 ## Verifying a claim
 
-Every line in a bundle names its turn. Before acting on a conclusion —
+Turn-specific claims in a bundle name their turn; totals, process logs, and
+unattributed rows are explicitly labelled as such, and missing attribution
+stays missing. Before acting on a conclusion —
 especially "this keeps happening" — confirm it against the primary record:
 
 ```text
@@ -248,8 +255,10 @@ sealed segment, so it is an explicit audit — never the default read.
 
 Honest limits: it detects after-the-fact edits and deletions (an attacker
 must coherently rewrite everything after the edit point, including the
-index); it cannot detect a full-store rewrite by an attacker who controls
-the files, or tampering with the *newest* entry — nothing links to it yet,
+index), and a sealed segment's terminal entry is independently anchored by
+its index `tail_sha256`; it cannot detect a full-store rewrite by an
+attacker who controls the files, or tampering with the newest entry of the
+*active* segment — nothing links to it yet and no index anchor exists,
 which is why the note also reports the chain head, the value to notarize
 externally. History predating the chain is reported as pre-chain, never
 pretended to be checked.

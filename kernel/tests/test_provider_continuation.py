@@ -13,6 +13,51 @@ from kernel.turn_runner import ContextSeams, _record_iteration_completion, run_t
 
 
 @pytest.mark.asyncio
+async def test_repetition_completion_drops_stitched_tool_calls() -> None:
+    completion = CompletionResult(
+        content="Repeated.",
+        provider="openai",
+        model_id="test",
+        display_name="Test",
+        tool_calls=[
+            {"id": "call_1", "function": {"name": "write_file", "arguments": '{"path":"a"}'}}
+        ],
+        finish_reason="repetition",
+    )
+    state = SimpleNamespace(
+        total_prompt_tokens=0,
+        total_completion_tokens=0,
+        total_tokens=0,
+        total_cached_tokens=0,
+        total_reasoning_tokens=0,
+        total_cache_creation_tokens=0,
+        total_duration_ms=0.0,
+        total_latency_ms=0.0,
+        iteration=1,
+        intra_turn_compaction=IntraTurnCompactionState(),
+        intra_turn_compaction_estimator=LiveArrayEstimator(),
+        truncation_tripped=False,
+        request_context_budget=None,
+    )
+    messages: list[dict[str, object]] = []
+
+    await _record_iteration_completion(
+        state=state,
+        hooks=TurnHooks(),
+        mode_id="default",
+        max_tool_iterations=5,
+        messages=messages,
+        completion=completion,
+        effective_model_def=completion,
+        record_model_usage=Mock(),
+        emit_stage=AsyncMock(),
+    )
+
+    assert completion.tool_calls == []
+    assert "tool_calls" not in messages[-1]
+
+
+@pytest.mark.asyncio
 async def test_recording_completion_keeps_provider_context_separate_from_prose() -> None:
     continuation = ProviderContinuation(
         provider="azure_openai",

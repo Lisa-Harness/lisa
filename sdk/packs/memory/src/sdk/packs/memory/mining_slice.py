@@ -93,6 +93,9 @@ class MemoryMiningSliceConfig:
     max_segments_per_slice: int
     memory_data_dir: Path | None = None
     user_slug: str = "default"
+    thread_store_slug: str = "default"
+    thread_path: Path | None = None
+    thread_dir: Path | None = None
     workspace_id: str = "default"
     memory_scope: str = "personal"
     surface_id: str = ""
@@ -115,10 +118,10 @@ class MemoryMiningSlice:
 
     def _mine_marker_path(self) -> Path | None:
         """Path of the ``mine.marker`` sidecar, or ``None`` when unlocatable."""
-        data_dir = self._config.memory_data_dir
-        if data_dir is None:
+        thread_path = self._config.thread_path
+        if thread_path is None:
             return None
-        return Path(data_dir) / _LAST_MINED_SEGMENT_FILE_NAME
+        return thread_path.with_name(f"{thread_path.name}.mine.marker")
 
     def _load_last_mined_seg_id(self) -> str:
         path = self._mine_marker_path()
@@ -130,23 +133,22 @@ class MemoryMiningSlice:
             logger.warning("memory_mining: failed to read mine.marker: %s", exc)
             return ""
 
-    def _persist_mine_marker(self, seg_id: str) -> None:
+    def _persist_mine_marker(self, seg_id: str) -> bool:
         path = self._mine_marker_path()
         if path is None or not seg_id:
-            return
+            return False
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(seg_id, encoding="utf-8")
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("memory_mining: failed to persist mine.marker: %s", exc)
+            return False
+        return True
 
     # ── Thread store access ──────────────────────────────────────────
 
     def _thread_base(self) -> Path | None:
-        data_dir = self._config.memory_data_dir
-        if data_dir is None or not self._config.user_slug:
-            return None
-        return Path(data_dir) / "threads" / self._config.user_slug
+        return self._config.thread_path
 
     def _segment_index(self, base: Path) -> list[dict[str, Any]]:
         """Read the thread store's sparse segment index as decoded records."""
@@ -248,6 +250,7 @@ class MemoryMiningSlice:
             workspace_id=self._config.workspace_id,
             user_id=self._config.user_slug,
             user_slug=self._config.user_slug,
+            thread_store_slug=self._config.thread_store_slug,
             principal_key=self._config.user_slug,
             surface_id=self._config.surface_id,
             memory_scope=self._config.memory_scope,  # type: ignore[arg-type]
@@ -307,7 +310,8 @@ class MemoryMiningSlice:
             turns = self._load_segment_turns(base, seg_id, turn_lo, turn_hi)
             if not turns:
                 # Segment unreadable — advance the marker so it is not retried.
-                self._persist_mine_marker(seg_id)
+                if not self._persist_mine_marker(seg_id):
+                    break
                 continue
             op_ctx.params = {
                 "turns": turns,
@@ -319,13 +323,14 @@ class MemoryMiningSlice:
             outcome_ok, outcome_item = await self._mine_one_segment(
                 exec_op, op_ctx, seg_id=seg_id, turn_lo=turn_lo, turn_hi=turn_hi
             )
-            self._persist_mine_marker(seg_id)
             if outcome_ok:
                 work_items += 1
                 last_item = outcome_item
-                continue
-            failed += 1
-            last_item = outcome_item
+            else:
+                failed += 1
+                last_item = outcome_item
+            if not self._persist_mine_marker(seg_id):
+                break
         return work_items, last_item, work_items, failed
 
     async def _mine_one_segment(
@@ -443,6 +448,9 @@ def get_slice_provider_factory() -> SliceProviderFactory:
             return None
         memory_data_dir = getattr(turn_hooks, "memory_data_dir", None)
         user_slug = str(getattr(turn_hooks, "user_slug", "") or "")
+        thread_store_slug = str(getattr(turn_hooks, "thread_store_slug", "") or user_slug)
+        thread_path = getattr(turn_hooks, "thread_path", None)
+        thread_dir = getattr(turn_hooks, "thread_dir", None)
         config = MemoryMiningSliceConfig(
             enabled=bool(tuning.enabled),
             preferred_model_id=str(tuning.preferred_model_id),
@@ -452,6 +460,9 @@ def get_slice_provider_factory() -> SliceProviderFactory:
             ),
             memory_data_dir=Path(memory_data_dir) if memory_data_dir else None,
             user_slug=user_slug,
+            thread_store_slug=thread_store_slug,
+            thread_path=Path(thread_path) if thread_path else None,
+            thread_dir=Path(thread_dir) if thread_dir else None,
             workspace_id=str(getattr(turn_hooks, "workspace_id", "") or "default"),
             memory_scope=str(getattr(turn_hooks, "memory_scope", "") or "personal"),
             surface_id=str(getattr(turn_hooks, "surface_id", "") or ""),

@@ -94,6 +94,38 @@ def test_a_child_thread_entry_carries_both_parent_keys(tmp_path: Path) -> None:
     assert entry["parent_dispatch_id"] == _PARENT_DISPATCH_ID
 
 
+def test_thread_entry_carries_top_level_task_id(tmp_path: Path) -> None:
+    entry = _append(tmp_path / "thread.jsonl", task_id="task-1")
+    assert entry["task_id"] == "task-1"
+
+
+def test_resumed_child_identity_preserves_parent_keys(tmp_path: Path) -> None:
+    entry = _append(
+        tmp_path / "thread.jsonl",
+        turn_id=_TURN_ID,
+        parent_turn_id=_PARENT_TURN_ID,
+        parent_dispatch_id=_PARENT_DISPATCH_ID,
+        task_id="task-1",
+    )
+    assert entry["turn_id"] == _TURN_ID
+    assert entry["parent_turn_id"] == _PARENT_TURN_ID
+    assert entry["parent_dispatch_id"] == _PARENT_DISPATCH_ID
+    assert entry["task_id"] == "task-1"
+
+
+def test_child_thread_entry_carries_task_and_parent_identity(tmp_path: Path) -> None:
+    entry = _append(
+        tmp_path / "thread.jsonl",
+        task_id="task-1",
+        turn_id=_TURN_ID,
+        parent_turn_id=_PARENT_TURN_ID,
+        parent_dispatch_id=_PARENT_DISPATCH_ID,
+    )
+    assert entry["task_id"] == "task-1"
+    assert entry["parent_turn_id"] == _PARENT_TURN_ID
+    assert entry["parent_dispatch_id"] == _PARENT_DISPATCH_ID
+
+
 def test_an_entry_written_without_a_turn_id_omits_the_key(tmp_path: Path) -> None:
     """A turn with no execution identity says so by omission, not an empty string.
 

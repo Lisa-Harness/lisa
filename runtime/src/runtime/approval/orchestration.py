@@ -376,11 +376,14 @@ def _thread_entries(runtime: HostRuntime) -> list[dict[str, Any]]:
         next_turn_index,
     )
 
+    thread_path = runtime.paths.thread_path
+    if thread_path is None:
+        return []
     return list(
         load_thread_range(
-            thread_path=runtime.paths.thread_path,
+            thread_path=thread_path,
             start_turn=0,
-            end_turn=next_turn_index(thread_path=runtime.paths.thread_path),
+            end_turn=next_turn_index(thread_path=thread_path),
         )
     )
 
@@ -414,11 +417,14 @@ def _origin_request_query(runtime: HostRuntime, request_id: str) -> str:
             break
     if paused is None:
         return ""
-    task_id = str((paused.get("provenance") or {}).get("task_id") or "")
+    paused_provenance = paused.get("provenance") or {}
+    task_id = str(paused.get("task_id") or paused_provenance.get("task_id") or "")
     if not task_id:
         return str(paused.get("query") or "")
     for entry in entries:
-        if str((entry.get("provenance") or {}).get("task_id") or "") != task_id:
+        provenance = entry.get("provenance") or {}
+        entry_task_id = str(entry.get("task_id") or provenance.get("task_id") or "")
+        if entry_task_id != task_id:
             continue
         query = str(entry.get("query") or "")
         if query.startswith("/"):  # host commands such as ``/approve <id>``
@@ -491,7 +497,8 @@ async def _record_and_continue_after_approval(
     owner_mode = invocation.identity.mode_id or runtime.session.current_mode_id or "default"
     mode = get_workflow_catalog().get(owner_mode)
     paused_entry = _paused_approval_entry(runtime, invocation.request_id)
-    task_id = str(((paused_entry or {}).get("provenance") or {}).get("task_id") or "")
+    paused_provenance = (paused_entry or {}).get("provenance") or {}
+    task_id = str((paused_entry or {}).get("task_id") or paused_provenance.get("task_id") or "")
 
     # ── Thread record for the approved action ────────────────────────
     # No model call was made (the registry executed the saved invocation
@@ -512,6 +519,7 @@ async def _record_and_continue_after_approval(
         turn_id=str((paused_entry or {}).get("turn_id") or "") or None,
         parent_turn_id=str((paused_entry or {}).get("parent_turn_id") or "") or None,
         parent_dispatch_id=str((paused_entry or {}).get("parent_dispatch_id") or "") or None,
+        task_id=task_id,
         provenance={
             "source": "host-approved-failed" if error else "host-approved",
             "finish_reason": "approved-action-failed" if error else "approved-action",
@@ -768,7 +776,8 @@ async def _execute_approved_with_settlement(
         immediately (re-approval request or failure text).
     """
     paused_entry = _paused_approval_entry(runtime, request_id)
-    task_id = str(((paused_entry or {}).get("provenance") or {}).get("task_id") or "")
+    paused_provenance = (paused_entry or {}).get("provenance") or {}
+    task_id = str((paused_entry or {}).get("task_id") or paused_provenance.get("task_id") or "")
     # The approved action runs inside the paused turn's execution, so the hooks
     # it publishes through carry that execution's id and lineage (Evidence
     # Envelope §4). Without them every ledger row published on this path records
@@ -987,9 +996,8 @@ async def _continue_approved_record(
     auto_approved: bool,
 ) -> str | HostCommandResult:
     paused_entry = _paused_approval_entry(runtime, request_id)
-    saved = load_continuation(
-        runtime.paths.thread_path, (paused_entry or {}).get("provenance") or {}
-    )
+    continuation_path = runtime.paths.thread_path or runtime.paths.ephemeral_results_path
+    saved = load_continuation(continuation_path, (paused_entry or {}).get("provenance") or {})
     if saved is not None:
         if saved.approval_request_id != request_id:
             raise ValueError("The saved turn does not own this approval.")

@@ -293,7 +293,9 @@ def _provider_slug(raw: str) -> str:
     SDK infers provider ids from directory names while ``mode_provider_id``
     carries the full package name.
     """
-    value = (raw or "").strip().lower().replace("_", "-")
+    from kernel.extension_names import normalize_pack_name
+
+    value = normalize_pack_name(raw or "")
     return value.removeprefix(_PROVIDER_PREFIX)
 
 

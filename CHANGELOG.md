@@ -4,11 +4,31 @@ All notable changes to the Lisa Harness will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-22
+
 ### Changed
 
 - Main is now the sole integration branch and pull requests must land with
   rebase-and-merge so logical commits stay visible. Every PR validates release
   metadata and builds and checks all distributions before the merge gate.
+
+### Fixed
+
+- Streaming turns now stop sustained sentence-shape repetition with a bounded
+  terminal response, preserve the full partial completion in the model-call
+  archive, and avoid retrying or synthesizing a forced tool call after the
+  circuit breaker stops the stream.
+- Required-pack auto-install now prevalidates every spec, requires a pin for
+  git sources regardless of the general install-policy environment, and stops
+  startup if any required pack fails. Memory mining stops marker advancement
+  on marker-write failure and uses a conversation-specific thread-store checkpoint.
+- Blocked-turn forensics now identify capability gates, input/output guards,
+  task-completion contracts, and missing verified action-tool writes by their
+  actual origin. Turn attribution also remains honest for totals, process logs,
+  and unattributed records.
+- Storage, routing, thread integrity, evidence-envelope, model-call archive,
+  turn-replay, sandbox, session, and troubleshooting documentation now state
+  their verified implementation boundaries and characterization limits.
 
 ## [0.6.0] - 2026-11-19
 

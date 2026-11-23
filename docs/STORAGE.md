@@ -63,19 +63,21 @@ the model can call them.
 
 ### Write contract
 
-`write_file` stores **text** content newline-terminated. A POSIX text file
-ends with a newline, and a file whose final byte is missing reads back as
-if its last line were cut off — `cat` glued the shell prompt onto the
-last line of a session plan on 2026-10-19. The receipt reports
+`write_file` stores **non-empty text** content newline-terminated. A POSIX
+text file ends with a newline, and a file whose final byte is missing reads
+back as if its last line were cut off — `cat` glued the shell prompt onto
+the last line of a session plan on 2026-10-19. The receipt reports
 `trailing_newline_added` so the caller knows the stored bytes differ from
 the bytes it sent, and `bytes` reports the size of the bytes actually
-stored.
+stored. Empty text is the exception: an empty write stays an empty file
+and gains no newline.
 
-The rule applies to text only. Content whose path carries a binary
-suffix (`.png`, `.db`, `.pdf`, …) is stored byte-for-byte: those formats
-put significant data in their final bytes, and normalizing them corrupts
-the file. Content that is not valid UTF-8 is rejected with an error
-rather than written — a lone surrogate cannot be encoded as a text file.
+The newline rule applies to text only, and the input is text — there is no
+byte-oriented API. A path with a binary suffix (`.png`, `.db`, `.pdf`, …)
+only suppresses newline normalization for an otherwise valid text string;
+the payload is still UTF-8 encoded. This is not a byte-for-byte
+arbitrary-binary round trip. Content that is not valid UTF-8 — a lone
+surrogate, for example — is rejected with an error rather than written.
 
 `append_file` appends exactly the bytes it is given. Its receipt reports
 `bytes` (the resulting file size) **and** `appended_bytes` (what this
@@ -98,13 +100,18 @@ removes that reconstruction entirely.
   passes `replace_all`. A multi-site match returns the candidate line
   numbers and writes nothing, so the caller adds context instead of the
   tool guessing a site.
-- **The edit is bound to a revision.** `stat_file` reports `sha256`, and
-  passing it as `expected_sha256` makes the edit fail if the file changed
-  since. An edit can never apply against a document read in an earlier
-  revision.
-- **The write is atomic.** New bytes are staged beside the target and
-  swapped in with `os.replace`, so an interrupted edit leaves the original
-  intact instead of truncated, and no temporary file survives.
+- **The revision guard is optional and checked at read time.** `stat_file`
+  reports `sha256`; passing it as `expected_sha256` makes the edit fail if
+  the file already changed when it is read. The check and the replacement
+  are separate steps with no lock or compare-and-swap between them, so a
+  concurrent writer can still modify the file in that window. Omitting the
+  hash is supported: the edit then applies without a revision check.
+- **The write is atomic; cleanup is best-effort.** New bytes are staged
+  beside the target and swapped in with `os.replace`, so an interrupted
+  edit leaves the original intact instead of truncated. The staged
+  temporary file is removed on failure paths, but a cleanup error is
+  suppressed so it cannot mask the primary result — a failed cleanup can
+  therefore leave a temporary file behind.
 
 Passing `new_string` as empty deletes the matched region. `edit_file` adds
 no newline normalization: the fragment's edges are part of the match, so

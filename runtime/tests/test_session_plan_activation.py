@@ -128,6 +128,85 @@ def test_session_pack_selection_overrides_lock_default_without_overriding_host_m
     assert core_root in excluded_roots
 
 
+def _dedup_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    entry_point_roots: list[Path],
+    packs_venv_roots: list[Path],
+) -> None:
+    """Patch discovery so `active_installed_pack_roots` sees the given roots."""
+    monkeypatch.setattr(
+        content_roots,
+        "always_on_pack_names",
+        lambda _path=None, **_kwargs: set(),
+    )
+    monkeypatch.setattr(
+        "kernel.content_roots.discover_installed_content_roots",
+        lambda: entry_point_roots,
+    )
+    monkeypatch.setattr(
+        "kernel.content_roots.discover_packs_venv_content_roots",
+        lambda *args, **kwargs: packs_venv_roots,
+    )
+
+
+def test_same_package_in_both_venvs_dedups_preferring_packs_venv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A pack installed in both venvs does not collide: one root survives.
+
+    The packs-venv root is the authoritative home for external packs, so it
+    wins over the accidental main-venv copy. Same-package duplicates are
+    deduplicated by normalized package name, not a boot collision.
+    """
+    main_venv_root = tmp_path / "main-venv" / "lisa_packs" / "cloudflare"
+    packs_venv_root = tmp_path / "packs-venv" / "lisa_packs" / "cloudflare"
+    main_venv_root.mkdir(parents=True)
+    packs_venv_root.mkdir(parents=True)
+    _dedup_fixture(
+        monkeypatch,
+        tmp_path,
+        entry_point_roots=[main_venv_root],
+        packs_venv_roots=[packs_venv_root],
+    )
+
+    roots = content_roots.active_installed_pack_roots(
+        tmp_path, session_pack_include=["lisa-pack-cloudflare"]
+    )
+
+    assert roots == [packs_venv_root]
+
+
+def test_distinct_package_ids_are_not_deduplicated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Two genuinely distinct packages both survive dedup.
+
+    Deduplication keys on the package name; distinct package IDs shipping
+    the same operation or tool ID are a catalog collision requiring a
+    `providers` declaration, not something root dedup resolves.
+    """
+    root_a = tmp_path / "main-venv" / "lisa_packs" / "alpha"
+    root_b = tmp_path / "packs-venv" / "lisa_packs" / "beta"
+    root_a.mkdir(parents=True)
+    root_b.mkdir(parents=True)
+    _dedup_fixture(
+        monkeypatch,
+        tmp_path,
+        entry_point_roots=[root_a],
+        packs_venv_roots=[root_b],
+    )
+
+    roots = content_roots.active_installed_pack_roots(
+        tmp_path, session_pack_include=["lisa-pack-alpha", "lisa-pack-beta"]
+    )
+
+    assert set(roots) == {root_a, root_b}
+
+
 def test_provider_owner_packs_are_session_included() -> None:
     """A pack selected only as a provider owner (memory capability, default
     mode) must be activated, or its MCP manifest (the memory backend) is

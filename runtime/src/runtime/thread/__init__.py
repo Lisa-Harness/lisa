@@ -324,6 +324,7 @@ def _build_thread_entry(
     turn_id: str | None = None,
     parent_turn_id: str | None = None,
     parent_dispatch_id: str | None = None,
+    task_id: str = "",
 ) -> dict[str, Any]:
     """Build one thread-entry JSON dict, omitting empty optional fields."""
     entry: dict[str, Any] = {
@@ -334,6 +335,8 @@ def _build_thread_entry(
         "response_text": response_text,
         "turn": global_turn,
     }
+    if task_id:
+        entry["task_id"] = task_id
     if run_ref:
         # Content-addressed run manifest this turn ran under (spec §3).
         # Historical entries keep the ref they recorded; a later manifest
@@ -458,6 +461,7 @@ def append_thread_entry(
     turn_id: str | None = None,
     parent_turn_id: str | None = None,
     parent_dispatch_id: str | None = None,
+    task_id: str = "",
 ) -> int | None:
     """Append a new thread entry to the active segment under the thread store lock.
 
@@ -512,6 +516,7 @@ def append_thread_entry(
             turn_id=turn_id,
             parent_turn_id=parent_turn_id,
             parent_dispatch_id=parent_dispatch_id,
+            task_id=task_id,
         )
 
         paths.current.parent.mkdir(parents=True, exist_ok=True)

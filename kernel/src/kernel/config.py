@@ -210,6 +210,24 @@ class Settings(BaseSettings):
     # generations are unaffected: the window resets on every chunk.
     # Override via ``STREAM_IDLE_TIMEOUT_S``.
     stream_idle_timeout_s: float = 300.0
+    # Repeated-line output circuit breaker. A model can vary file names or
+    # numbers while repeatedly emitting the same sentence structure until the
+    # completion ceiling. Within the configured rolling character window,
+    # stop after this many structurally identical lines. 0 disables the
+    # breaker. Inline literals and quoted strings are normalized, so
+    # ``Perhaps fix `a.py`? Fixed.`` and ``Perhaps fix `b.py`? Fixed.``
+    # share one shape. Override via ``STREAM_REPETITION_LINE_LIMIT``.
+    stream_repetition_line_limit: int = 64
+    # Rolling output window for repetition detection. Short legitimate lists
+    # can repeat a few line shapes without tripping the breaker; a sustained
+    # loop within this window does. Override via
+    # ``STREAM_REPETITION_WINDOW_CHARS``.
+    stream_repetition_window_chars: int = 16384
+    # Maximum characters shown from a stopped repetitive stream. The full
+    # partial completion remains in the model-call archive; only the terminal
+    # user response is bounded. Override via
+    # ``STREAM_REPETITION_EXCERPT_CHARS``.
+    stream_repetition_excerpt_chars: int = 800
     # Per-iteration completion token budget for turn-loop model calls.
     # Reasoning-capable models (``reasoning_model``/``thinking_model``
     # flags, or a ``reasoning`` capability) bill their chain-of-thought
@@ -545,6 +563,9 @@ class Settings(BaseSettings):
     @field_validator(
         "declarative_completion_max_tokens",
         "stream_idle_timeout_s",
+        "stream_repetition_line_limit",
+        "stream_repetition_window_chars",
+        "stream_repetition_excerpt_chars",
         "max_tool_iterations",
         "max_auto_approved_actions",
         "fork_child_max_tool_iterations",

@@ -31,7 +31,13 @@ from kernel.provider_contracts import (
 from kernel.turn_hooks import (
     ModelHooks,
 )
-from kernel.turn_runner import StreamedCompletionAdapter, TurnHooks, run_turn
+from kernel.turn_runner import (
+    StreamedCompletionAdapter,
+    StreamRepetitionGuard,
+    TurnHooks,
+    _bounded_aborted_completion_content,
+    run_turn,
+)
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
 
@@ -1335,6 +1341,194 @@ async def test_turn_runner_on_delta_absent_is_noop() -> None:
     assert hooks.models.on_delta is None
     result = await run_turn(mode_id="default", query="hi", hooks=hooks)
     assert "plain stream" in result.response_text
+
+
+# ── Stream repetition circuit breaker ────────────────────────────────────
+
+
+def test_stream_repetition_guard_evicts_old_window_entries_and_checks_reasoning() -> None:
+    """A rolling guard evicts expired counts and also checks reasoning lines."""
+    guard = StreamRepetitionGuard(line_limit=2, window_chars=10)
+
+    assert guard.observe(content="first repeated line\n") is False
+    assert guard.observe(content="x\n") is False
+    assert guard.observe(reasoning="reasoning tail\n") is False
+
+    disabled_guard = StreamRepetitionGuard(line_limit=0, window_chars=10)
+    assert disabled_guard.observe(content="x\n", reasoning="y\n") is False
+
+    reasoning_guard = StreamRepetitionGuard(line_limit=2, window_chars=4096)
+    assert reasoning_guard.observe(reasoning="Repeated reasoning line.\n") is False
+    assert reasoning_guard.observe(reasoning="Repeated reasoning line.\n") is True
+
+
+def test_bounded_aborted_completion_content_handles_disabled_and_short_excerpts() -> None:
+    """Repetition excerpt rendering supports disabled and bounded modes."""
+    with patch.object(settings, "stream_repetition_excerpt_chars", 0):
+        assert (
+            _bounded_aborted_completion_content(
+                content="first\nsecond",
+                finish_reason="repetition",
+                mode_id="default",
+                iteration=3,
+                log=SimpleNamespace(warning=lambda *args, **kwargs: None),
+            ).count("second")
+            == 0
+        )
+
+    with patch.object(settings, "stream_repetition_excerpt_chars", 5):
+        rendered = _bounded_aborted_completion_content(
+            content="first\n123456789",
+            finish_reason="repetition",
+            mode_id="default",
+            iteration=3,
+            log=SimpleNamespace(warning=lambda *args, **kwargs: None),
+        )
+        assert "1234…" in rendered
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_stops_structurally_repeated_stream_early() -> None:
+    """A loop varying only inline literals stops before the provider cap."""
+    chunks_yielded = 0
+
+    async def repeating_stream(**_kwargs: Any):
+        nonlocal chunks_yielded
+        for index in range(200):
+            chunks_yielded += 1
+            yield StreamedChunk(content=f"Perhaps fix `file-{index}.py`? Fixed.\n")
+        yield StreamedChunk(finish_reason="stop")
+
+    hooks = _build_minimal_hooks(
+        complete_fn=_make_stub_complete("must not be called"),
+        stream_fn=repeating_stream,
+    )
+    with (
+        patch.object(settings, "stream_repetition_line_limit", 6),
+        patch.object(settings, "stream_repetition_window_chars", 4096),
+        patch("kernel.turn_runner._compute_capability_routing_hint", return_value=""),
+    ):
+        result = await run_turn(mode_id="default", query="review the files", hooks=hooks)
+
+    assert chunks_yielded == 6
+    assert "repetitive-output loop" in result.response_text
+    assert "Perhaps fix" in result.response_text
+    assert result.response_text.count("Perhaps fix") < chunks_yielded
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_allows_repeated_lines_below_breaker_limit() -> None:
+    """A short list with a shared sentence shape is not a runaway loop."""
+    chunks = [
+        StreamedChunk(content=f"Perhaps fix `file-{index}.py`? Fixed.\n") for index in range(5)
+    ]
+    chunks.append(StreamedChunk(finish_reason="stop"))
+    hooks = _build_minimal_hooks(
+        complete_fn=_make_stub_complete("must not be called"),
+        stream_fn=_make_streaming_complete_stream(chunks),
+    )
+    with (
+        patch.object(settings, "stream_repetition_line_limit", 6),
+        patch.object(settings, "stream_repetition_window_chars", 4096),
+        patch("kernel.turn_runner._compute_capability_routing_hint", return_value=""),
+    ):
+        result = await run_turn(mode_id="default", query="review the files", hooks=hooks)
+
+    assert result.response_text.count("Perhaps fix") == 5
+    assert "repetitive-output loop" not in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_does_not_forward_repetitive_single_chunk() -> None:
+    """A coarse provider chunk is checked before terminal forwarding."""
+    lines = "".join(f"Perhaps fix `file-{index}.py`? Fixed.\n" for index in range(20))
+    stream_fn = _make_streaming_complete_stream([StreamedChunk(content=lines)])
+    received: list[tuple[str, str]] = []
+
+    async def on_delta(text: str, reasoning: str) -> None:
+        received.append((text, reasoning))
+
+    hooks = _build_minimal_hooks(_make_stub_complete("must not be called"), stream_fn)
+    hooks.models.on_delta = on_delta
+    with (
+        patch.object(settings, "stream_repetition_line_limit", 6),
+        patch.object(settings, "stream_repetition_window_chars", 4096),
+        patch("kernel.turn_runner._compute_capability_routing_hint", return_value=""),
+    ):
+        result = await run_turn(mode_id="default", query="review the files", hooks=hooks)
+
+    assert received == []
+    assert "repetitive-output loop" in result.response_text
+    assert result.response_text.count("Perhaps fix") == 1
+
+
+@pytest.mark.asyncio
+async def test_collect_stream_closes_generator_on_repetition() -> None:
+    """The collector closes the provider iterator it owns on early stop."""
+    from kernel.turn_runner import _collect_stream
+
+    stream_closed = False
+
+    async def repeating_stream(_request: CompletionRequest):
+        nonlocal stream_closed
+        try:
+            for index in range(200):
+                yield StreamedChunk(content=f"Again `item-{index}`.\n")
+        finally:
+            stream_closed = True
+
+    with (
+        patch.object(settings, "stream_repetition_line_limit", 6),
+        patch.object(settings, "stream_repetition_window_chars", 4096),
+    ):
+        chunks, _ = await _collect_stream(repeating_stream, _request(), None)
+
+    assert stream_closed is True
+    assert chunks[-1].finish_reason == "repetition"
+
+
+def test_stream_repetition_setting_env_override() -> None:
+    """Repetition limits are tunable without changing the kernel."""
+    from kernel.config import Settings
+
+    configured = Settings.model_validate(
+        {
+            "stream_repetition_line_limit": "48",
+            "stream_repetition_window_chars": "8192",
+        }
+    )
+    assert configured.stream_repetition_line_limit == 48
+    assert configured.stream_repetition_window_chars == 8192
+
+
+def test_repetition_does_not_synthesize_forced_call() -> None:
+    """A terminal repetition stop bypasses forced-action synthesis."""
+    from kernel.turn_phases._turn_state import ForcedAction, _TurnState
+    from kernel.turn_runner import _synthesize_empty_completion_call
+
+    state = _TurnState()
+    forced = ForcedAction(targets=["coding_execute"])
+    state.forced_action = forced
+    assistant_msg: dict[str, Any] = {"role": "assistant"}
+
+    tool_calls, synthesized, pre_handoff = _synthesize_empty_completion_call(
+        hooks=SimpleNamespace(),
+        state=state,
+        mode_id="default",
+        query="review the files",
+        completion=SimpleNamespace(finish_reason="repetition", content="Again. Again."),
+        assistant_msg=assistant_msg,
+        pre_handoff_text="",
+        operation_catalog={},
+        tool_catalog={},
+        log=SimpleNamespace(),
+    )
+
+    assert tool_calls == []
+    assert synthesized is False
+    assert pre_handoff == ""
+    assert assistant_msg == {"role": "assistant"}
+    assert state.forced_action is forced
 
 
 # ── Stream idle watchdog (the 2026-10-06 mid-stream freeze) ───────────

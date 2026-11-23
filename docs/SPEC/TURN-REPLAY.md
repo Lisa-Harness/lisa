@@ -1,6 +1,8 @@
 # Turn Replay Specification
 
-> **Status:** Proposed.
+> **Status:** Partially implemented — see the implementation-status matrix
+> below. Exact-mode replay is implemented; counterfactual mode, scenario
+> export, and the operator surfaces remain proposed.
 > **Order:** 3 of 4 in the observability and replay program.
 > **Depends on:** [evidence envelope](./EVIDENCE-ENVELOPE.md) (call identity,
 > run manifest) and [model call archive](./MODEL-CALL-ARCHIVE.md) (response
@@ -18,6 +20,22 @@ model history is **rehydration**
 ([`_rehydrate.py`](../../runtime/src/runtime/thread/_rehydrate.py)); it does
 not re-execute tools or model calls. Showing a previous response is a
 **reprint** (`/last`), and continuing a paused task is a **resume**.
+
+## Implementation status
+
+| Capability | Status | Evidence |
+| --- | --- | --- |
+| Exact-mode replay engine (§1 `exact`) | Implemented | `runtime/replay/_engine.py` (`replay_turn`, `ReplayReport`); `runtime/tests/test_replay_engine.py` |
+| Archive-backed recording (§1 tool results) | Implemented | `runtime/replay/_recording.py` (`load_recorded_turn`, `load_auxiliary_calls`); `runtime/testing/archive.py`; `runtime/tests/test_replay_recording.py` |
+| Recorded tool answers, never re-executed | Implemented | `runtime/replay/_tools.py` (`TranscriptToolAnswerer`); gap and error projection tests |
+| Scratch-root isolation (§4) | Implemented | `test_replay_never_writes_the_source_data_root` in `e2etest/tests/test_replay_gate.py` |
+| Determinism gate in CI | Implemented | `test_harness_smoke_replays_without_divergence` and the divergence/gap/exhaustion tests in `e2etest/tests/test_replay_gate.py` |
+| Counterfactual mode (§1) | Proposed | Not implemented |
+| Scenario export (§5) | Proposed | Not implemented |
+| `lisa replay` CLI and `/replay` in-session surface (§6) | Proposed | Not implemented |
+| Full divergence detection (§3: request-content hashing, `turn.decision` comparison, run-manifest comparison) | Proposed | Not implemented |
+| Child-turn replay | Proposed | Not implemented |
+| Approval-record replay (§1 Approvals) | Proposed | Not implemented |
 
 ## Foundation
 
