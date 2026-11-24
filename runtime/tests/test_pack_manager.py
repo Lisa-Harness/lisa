@@ -116,6 +116,49 @@ def _write_memory_capability_manifest(
     (root / "mcp_servers.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def test_git_subprocess_env_appends_github_cli_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.bareRepository")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "explicit")
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", "credential.interactive")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", "never")
+    monkeypatch.setattr(
+        _packs.shutil,
+        "which",
+        lambda name: "/usr/bin/gh" if name == "gh" else None,
+    )
+
+    env = _packs._git_subprocess_env()
+
+    assert env["GIT_CONFIG_COUNT"] == "3"
+    assert env["GIT_CONFIG_KEY_0"] == "safe.bareRepository"
+    assert env["GIT_CONFIG_VALUE_0"] == "explicit"
+    assert env["GIT_CONFIG_KEY_1"] == "credential.interactive"
+    assert env["GIT_CONFIG_VALUE_1"] == "never"
+    assert env["GIT_CONFIG_KEY_2"] == "credential.https://github.com.helper"
+    assert env["GIT_CONFIG_VALUE_2"] == "!gh auth git-credential"
+
+
+def test_git_subprocess_env_leaves_environment_unchanged_without_gh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.bareRepository")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "explicit")
+    monkeypatch.delenv("GIT_CONFIG_KEY_1", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_VALUE_1", raising=False)
+    monkeypatch.setattr(_packs.shutil, "which", lambda _name: None)
+
+    env = _packs._git_subprocess_env()
+
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_KEY_0"] == "safe.bareRepository"
+    assert env["GIT_CONFIG_VALUE_0"] == "explicit"
+    assert "GIT_CONFIG_KEY_1" not in env
+
+
 @pytest.mark.asyncio
 async def test_run_pack_install_rejected_by_policy_does_not_mutate_state(
     monkeypatch: pytest.MonkeyPatch,

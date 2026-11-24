@@ -32,6 +32,7 @@ import asyncio
 import logging
 import os
 import re
+import shutil
 import tomllib
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -89,6 +90,31 @@ _FRAMEWORK_ROOT = _framework_root()
 # ``LISA_PACK_GIT_ROOT`` to override with a custom template or to empty ("")
 # to disable expansion and fall back to PyPI resolution for bare names.
 _DEFAULT_PACK_GIT_ROOT = "git+https://github.com/Lisa-Harness/{pack}@main"
+
+
+def _git_subprocess_env() -> dict[str, str]:
+    """Return a subprocess environment that can authenticate GitHub HTTPS.
+
+    GitHub CLI's keyring-backed credential helper is the operator's existing
+    authentication path for private repositories. Git config can be inherited
+    normally, but uv/tool launches may run outside the shell that configured
+    Git. Supplying ``gh auth git-credential`` explicitly makes private GitHub
+    refs work without embedding a token in the URL or changing user config.
+    """
+    env = dict(os.environ)
+    if shutil.which("gh") is None:
+        return env
+
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        count = 0
+    count = max(count, 0)
+
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    env[f"GIT_CONFIG_KEY_{count}"] = "credential.https://github.com.helper"
+    env[f"GIT_CONFIG_VALUE_{count}"] = "!gh auth git-credential"
+    return env
 
 
 # ── Lock-file I/O ────────────────────────────────────────────────────
@@ -587,6 +613,7 @@ def _seed_packs_venv_with_framework_sync(packs_venv: Path) -> tuple[bool, str]:
         stderr=subprocess.STDOUT,
         cwd=str(_FRAMEWORK_ROOT),
         check=False,
+        env=_git_subprocess_env(),
     )
     if completed.returncode != 0:
         output = completed.stdout.decode("utf-8", errors="replace") if completed.stdout else ""
@@ -639,6 +666,7 @@ def _ensure_packs_venv_sync(packs_venv: Path) -> tuple[bool, str]:
         stderr=subprocess.STDOUT,
         cwd=str(_FRAMEWORK_ROOT),
         check=False,
+        env=_git_subprocess_env(),
     )
     if completed.returncode != 0:
         output = completed.stdout.decode("utf-8", errors="replace") if completed.stdout else ""
@@ -777,6 +805,7 @@ def run_pack_install_sync(
             stderr=subprocess.STDOUT,
             cwd=str(_FRAMEWORK_ROOT),
             check=False,
+            env=_git_subprocess_env(),
         )
         if completed.returncode != 0:
             output = completed.stdout.decode("utf-8", errors="replace") if completed.stdout else ""
