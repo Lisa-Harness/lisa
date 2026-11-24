@@ -124,6 +124,8 @@ def test_git_subprocess_env_appends_github_cli_helper(
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "explicit")
     monkeypatch.setenv("GIT_CONFIG_KEY_1", "credential.interactive")
     monkeypatch.setenv("GIT_CONFIG_VALUE_1", "never")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_pack_service_token")
+    monkeypatch.setenv("GH_TOKEN", "gho_another_token")
     monkeypatch.setattr(
         _packs.shutil,
         "which",
@@ -139,6 +141,11 @@ def test_git_subprocess_env_appends_github_cli_helper(
     assert env["GIT_CONFIG_VALUE_1"] == "never"
     assert env["GIT_CONFIG_KEY_2"] == "credential.https://github.com.helper"
     assert env["GIT_CONFIG_VALUE_2"] == "!gh auth git-credential"
+    # Service tokens are stripped: gh's credential helper prefers
+    # GITHUB_TOKEN/GH_TOKEN over the operator's keyring credential, and a
+    # stale service token then fails the private-repo git fetch.
+    assert "GITHUB_TOKEN" not in env
+    assert "GH_TOKEN" not in env
 
 
 def test_git_subprocess_env_leaves_environment_unchanged_without_gh(
@@ -149,6 +156,7 @@ def test_git_subprocess_env_leaves_environment_unchanged_without_gh(
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "explicit")
     monkeypatch.delenv("GIT_CONFIG_KEY_1", raising=False)
     monkeypatch.delenv("GIT_CONFIG_VALUE_1", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_pack_service_token")
     monkeypatch.setattr(_packs.shutil, "which", lambda _name: None)
 
     env = _packs._git_subprocess_env()
@@ -157,6 +165,8 @@ def test_git_subprocess_env_leaves_environment_unchanged_without_gh(
     assert env["GIT_CONFIG_KEY_0"] == "safe.bareRepository"
     assert env["GIT_CONFIG_VALUE_0"] == "explicit"
     assert "GIT_CONFIG_KEY_1" not in env
+    # Token stripping is independent of gh availability.
+    assert "GITHUB_TOKEN" not in env
 
 
 @pytest.mark.asyncio

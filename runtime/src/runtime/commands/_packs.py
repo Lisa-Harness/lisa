@@ -92,16 +92,44 @@ _FRAMEWORK_ROOT = _framework_root()
 _DEFAULT_PACK_GIT_ROOT = "git+https://github.com/Lisa-Harness/{pack}@main"
 
 
-def _git_subprocess_env() -> dict[str, str]:
-    """Return a subprocess environment that can authenticate GitHub HTTPS.
+#: Env vars GitHub CLI's credential helper reads as tokens (gh docs:
+#: GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN).
+#: In lisa these are *service* credentials for the github pack
+#: (``lisa_packs/github/config.py`` reads ``github_token`` from the
+#: operator's ``.env``), loaded into ``os.environ`` by host bootstrap
+#: before auto-install. gh's credential helper prefers them over its
+#: keyring credential, so a stale service token silently hijacks the
+#: git fetch for private pack repos. Git itself never reads them — only
+#: gh's helper does — so removing them from the uv subprocess
+#: environment restores the operator's real Git credential chain without
+#: affecting the pack's in-process API use of the token.
+_GH_TOKEN_ENV_VARS = (
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+)
 
-    GitHub CLI's keyring-backed credential helper is the operator's existing
-    authentication path for private repositories. Git config can be inherited
-    normally, but uv/tool launches may run outside the shell that configured
-    Git. Supplying ``gh auth git-credential`` explicitly makes private GitHub
-    refs work without embedding a token in the URL or changing user config.
+
+def _git_subprocess_env() -> dict[str, str]:
+    """Return a uv-subprocess environment with the operator's own Git credentials.
+
+    Two properties:
+
+    - GitHub CLI's keyring-backed credential helper is supplied explicitly
+      (appended to any inherited ``GIT_CONFIG_*`` set) so private GitHub
+      refs work even when uv/tool launches run outside the shell that
+      configured Git.
+    - GitHub service-token env vars (``GITHUB_TOKEN`` and friends) are
+      removed: gh's credential helper prefers them over the keyring, and
+      the host bootstrap loads the operator's ``.env`` — whose
+      ``GITHUB_TOKEN`` is the github pack's *API* credential — into the
+      environment before auto-install. A stale API token would otherwise
+      be sent to Git and fail with "Invalid username or token".
     """
     env = dict(os.environ)
+    for name in _GH_TOKEN_ENV_VARS:
+        env.pop(name, None)
     if shutil.which("gh") is None:
         return env
 
